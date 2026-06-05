@@ -1,0 +1,129 @@
+import { MESSAGE_TYPES } from '../constants/windowMode'
+import type { WindowMode } from '../constants/windowMode'
+import type { ServiceType } from '../constants/services'
+import type { NetworkConfig } from '../constants/networks'
+
+export interface MessagePayload {
+  type: keyof typeof MESSAGE_TYPES
+  route?: string
+  mode?: WindowMode
+}
+
+export interface MessageResponse {
+  ok: boolean
+  error?: string
+}
+
+export interface PaymentParams {
+  destination: string
+  amount: string
+  assetCode: string
+  assetIssuer: string
+  memo?: string
+  memoType?: 'text' | 'id'
+  fee?: string
+  timeout?: number
+}
+
+export interface SwapParams {
+  fromAssetCode: string
+  fromAssetIssuer: string
+  toAssetCode: string
+  toAssetIssuer: string
+  amount: string
+  slippage: string
+  fee?: string
+  timeout?: number
+}
+
+export interface SwapQuote {
+  destinationAmount: string
+  destMin: string
+  path: Array<{ assetCode: string; assetIssuer: string }>
+  xdr: string
+}
+
+export interface TrustlineParams {
+  assetCode: string
+  assetIssuer: string
+  limit?: string
+}
+
+export interface ServicePayload {
+  type: ServiceType
+  password?: string
+  mnemonic?: string
+  secretKey?: string // for IMPORT_SECRET_KEY
+  walletId?: string // for ADD_ACCOUNT target wallet, REMOVE_HD_WALLET
+  walletLabel?: string // for CREATE_HD_WALLET, IMPORT_HD_WALLET, IMPORT_SECRET_KEY
+  publicKey?: string // for SWITCH_ACCOUNT, RENAME_ACCOUNT, REMOVE_ACCOUNT
+  index?: number // legacy SWITCH_ACCOUNT, RENAME_ACCOUNT, REMOVE_ACCOUNT
+  label?: string // for ADD_ACCOUNT, RENAME_ACCOUNT
+  order?: string[] // for REORDER_ACCOUNTS (array of publicKeys in new order)
+  networkId?: string
+  network?: NetworkConfig
+  payment?: PaymentParams
+  swap?: SwapParams
+  trustline?: TrustlineParams
+  horizonUrl?: string
+  networkPassphrase?: string
+  origin?: string
+}
+
+export interface ServiceResponse {
+  publicKey?: string
+  mnemonic?: string
+  error?: string
+  isUnlocked?: boolean
+  hasWallet?: boolean
+  isLegacy?: boolean
+  failedAttempts?: number
+  lockedUntil?: number
+  networks?: NetworkConfig[]
+  activeNetwork?: NetworkConfig
+  txHash?: string
+  xdr?: string
+  quote?: SwapQuote
+  connectedApps?: string[]
+  ok?: boolean
+  accounts?: AccountInfo[]
+  activePublicKey?: string
+  account?: AccountInfo
+  hdWallets?: HDWalletInfo[]
+  importedKeys?: ImportedKeyInfo[]
+  unfunded?: boolean
+  rawBalances?: Array<{
+    balance: string
+    asset_type: string
+    asset_code?: string
+    asset_issuer?: string
+  }> | null
+}
+
+export interface AccountInfo {
+  index: number // BIP44 index; -1 for imported secret keys
+  publicKey: string
+  label: string
+  walletId: string // 'primary' | UUID (extra HD wallets) | 'sk:UUID' (imported keys)
+}
+
+export interface HDWalletInfo {
+  id: string
+  label: string
+  accountCount: number
+}
+
+export interface ImportedKeyInfo {
+  id: string
+  publicKey: string
+  label: string
+}
+
+export type WalletStatus = {
+  hasWallet: boolean
+  isUnlocked: boolean
+  isLegacy?: boolean
+  publicKey?: string
+  failedAttempts?: number
+  lockedUntil?: number
+}
