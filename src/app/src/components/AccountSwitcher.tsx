@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   X,
   MoreVertical,
@@ -16,6 +17,8 @@ import { SERVICE_TYPES } from '@constants/services'
 import type { AccountInfo } from '@ext-types/index'
 import AddWalletModal from './AddWalletModal'
 import { StellarAvatar } from './StellarAvatar'
+import { Button } from '@/components/ui/button'
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 
 interface AccountBalance {
   usd: number | null
@@ -35,6 +38,7 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
   const { status, accounts, switchAccount, renameAccount, removeAccount, reorderAccounts } =
     useWallet()
   const { formatValue, hideBalance } = usePreferences()
+  const navigate = useNavigate()
 
   // Local ordered list - allows optimistic reorder without waiting for context refresh
   const [localAccounts, setLocalAccounts] = useState<AccountInfo[]>([])
@@ -43,6 +47,7 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
   const [editLabel, setEditLabel] = useState('')
   const [switchingTo, setSwitchingTo] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [confirmRemove, setConfirmRemove] = useState<AccountInfo | null>(null)
   const [addWalletOpen, setAddWalletOpen] = useState(false)
   const [accountBalances, setAccountBalances] = useState<Record<string, AccountBalance>>({})
 
@@ -59,14 +64,6 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
     if (editingPk !== null) editInputRef.current?.focus()
   }, [editingPk])
 
-  useEffect(() => {
-    if (menuOpenFor === null) return
-    function onClick() {
-      setMenuOpenFor(null)
-    }
-    document.addEventListener('click', onClick)
-    return () => document.removeEventListener('click', onClick)
-  }, [menuOpenFor])
 
   useEffect(() => {
     if (!isOpen) {
@@ -196,6 +193,9 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
       return
     }
     onClose()
+    // Land on Home so the new account loads fresh, instead of lingering on a per-account page
+    // (History, Receive) that would show the previous account until its effects re-run.
+    navigate('/')
   }
 
   function onDragStart(e: React.DragEvent, publicKey: string) {
@@ -268,6 +268,7 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
           <span className="text-sm font-semibold text-foreground">Accounts</span>
           <button
             onClick={onClose}
+            aria-label="Close"
             className="cursor-pointer rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <X size={16} />
@@ -288,7 +289,6 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
             const isActive = account.publicKey === status.publicKey
             const isSwitching = switchingTo === account.publicKey
             const isEditing = editingPk === account.publicKey
-            const menuOpen = menuOpenFor === account.publicKey
 
             return (
               <div
@@ -300,106 +300,117 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
                 onDrop={onDrop}
                 onDragEnd={resetDrag}
               >
-                <button
-                  disabled={isSwitching || editingPk !== null}
-                  onClick={() => handleSwitch(account.publicKey)}
-                  className={`w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors mb-1 ${
+                <div
+                  className={`w-full flex items-center gap-3 rounded-xl px-3 py-2.5 mb-1 transition-colors ${
                     isActive
-                      ? 'bg-primary/10 border border-primary/20 cursor-default'
+                      ? 'bg-primary/10 border border-primary/20'
                       : isSwitching
-                        ? 'border border-transparent opacity-60 cursor-default'
-                        : 'hover:bg-muted border border-transparent cursor-pointer'
+                        ? 'border border-transparent opacity-60'
+                        : 'hover:bg-muted border border-transparent'
                   }`}
                 >
-                  {/* Drag handle */}
                   <div
-                    className="shrink-0 text-muted-foreground/40 hover:text-muted-foreground cursor-grab active:cursor-grabbing"
-                    onClick={(e) => e.stopPropagation()}
+                    aria-hidden
+                    className="shrink-0 text-muted-foreground/40 cursor-grab active:cursor-grabbing"
                   >
                     <GripVertical size={14} />
                   </div>
 
-                  <StellarAvatar publicKey={account.publicKey} size={28} className="shrink-0" />
-
-                  <div className="flex-1 min-w-0">
-                    {isEditing ? (
-                      <input
-                        ref={editInputRef}
-                        value={editLabel}
-                        onChange={(e) => setEditLabel(e.target.value)}
-                        onBlur={() => confirmRename(account.publicKey)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') confirmRename(account.publicKey)
-                          if (e.key === 'Escape') setEditingPk(null)
-                          e.stopPropagation()
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-full rounded border border-primary/40 bg-background px-1.5 py-0.5 text-sm font-medium text-foreground outline-none focus:border-primary"
-                        maxLength={20}
-                      />
-                    ) : (
-                      <p className="text-sm font-medium text-foreground truncate">
-                        {account.label}
-                      </p>
-                    )}
-                    <p className="font-mono text-xs text-muted-foreground">
-                      {isEditing ? `${editLabel.length}/20` : truncateAddress(account.publicKey)}
-                    </p>
-                  </div>
-
-                  <div className="shrink-0 text-right">
-                    {hideBalance ? (
-                      <span className="text-xs text-muted-foreground tracking-wider">****</span>
-                    ) : accountBalances[account.publicKey]?.loading ? (
-                      <span className="text-xs text-muted-foreground/50">...</span>
-                    ) : accountBalances[account.publicKey]?.usd !== null &&
-                      accountBalances[account.publicKey]?.usd !== undefined ? (
-                      <span className="text-xs text-muted-foreground">
-                        {formatValue(accountBalances[account.publicKey].usd!)}
-                      </span>
-                    ) : null}
-                  </div>
+                  {isEditing ? (
+                    <>
+                      <StellarAvatar publicKey={account.publicKey} size={28} className="shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <input
+                          ref={editInputRef}
+                          value={editLabel}
+                          onChange={(e) => setEditLabel(e.target.value)}
+                          onBlur={() => confirmRename(account.publicKey)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') confirmRename(account.publicKey)
+                            if (e.key === 'Escape') setEditingPk(null)
+                          }}
+                          className="w-full rounded border border-primary/40 bg-background px-1.5 py-0.5 text-sm font-medium text-foreground outline-none focus:border-primary"
+                          maxLength={20}
+                        />
+                        <p className="font-mono text-xs text-muted-foreground">
+                          {editLabel.length}/20
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={isSwitching}
+                      onClick={() => handleSwitch(account.publicKey)}
+                      className={`flex flex-1 items-center gap-3 min-w-0 text-left ${
+                        isActive ? 'cursor-default' : 'cursor-pointer'
+                      }`}
+                    >
+                      <StellarAvatar publicKey={account.publicKey} size={28} className="shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-foreground truncate">
+                          {account.label}
+                        </p>
+                        <p className="font-mono text-xs text-muted-foreground">
+                          {truncateAddress(account.publicKey)}
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        {hideBalance ? (
+                          <span className="text-xs text-muted-foreground tracking-wider">****</span>
+                        ) : accountBalances[account.publicKey]?.loading ? (
+                          <span className="text-xs text-muted-foreground/50">...</span>
+                        ) : accountBalances[account.publicKey]?.usd !== null &&
+                          accountBalances[account.publicKey]?.usd !== undefined ? (
+                          <span className="text-xs text-muted-foreground">
+                            {formatValue(accountBalances[account.publicKey].usd!)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </button>
+                  )}
 
                   {isSwitching && (
                     <Loader2 size={14} className="text-muted-foreground animate-spin shrink-0" />
                   )}
 
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setMenuOpenFor(menuOpen ? null : account.publicKey)
-                    }}
-                    className="cursor-pointer shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                  <Popover
+                    open={menuOpenFor === account.publicKey}
+                    onOpenChange={(open) => setMenuOpenFor(open ? account.publicKey : null)}
                   >
-                    <MoreVertical size={14} />
-                  </button>
-                </button>
-
-                {menuOpen && (
-                  <div className="absolute right-2 top-1 z-10 flex flex-col rounded-xl bg-background shadow-lg overflow-hidden min-w-[120px]">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        startRename(account)
-                      }}
-                      className="cursor-pointer flex items-center gap-2 px-3 py-2.5 text-xs text-foreground hover:bg-muted transition-colors text-left"
-                    >
-                      <Pencil size={12} />
-                      Rename
-                    </button>
-                    <button
-                      disabled={localAccounts.length <= 1 || isActive}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleRemove(account.publicKey)
-                      }}
-                      className="cursor-pointer flex items-center gap-2 px-3 py-2.5 text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-left"
-                    >
-                      <Trash2 size={12} />
-                      Remove
-                    </button>
-                  </div>
-                )}
+                    <PopoverTrigger asChild>
+                      <button
+                        aria-label="Account options"
+                        className="cursor-pointer shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                      >
+                        <MoreVertical size={14} />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-40 p-1">
+                      <button
+                        onClick={() => {
+                          setMenuOpenFor(null)
+                          startRename(account)
+                        }}
+                        className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-foreground hover:bg-muted transition-colors"
+                      >
+                        <Pencil size={14} className="text-muted-foreground" />
+                        Rename
+                      </button>
+                      <button
+                        disabled={localAccounts.length <= 1 || isActive}
+                        onClick={() => {
+                          setMenuOpenFor(null)
+                          setConfirmRemove(account)
+                        }}
+                        className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <Trash2 size={14} />
+                        Remove
+                      </button>
+                    </PopoverContent>
+                  </Popover>
+                </div>
               </div>
             )
           })}
@@ -424,6 +435,39 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
       </div>
 
       <AddWalletModal isOpen={addWalletOpen} onClose={() => setAddWalletOpen(false)} />
+
+      {confirmRemove && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setConfirmRemove(null)} />
+          <div className="relative w-full max-w-xs rounded-2xl bg-background p-5 shadow-2xl">
+            <h3 className="text-base font-semibold text-foreground">Remove account?</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {confirmRemove.label} ({truncateAddress(confirmRemove.publicKey)})
+            </p>
+            <p className="mt-3 text-xs text-muted-foreground">
+              {confirmRemove.walletId?.startsWith('sk:')
+                ? 'Imported account: back up its secret key first - without it this account cannot be restored.'
+                : 'You can add this account back later from your recovery phrase.'}
+            </p>
+            <div className="mt-5 flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setConfirmRemove(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                className="flex-1"
+                onClick={() => {
+                  const pk = confirmRemove.publicKey
+                  setConfirmRemove(null)
+                  void handleRemove(pk)
+                }}
+              >
+                Remove
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

@@ -24,8 +24,6 @@ interface PreferencesContextValue {
   setSidebarByDefault: (v: boolean) => void
   hideBalance: boolean
   setHideBalance: (v: boolean) => void
-  hiddenAssets: string[]
-  toggleHiddenAsset: (key: string) => void
   formatValue: (usdValue: number) => string
   formatPrice: (usdPrice: number) => string
   getExplorerTxUrl: (hash: string, networkId: string) => string
@@ -41,7 +39,6 @@ const STORAGE_KEYS = {
   hideSmallPayments: 'cyphras_hide_small_payments',
   sidebarByDefault: 'cyphras_sidebar_by_default',
   hideBalance: 'cyphras_hide_balance',
-  hiddenAssets: 'cyphras_hidden_assets',
   exchangeRates: 'cyphras_exchange_rates',
 }
 
@@ -68,7 +65,6 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
   const [hideSmallPayments, setHideSmallPaymentsState] = useState(false)
   const [sidebarByDefault, setSidebarByDefaultState] = useState(false)
   const [hideBalance, setHideBalanceState] = useState(false)
-  const [hiddenAssets, setHiddenAssetsState] = useState<string[]>([])
   const [rates, setRates] = useState(FALLBACK_RATES)
 
   useEffect(() => {
@@ -78,7 +74,6 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
       const e = res[STORAGE_KEYS.explorer] as Explorer | undefined
       const h = res[STORAGE_KEYS.hideSmallPayments] as boolean | undefined
       const wm = res[STORAGE_KEYS.sidebarByDefault] as boolean | undefined
-      const ha = res[STORAGE_KEYS.hiddenAssets] as string[] | undefined
       const r = res[STORAGE_KEYS.exchangeRates] as ExchangeRates | undefined
 
       if (c) setCurrencyState(c)
@@ -94,7 +89,6 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
       if (wm !== undefined) setSidebarByDefaultState(wm)
       const hb = res[STORAGE_KEYS.hideBalance] as boolean | undefined
       if (hb !== undefined) setHideBalanceState(hb)
-      if (Array.isArray(ha)) setHiddenAssetsState(ha)
 
       if (r && Date.now() - r.cachedAt < RATES_TTL_MS) {
         setRates({ EUR: r.EUR, GBP: r.GBP, IDR: r.IDR })
@@ -161,14 +155,6 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
   function setHideBalance(v: boolean) {
     setHideBalanceState(v)
     chrome.storage.local.set({ [STORAGE_KEYS.hideBalance]: v })
-  }
-
-  function toggleHiddenAsset(key: string) {
-    setHiddenAssetsState((prev) => {
-      const updated = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
-      chrome.storage.local.set({ [STORAGE_KEYS.hiddenAssets]: updated })
-      return updated
-    })
   }
 
   function convertCurrency(usdValue: number): number {
@@ -282,8 +268,6 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
         setSidebarByDefault,
         hideBalance,
         setHideBalance,
-        hiddenAssets,
-        toggleHiddenAsset,
         formatValue,
         formatPrice,
         getExplorerTxUrl,

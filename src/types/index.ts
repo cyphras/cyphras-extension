@@ -49,6 +49,43 @@ export interface TrustlineParams {
   limit?: string
 }
 
+export type PrivateNoteStatus = 'pending' | 'committed' | 'scheduled' | 'revealed' | 'failed'
+
+export interface PrivateNote {
+  counter: number
+  pool: string
+  asset: string
+  denomination: string
+  relayerFee: string
+  recipient: string
+  privacyLevel: 'fast' | 'standard' | 'maximum'
+  status: PrivateNoteStatus
+  txHash: string | null
+  revealTxHash?: string
+  jobId: string | null
+  scheduledFor?: string
+  commitAttempts?: number
+  lastError?: string
+  recovered?: boolean
+  // Shared by every note from one send so History groups splits together; absent on older notes.
+  batchId?: string
+  createdAt: number
+}
+
+export interface PrivateQuotePiece {
+  denomination: string
+  count: number
+  anonSet: number
+}
+
+export interface PrivateSendQuote {
+  feeStroops: string
+  pieces: PrivateQuotePiece[]
+  totalNotes: number
+  // Per-commit network fee in stroops from simulating a commit; "0" if it could not be estimated.
+  commitFeeStroops?: string
+}
+
 export interface ServicePayload {
   type: ServiceType
   password?: string
@@ -74,6 +111,7 @@ export interface ServiceResponse {
   publicKey?: string
   mnemonic?: string
   error?: string
+  code?: string
   isUnlocked?: boolean
   hasWallet?: boolean
   isLegacy?: boolean
@@ -86,6 +124,8 @@ export interface ServiceResponse {
   quote?: SwapQuote
   connectedApps?: string[]
   ok?: boolean
+  notes?: PrivateNote[]
+  privateQuote?: PrivateSendQuote
   accounts?: AccountInfo[]
   activePublicKey?: string
   account?: AccountInfo
@@ -98,6 +138,7 @@ export interface ServiceResponse {
     asset_code?: string
     asset_issuer?: string
   }> | null
+  subentryCount?: number
 }
 
 export interface AccountInfo {

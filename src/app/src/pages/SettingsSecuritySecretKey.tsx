@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Layout } from '@/components/Layout'
@@ -15,6 +15,26 @@ export default function SettingsSecuritySecretKey() {
   const [secretKey, setSecretKey] = useState<string | null>(null)
   const [showKey, setShowKey] = useState(false)
   const [copied, setCopied] = useState(false)
+
+  // Re-mask on focus loss and wipe entirely when the wallet is hidden (e.g. a side panel left open),
+  // so the secret key is never left exposed on an unattended screen.
+  useEffect(() => {
+    if (!secretKey) return
+    const remask = () => setShowKey(false)
+    const onHidden = () => {
+      if (document.hidden) {
+        setSecretKey(null)
+        setShowKey(false)
+        setPassword('')
+      }
+    }
+    window.addEventListener('blur', remask)
+    document.addEventListener('visibilitychange', onHidden)
+    return () => {
+      window.removeEventListener('blur', remask)
+      document.removeEventListener('visibilitychange', onHidden)
+    }
+  }, [secretKey])
 
   const publicKey = activePublicKey || status.publicKey || ''
 
@@ -74,7 +94,7 @@ export default function SettingsSecuritySecretKey() {
       <div className="flex flex-col gap-6">
         <div className="relative flex items-center justify-center">
           <button
-            onClick={() => navigate('/settings/security')}
+            onClick={() => navigate(-1)}
             className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
             <ChevronLeft size={18} />
@@ -138,8 +158,8 @@ export default function SettingsSecuritySecretKey() {
 
             <div className="rounded-xl bg-destructive/10 border border-destructive/20 px-4 py-3">
               <p className="text-xs text-destructive leading-relaxed">
-                Never share your secret key with anyone. Anyone with this key has full control of
-                your funds.
+                Never share your secret key with anyone. Anyone with this key has full control of your
+                funds. Copying places it in your clipboard - clear it after use.
               </p>
             </div>
           </div>

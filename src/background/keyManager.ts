@@ -344,6 +344,54 @@ export async function verifyPassword(password: string): Promise<boolean> {
   return !!secret
 }
 
+// Re-encrypts every credential (mnemonic, legacy secret, HD wallets, imported keys) under newPassword
+// in one atomic write; missing any leaves it on the old password and bricks that account.
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const mnemonic = await decryptMnemonic(currentPassword)
+  const legacySecret = await decryptSecret(currentPassword)
+  if (!mnemonic && !legacySecret) {
+    throw new Error('Failed to decrypt wallet data')
+  }
+
+  const hdWallets = await getHDWallets()
+  const reHdWallets = await Promise.all(
+    hdWallets.map(async (hw) => {
+      const m = await decryptString(hw.encryptedMnemonic, currentPassword)
+      if (!m) {
+        throw new Error('Failed to decrypt a secondary wallet; password unchanged')
+      }
+      return { ...hw, encryptedMnemonic: await encryptString(m, newPassword) }
+    })
+  )
+
+  const importedKeys = await getImportedKeys()
+  const reImportedKeys = await Promise.all(
+    importedKeys.map(async (ik) => {
+      const s = await decryptString(ik.encryptedSecret, currentPassword)
+      if (!s) {
+        throw new Error('Failed to decrypt an imported key; password unchanged')
+      }
+      return { ...ik, encryptedSecret: await encryptString(s, newPassword) }
+    })
+  )
+
+  const updates: Record<string, unknown> = {}
+  if (mnemonic) {
+    updates[STORAGE_KEY_ENCRYPTED_MNEMONIC] = await encryptString(mnemonic, newPassword)
+  }
+  if (legacySecret) {
+    updates[STORAGE_KEY_ENCRYPTED] = await encryptString(legacySecret, newPassword)
+  }
+  if (hdWallets.length > 0) {
+    updates[STORAGE_KEY_HD_WALLETS] = reHdWallets
+  }
+  if (importedKeys.length > 0) {
+    updates[STORAGE_KEY_IMPORTED_KEYS] = reImportedKeys
+  }
+
+  await chrome.storage.local.set(updates)
+}
+
 export async function getHDWallets(): Promise<HDWalletStorageEntry[]> {
   const result = await chrome.storage.local.get(STORAGE_KEY_HD_WALLETS)
   return result[STORAGE_KEY_HD_WALLETS] ?? []

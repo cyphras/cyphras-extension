@@ -28,11 +28,15 @@ export default function SettingsSecurityAutoLock() {
   }, [])
 
   function handleSelect(seconds: number) {
+    const prev = selected
     setSelected(seconds)
-    chrome.runtime.sendMessage({
-      type: SERVICE_TYPES.SET_AUTO_LOCK_TIMEOUT,
-      timeoutSeconds: seconds,
-    })
+    chrome.runtime.sendMessage(
+      { type: SERVICE_TYPES.SET_AUTO_LOCK_TIMEOUT, timeoutSeconds: seconds },
+      () => {
+        // Revert the optimistic selection if the background never stored it.
+        if (chrome.runtime.lastError) setSelected(prev)
+      }
+    )
   }
 
   return (
@@ -40,7 +44,7 @@ export default function SettingsSecurityAutoLock() {
       <div className="flex flex-col gap-6">
         <div className="relative flex items-center justify-center">
           <button
-            onClick={() => navigate('/settings/security')}
+            onClick={() => navigate(-1)}
             className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
             <ChevronLeft size={18} />

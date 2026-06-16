@@ -395,7 +395,8 @@ function OnboardingCreate() {
           <div className="flex items-start gap-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 px-3.5 py-3">
             <EyeOff size={14} className="text-amber-500 mt-0.5 shrink-0" />
             <p className="text-xs text-amber-700 dark:text-amber-400">
-              Never share your recovery phrase with anyone. Cyphras will never ask for it.
+              Never share your recovery phrase with anyone. Cyphras will never ask for it. If you copy
+              it, clear your clipboard afterward.
             </p>
           </div>
         </div>

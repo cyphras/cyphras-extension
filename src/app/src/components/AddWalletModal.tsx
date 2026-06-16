@@ -64,6 +64,8 @@ export default function AddWalletModal({ isOpen, onClose }: AddWalletModalProps)
   }
 
   function handleClose() {
+    // Block closing mid-import so the wallet is never left half-applied.
+    if (loading) return
     reset()
     onClose()
   }
@@ -80,6 +82,7 @@ export default function AddWalletModal({ isOpen, onClose }: AddWalletModalProps)
   }
 
   function handleBack() {
+    if (loading) return
     if (step === 'phrase' || step === 'key') {
       setStep('choose')
       setPhraseError('')
@@ -288,14 +291,14 @@ export default function AddWalletModal({ isOpen, onClose }: AddWalletModalProps)
   return (
     <>
       <div
-        className={`fixed inset-0 z-60 bg-black/50 transition-opacity duration-200 ${
+        className={`fixed inset-0 z-[100] bg-black/50 transition-opacity duration-200 ${
           isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
         onClick={handleClose}
       />
 
       <div
-        className={`fixed bottom-0 left-0 right-0 z-70 rounded-t-2xl bg-background shadow-2xl flex flex-col max-h-[80vh] transition-transform duration-300 ease-out ${
+        className={`fixed bottom-0 left-0 right-0 z-[110] rounded-t-2xl bg-background shadow-2xl flex flex-col max-h-[80vh] transition-transform duration-300 ease-out ${
           isOpen ? 'translate-y-0' : 'translate-y-full'
         }`}
       >
@@ -308,7 +311,8 @@ export default function AddWalletModal({ isOpen, onClose }: AddWalletModalProps)
             {step !== 'choose' && step !== 'success' && (
               <button
                 onClick={handleBack}
-                className="cursor-pointer rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                disabled={loading}
+                className="cursor-pointer rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -317,7 +321,8 @@ export default function AddWalletModal({ isOpen, onClose }: AddWalletModalProps)
           </div>
           <button
             onClick={handleClose}
-            className="cursor-pointer rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            disabled={loading}
+            className="cursor-pointer rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <X size={16} />
           </button>

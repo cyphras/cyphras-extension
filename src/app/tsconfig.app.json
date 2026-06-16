@@ -21,7 +21,8 @@
     "paths": {
       "@/*": ["src/*"],
       "@constants/*": ["../constants/*"],
-      "@ext-types/*": ["../types/*"]
+      "@ext-types/*": ["../types/*"],
+      "@private/*": ["../private/*"]
     }
   },
   "include": ["src"]

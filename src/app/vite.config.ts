@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { nodePolyfills } from 'vite-plugin-node-polyfills'
 import { resolve } from 'path'
 import { copyFileSync } from 'fs'
 import { execSync } from 'child_process'
@@ -19,6 +20,8 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
   plugins: [
+    // snarkjs / circomlibjs in the offscreen prover reference the Node Buffer global.
+    nodePolyfills({ include: ['buffer'], globals: { Buffer: true } }),
     tailwindcss(),
     react(),
     {
@@ -47,6 +50,7 @@ export default defineConfig({
       '@bg': resolve(SRC_ROOT, 'background'),
       '@constants': resolve(SRC_ROOT, 'constants'),
       '@ext-types': resolve(SRC_ROOT, 'types'),
+      '@private': resolve(SRC_ROOT, 'private'),
     },
   },
   build: {
@@ -57,6 +61,7 @@ export default defineConfig({
         app: resolve(__dirname, 'wallet.html'),
         approval: resolve(__dirname, 'approval.html'),
         onboarding: resolve(__dirname, 'onboarding.html'),
+        offscreen: resolve(__dirname, 'offscreen.html'),
       },
     },
   },

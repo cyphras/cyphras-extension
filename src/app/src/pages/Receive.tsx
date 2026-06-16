@@ -1,7 +1,9 @@
 import { useWallet } from '@/context/WalletContext'
+import { useNetwork } from '@/context/NetworkContext'
+import { usePreferences } from '@/context/PreferencesContext'
 import { Button } from '@/components/ui/button'
 import { Layout } from '@/components/Layout'
-import { Copy, Check, ChevronLeft } from 'lucide-react'
+import { Copy, Check, ChevronLeft, ExternalLink } from 'lucide-react'
 import WalletNavbar from '@/components/WalletNavbar'
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -10,7 +12,10 @@ import QRCode from 'qrcode'
 export default function Receive() {
   const navigate = useNavigate()
   const { status } = useWallet()
+  const { activeNetwork } = useNetwork()
+  const { getExplorerAccountUrl, getExplorerName } = usePreferences()
   const [copied, setCopied] = useState(false)
+  const [showFull, setShowFull] = useState(false)
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
 
   useEffect(() => {
@@ -36,12 +41,16 @@ export default function Receive() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const publicKey = status.publicKey
+  const chunked = publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-6)}` : ''
+
   return (
     <Layout navbar={<WalletNavbar />}>
       <div className="flex flex-col gap-6">
         <div className="relative flex items-center justify-center">
           <button
             onClick={() => navigate(-1)}
+            aria-label="Go back"
             className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
             <ChevronLeft size={18} />
@@ -61,9 +70,22 @@ export default function Receive() {
 
             <div className="flex flex-col items-center gap-2 w-full">
               <p className="text-xs text-muted-foreground">Your Stellar address</p>
-              <p className="font-mono text-xs text-foreground break-all text-center leading-relaxed px-2">
-                {status.publicKey}
-              </p>
+              <button
+                onClick={handleCopy}
+                aria-label="Copy address"
+                className="cursor-pointer rounded-lg px-2 py-1 hover:bg-muted transition-colors w-full"
+              >
+                <span className="font-mono text-xs text-foreground break-all text-center leading-relaxed block">
+                  {showFull ? publicKey : chunked}
+                </span>
+              </button>
+              <button
+                onClick={() => setShowFull((prev) => !prev)}
+                aria-expanded={showFull}
+                className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {showFull ? 'Hide full address' : 'Show full address'}
+              </button>
             </div>
           </div>
 
@@ -79,6 +101,19 @@ export default function Receive() {
             )}
           </Button>
 
+          {publicKey && (
+            <Button variant="outline" className="w-full" asChild>
+              <a
+                href={getExplorerAccountUrl(publicKey, activeNetwork.id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5"
+              >
+                View on {getExplorerName()} <ExternalLink size={14} />
+              </a>
+            </Button>
+          )}
+
           <div className="rounded-xl bg-muted px-4 py-3 w-full">
             <p className="text-xs text-muted-foreground text-center leading-relaxed">
               Only send Stellar assets to this address. Sending other assets may result in permanent
@@ -87,6 +122,10 @@ export default function Receive() {
           </div>
         </div>
       </div>
+
+      <span aria-live="polite" className="sr-only">
+        {copied ? 'Address copied to clipboard' : ''}
+      </span>
     </Layout>
   )
 }

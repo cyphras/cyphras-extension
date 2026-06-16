@@ -32,6 +32,9 @@ export default function WalletNavbar() {
         <div className="flex items-center min-w-0">
           <button
             onClick={() => accounts.length > 0 && setAccountSwitcherOpen(true)}
+            aria-label="Switch account"
+            aria-haspopup="dialog"
+            aria-expanded={accountSwitcherOpen}
             className={`flex items-center gap-2 rounded-lg px-1.5 py-1 transition-colors min-w-0 ${
               accounts.length > 0 ? 'hover:bg-muted cursor-pointer' : 'cursor-default'
             }`}
@@ -62,9 +65,12 @@ export default function WalletNavbar() {
                   e.stopPropagation()
                   setNetworkPickerOpen(true)
                 }}
+                aria-label={`Network: ${activeNetwork.name}. Change network`}
+                aria-haspopup="dialog"
+                aria-expanded={networkPickerOpen}
                 className="cursor-pointer flex items-center gap-1.5 rounded-md px-0.5 -mx-0.5 hover:bg-muted transition-colors"
               >
-                <div className={`h-1.5 w-1.5 rounded-full ${dotColor}`} />
+                <div className={`h-1.5 w-1.5 rounded-full ${dotColor}`} aria-hidden="true" />
                 <span className="text-xs text-muted-foreground">{activeNetwork.name}</span>
               </button>
             </div>
@@ -74,12 +80,15 @@ export default function WalletNavbar() {
         <div className="flex items-center gap-0.5 shrink-0">
           <button
             onClick={() => navigate('/settings')}
+            aria-label="Settings"
             className="cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
             <Settings size={18} />
           </button>
           <button
             onClick={isSidePanelOpen ? closeSidePanel : openSidePanel}
+            aria-label={isSidePanelOpen ? 'Close side panel' : 'Open side panel'}
+            aria-pressed={isSidePanelOpen}
             className="cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
             {isSidePanelOpen ? <PanelRightClose size={18} /> : <PanelRight size={18} />}

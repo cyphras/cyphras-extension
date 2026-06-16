@@ -13,8 +13,11 @@ import { Button } from '@/components/ui/button'
 import { AutoSkeleton } from '@/components/AutoSkeleton'
 import { StellarAvatar } from '@/components/StellarAvatar'
 import { OpIcon } from '@/components/OpIcon'
+import { PhaseBadge } from '@/components/PhaseBadge'
 import type { Operation } from '@/hooks/useHistory'
 import { getDirection, getOpLabel, getAmountDisplay, stroopsToXlm } from '@/lib/historyUtils'
+import { splitPhase } from '@/lib/phase'
+import { SERVICE_TYPES } from '@constants/services'
 
 interface TxDetails {
   ledger: number
@@ -53,6 +56,7 @@ interface Props {
   getExplorerTxUrl: (hash: string, networkId: string) => string
   networkId: string
   networkName: string
+  onAction?: () => void
   zIndex?: string
 }
 
@@ -65,6 +69,7 @@ export default function OperationDetailSheet({
   getExplorerTxUrl,
   networkId,
   networkName,
+  onAction,
   zIndex = 'z-[70]',
 }: Props) {
   const isOpen = op !== null
@@ -76,9 +81,15 @@ export default function OperationDetailSheet({
   const [xdrOpen, setXdrOpen] = useState(false)
   const [hashCopied, setHashCopied] = useState(false)
   const [xdrCopied, setXdrCopied] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!op) return
+    setActionError(null)
+  }, [op?.id])
+
+  useEffect(() => {
+    if (!op || !op.transaction_hash) return
     setTxDetails(null)
     setXdrOpen(false)
     fetch(`${horizonUrl}/transactions/${op.transaction_hash}`)
@@ -114,6 +125,34 @@ export default function OperationDetailSheet({
     )
   }
 
+  // Recovering reveals each failed split back to the sender; retrying re-delivers it to the recipient.
+  async function privateAction(type: string, counters: number[]): Promise<void> {
+    if (counters.length === 0 || submitting) {
+      return
+    }
+    setSubmitting(true)
+    setActionError(null)
+    let failure = ''
+    for (const counter of counters) {
+      const res = await new Promise<{ error?: string }>((resolve) => {
+        chrome.runtime.sendMessage({ type, counter }, (r) => resolve(r ?? {}))
+      })
+      if (res?.error) {
+        failure = res.error
+        break
+      }
+    }
+    setSubmitting(false)
+    if (failure) {
+      // Keep the sheet open and show the reason so the action can be retried.
+      setActionError(failure)
+      onAction?.()
+      return
+    }
+    onAction?.()
+    onClose()
+  }
+
   function formatHostFunction(fn: string): string {
     if (fn === 'HostFunctionTypeHostFunctionTypeInvokeContract') return 'Invoke contract'
     if (fn === 'HostFunctionTypeHostFunctionTypeCreateContract') return 'Create contract'
@@ -142,6 +181,7 @@ export default function OperationDetailSheet({
           <p className="text-sm font-semibold text-foreground">{label}</p>
           <button
             onClick={onClose}
+            aria-label="Close"
             className="cursor-pointer rounded-lg p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
           >
             <X size={16} />
@@ -152,18 +192,24 @@ export default function OperationDetailSheet({
           <div className="rounded-xl bg-card p-4 flex items-center gap-4">
             <OpIcon op={cur} publicKey={publicKey} iconMap={iconMap} />
             <div className="flex flex-col gap-0.5 min-w-0">
-              {amount?.amount && (
+              {amount?.amount ? (
                 <p
-                  className={`text-xl font-bold ${dir === 'in' ? 'text-green-500' : 'text-foreground'}`}
+                  className={`text-xl font-bold ${dir === 'in' ? 'text-green-500' : dir === 'out' ? 'text-red-500' : 'text-foreground'}`}
                 >
                   {dir === 'in' ? '+' : dir === 'out' ? '-' : ''}
                   {amount.amount}
+                  {amount.code && (
+                    <span className="text-sm font-normal text-muted-foreground">
+                      {' '}
+                      {amount.code}
+                    </span>
+                  )}
                 </p>
-              )}
-              {amount?.code && (
+              ) : amount?.code ? (
                 <p className="text-sm text-muted-foreground font-mono">{amount.code}</p>
+              ) : (
+                <p className="text-sm text-muted-foreground">{label}</p>
               )}
-              {!amount && <p className="text-sm text-muted-foreground">{label}</p>}
             </div>
           </div>
 
@@ -312,10 +358,31 @@ export default function OperationDetailSheet({
                 <Row label="Merged into" value={<AddrVal addr={cur.into} />} />
               </>
             )}
-            {cur.type === 'invoke_host_function' && (
+            {cur.type === 'invoke_host_function' && !cur.cyphras_private && (
               <>
                 <Row label="Type" value="Contract call" />
                 {cur.function && <Row label="Function" value={formatHostFunction(cur.function)} />}
+              </>
+            )}
+            {cur.cyphras_private && (
+              <>
+                <Row
+                  label="Type"
+                  value={cur.cyphras_private.direction === 'out' ? 'Private send' : 'Received'}
+                />
+                <Row
+                  label="Asset"
+                  value={<span className="font-mono font-medium">{cur.cyphras_private.asset}</span>}
+                />
+                {cur.cyphras_private.recipient && (
+                  <Row label="To" value={<AddrVal addr={cur.cyphras_private.recipient} />} />
+                )}
+                {cur.cyphras_private.splits !== undefined && (
+                  <Row label="Private splits" value={String(cur.cyphras_private.splits)} mono />
+                )}
+                {cur.cyphras_private.phase && (
+                  <Row label="Delivery" value={<PhaseBadge phase={cur.cyphras_private.phase} />} />
+                )}
               </>
             )}
             {cur.type === 'claim_claimable_balance' && (
@@ -369,93 +436,177 @@ export default function OperationDetailSheet({
                 {cur.name && <Row label="Key" value={cur.name} mono />}
               </>
             )}
-            <Row label="Operation ID" value={`${cur.id.slice(0, 10)}...`} mono />
+            {cur.type !== 'private_send' && (
+              <Row label="Operation ID" value={`${cur.id.slice(0, 10)}...`} mono />
+            )}
           </div>
 
-          <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
-            <p className="text-xs font-medium text-foreground">Transaction</p>
-            <div className="h-px bg-border" />
-            <div className="flex justify-between gap-2">
-              <span className="text-xs text-muted-foreground shrink-0">Hash</span>
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="text-xs font-mono text-foreground">
-                  {cur.transaction_hash.slice(0, 6)}...{cur.transaction_hash.slice(-4)}
-                </span>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(cur.transaction_hash)
-                    setHashCopied(true)
-                    window.setTimeout(() => setHashCopied(false), 2000)
-                  }}
-                  className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                >
-                  {hashCopied ? <Check size={11} /> : <Copy size={11} />}
-                </button>
-              </div>
-            </div>
-            <AutoSkeleton loading={!txDetails}>
-              <Row
-                label="Ledger"
-                value={txDetails ? `#${txDetails.ledger.toLocaleString()}` : '-'}
-                mono
-              />
-              <Row
-                label="Fee charged"
-                value={txDetails ? `${stroopsToXlm(txDetails.fee_charged)} XLM` : '-'}
-                mono
-              />
-              <Row label="Network" value={networkName} />
-              {txDetails?.memo && txDetails.memo_type !== 'none' && (
-                <Row label={`Memo (${txDetails.memo_type})`} value={txDetails.memo} />
-              )}
-            </AutoSkeleton>
-          </div>
-
-          <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-0">
-            <button
-              onClick={() => setXdrOpen((p) => !p)}
-              className="cursor-pointer flex items-center justify-between text-xs text-muted-foreground hover:text-foreground w-full py-0.5"
-            >
-              <span>Envelope XDR</span>
-              {xdrOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-            </button>
-            {xdrOpen &&
-              (txDetails?.envelope_xdr ? (
-                <div className="relative rounded-lg bg-muted p-3 mt-2">
-                  <p className="font-mono text-xs text-muted-foreground break-all leading-relaxed pr-6">
-                    {txDetails.envelope_xdr}
-                  </p>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(txDetails.envelope_xdr)
-                      setXdrCopied(true)
-                      window.setTimeout(() => setXdrCopied(false), 2000)
-                    }}
-                    className="cursor-pointer absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    {xdrCopied ? <Check size={12} /> : <Copy size={12} />}
-                  </button>
+          {cur.cyphras_private?.splitsDetail && cur.cyphras_private.splitsDetail.length > 0 && (
+            <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
+              <p className="text-xs font-medium text-foreground">
+                Private splits ({cur.cyphras_private.splitsDetail.length})
+              </p>
+              <div className="h-px bg-border" />
+              {cur.cyphras_private.splitsDetail.map((s, i) => (
+                <div key={i} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="text-foreground">
+                    {s.amount} {cur.cyphras_private!.asset}
+                  </span>
+                  <PhaseBadge phase={splitPhase(s.status, s.scheduledFor)} size={12} />
                 </div>
-              ) : (
-                <div className="rounded-lg bg-muted p-3 mt-2 animate-pulse h-12" />
               ))}
-          </div>
+            </div>
+          )}
+
+          {cur.transaction_hash && (
+            <>
+              <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
+                <p className="text-xs font-medium text-foreground">Transaction</p>
+                <div className="h-px bg-border" />
+                <div className="flex justify-between gap-2">
+                  <span className="text-xs text-muted-foreground shrink-0">Hash</span>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-xs font-mono text-foreground">
+                      {cur.transaction_hash.slice(0, 6)}...{cur.transaction_hash.slice(-4)}
+                    </span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(cur.transaction_hash)
+                        setHashCopied(true)
+                        window.setTimeout(() => setHashCopied(false), 2000)
+                      }}
+                      aria-label={hashCopied ? 'Transaction hash copied' : 'Copy transaction hash'}
+                      className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                    >
+                      {hashCopied ? <Check size={11} /> : <Copy size={11} />}
+                    </button>
+                  </div>
+                </div>
+                <AutoSkeleton loading={!txDetails}>
+                  <Row
+                    label="Ledger"
+                    value={txDetails ? `#${txDetails.ledger.toLocaleString()}` : '-'}
+                    mono
+                  />
+                  <Row
+                    label="Fee charged"
+                    value={txDetails ? `${stroopsToXlm(txDetails.fee_charged)} XLM` : '-'}
+                    mono
+                  />
+                  <Row label="Network" value={networkName} />
+                  {txDetails?.memo && txDetails.memo_type !== 'none' && (
+                    <Row label={`Memo (${txDetails.memo_type})`} value={txDetails.memo} />
+                  )}
+                </AutoSkeleton>
+              </div>
+
+              <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-0">
+                <button
+                  onClick={() => setXdrOpen((p) => !p)}
+                  aria-expanded={xdrOpen}
+                  className="cursor-pointer flex items-center justify-between text-xs text-muted-foreground hover:text-foreground w-full py-0.5"
+                >
+                  <span>Envelope XDR</span>
+                  {xdrOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                </button>
+                {xdrOpen &&
+                  (txDetails?.envelope_xdr ? (
+                    <div className="relative rounded-lg bg-muted p-3 mt-2">
+                      <p className="font-mono text-xs text-muted-foreground break-all leading-relaxed pr-6">
+                        {txDetails.envelope_xdr}
+                      </p>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(txDetails.envelope_xdr)
+                          setXdrCopied(true)
+                          window.setTimeout(() => setXdrCopied(false), 2000)
+                        }}
+                        aria-label={xdrCopied ? 'Envelope XDR copied' : 'Copy envelope XDR'}
+                        className="cursor-pointer absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {xdrCopied ? <Check size={12} /> : <Copy size={12} />}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="rounded-lg bg-muted p-3 mt-2 animate-pulse h-12" />
+                  ))}
+              </div>
+            </>
+          )}
         </div>
 
-        <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
-          <Button variant="outline" className="flex-1" asChild>
-            <a
-              href={getExplorerTxUrl(cur.transaction_hash, networkId)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1.5"
-            >
-              View on explorer <ExternalLink size={14} />
-            </a>
-          </Button>
-          <Button variant="outline" className="flex-1" onClick={onClose}>
-            Close
-          </Button>
+        <div className="flex flex-col gap-3 border-t border-border px-5 py-4 shrink-0">
+          {cur.cyphras_private?.direction === 'out' &&
+            (cur.cyphras_private.failedCounters?.length ?? 0) > 0 && (
+              <div className="flex gap-3">
+                <Button
+                  className="flex-1"
+                  disabled={submitting}
+                  onClick={() =>
+                    void privateAction(
+                      SERVICE_TYPES.PRIVATE_RECOVER_NOTE,
+                      cur.cyphras_private?.failedCounters ?? []
+                    )
+                  }
+                >
+                  {submitting ? 'Recovering' : 'Recover to my wallet'}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  disabled={submitting}
+                  onClick={() =>
+                    void privateAction(
+                      SERVICE_TYPES.PRIVATE_REVEAL_NOTE,
+                      cur.cyphras_private?.failedCounters ?? []
+                    )
+                  }
+                >
+                  Deliver again
+                </Button>
+              </div>
+            )}
+          {cur.cyphras_private?.direction === 'out' &&
+            (cur.cyphras_private.reclaimableCounters?.length ?? 0) > 0 && (
+              <Button
+                variant="outline"
+                className="w-full"
+                disabled={submitting}
+                onClick={() =>
+                  void privateAction(
+                    SERVICE_TYPES.PRIVATE_SELF_RECLAIM,
+                    cur.cyphras_private?.reclaimableCounters ?? []
+                  )
+                }
+              >
+                {submitting ? 'Reclaiming' : 'Reclaim to my wallet'}
+              </Button>
+            )}
+          {actionError && (
+            <div className="flex flex-col gap-1">
+              <p className="text-xs text-foreground">
+                Could not complete that just now. Your funds are safe in the pool, try again.
+              </p>
+              <p className="text-xs text-muted-foreground">{actionError}</p>
+            </div>
+          )}
+          <div className="flex gap-3">
+            {cur.transaction_hash && (
+              <Button variant="outline" className="flex-1" asChild>
+                <a
+                  href={getExplorerTxUrl(cur.transaction_hash, networkId)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5"
+                >
+                  View on explorer <ExternalLink size={14} />
+                </a>
+              </Button>
+            )}
+            <Button variant="outline" className="flex-1" onClick={onClose}>
+              Close
+            </Button>
+          </div>
         </div>
       </div>
     </div>
