@@ -1,4 +1,6 @@
 import type { Operation } from '@/hooks/useHistory'
+import type { PrivateNote } from '@ext-types/index'
+import { summarizePhase } from '@/lib/phase'
 
 export function parseAsset(assetStr?: string): { code: string; issuer?: string } {
   if (!assetStr || assetStr === 'native') return { code: 'XLM' }
@@ -7,6 +9,7 @@ export function parseAsset(assetStr?: string): { code: string; issuer?: string }
 }
 
 export function getDirection(op: Operation, publicKey: string): 'in' | 'out' | 'neutral' {
+  if (op.cyphras_private) return op.cyphras_private.direction
   if (
     op.type === 'payment' ||
     op.type === 'path_payment_strict_send' ||
@@ -21,6 +24,11 @@ export function getDirection(op: Operation, publicKey: string): 'in' | 'out' | '
 }
 
 export function getOpLabel(op: Operation, publicKey: string): string {
+  if (op.cyphras_private) {
+    // Recipient sees a plain "Received": they must not learn the funds came from a private pool.
+    // Only the sender, on their own device, sees "Private sent".
+    return op.cyphras_private.direction === 'out' ? 'Private sent' : 'Received'
+  }
   switch (op.type) {
     case 'payment':
       return getDirection(op, publicKey) === 'in' ? 'Received' : 'Sent'
@@ -54,15 +62,24 @@ export function getOpLabel(op: Operation, publicKey: string): string {
   }
 }
 
+// Trim trailing zeros from a decimal amount string without rounding: "10.5800000" -> "10.58".
+export function trimZeros(s: string): string {
+  if (!s.includes('.')) return s
+  return s.replace(/\.?0+$/, '')
+}
+
 export function getAmountDisplay(op: Operation): { amount: string; code: string } | null {
+  if (op.cyphras_private) {
+    return { amount: trimZeros(op.cyphras_private.amount), code: op.cyphras_private.asset }
+  }
   if (op.type === 'create_account' && op.starting_balance)
-    return { amount: op.starting_balance, code: 'XLM' }
+    return { amount: trimZeros(op.starting_balance), code: 'XLM' }
   if (op.type === 'create_claimable_balance' && op.amount) {
-    return { amount: op.amount, code: parseAsset(op.asset).code }
+    return { amount: trimZeros(op.amount), code: parseAsset(op.asset).code }
   }
   if (op.amount) {
     const code = op.asset_type === 'native' ? 'XLM' : (op.asset_code ?? '')
-    return { amount: op.amount, code }
+    return { amount: trimZeros(op.amount), code }
   }
   if (op.type === 'change_trust' && op.asset_code) return { amount: '', code: op.asset_code }
   return null
@@ -135,4 +152,126 @@ export function isRelatedToAsset(
     default:
       return false
   }
+}
+
+// Group a sender's notes by batchId, so two sends to the same recipient stay distinct regardless of
+// timing. Legacy notes without a batchId fall back to a recipient + asset + 120s-window heuristic.
+export function groupSenderNotes(notes: PrivateNote[]): PrivateNote[][] {
+  const sorted = notes.slice().sort((a, b) => a.counter - b.counter)
+  const groups: PrivateNote[][] = []
+  for (const n of sorted) {
+    const g = groups[groups.length - 1]
+    const last = g?.[g.length - 1]
+    const sameBatch =
+      !!last &&
+      (n.batchId || last.batchId
+        ? n.batchId === last.batchId
+        : last.recipient === n.recipient &&
+          last.asset === n.asset &&
+          Math.abs((n.createdAt ?? 0) - (last.createdAt ?? 0)) < 120_000)
+    if (sameBatch) g.push(n)
+    else groups.push([n])
+  }
+  return groups
+}
+
+// A note normally delivers within its privacy delay; only past that window plus a margin is it treated
+// as stuck and offered for direct reclaim, so a healthy in-flight send is not framed as cancellable.
+function stuckThresholdMs(level: string): number {
+  const maxDelay = level === 'fast' ? 5 * 60_000 : level === 'maximum' ? 45 * 60_000 : 20 * 60_000
+  return maxDelay + 5 * 60_000
+}
+
+function buildSenderRow(
+  group: PrivateNote[],
+  formatStroops: (stroops: string, asset: string) => string
+): Operation {
+  const asset = group[0].asset
+  const total = group.reduce((sum, n) => sum + BigInt(n.denomination), 0n)
+  const count = group.length
+  const phase = summarizePhase(group)
+  const createdAt = Math.max(...group.map((n) => n.createdAt ?? 0))
+  return {
+    id: `private-send-${group[0].counter}`,
+    type: 'private_send',
+    created_at: new Date(createdAt).toISOString(),
+    // No tx hash on the grouped row: linking to a commit would expose the sender on-chain, and the
+    // empty hash also hides the explorer link and tx card.
+    transaction_hash: '',
+    cyphras_private: {
+      direction: 'out',
+      amount: formatStroops(total.toString(), asset),
+      asset,
+      recipient: group[0].recipient,
+      splits: count,
+      phase,
+      splitsDetail: group.map((n) => ({
+        amount: formatStroops(n.denomination, asset),
+        status: n.recovered ? (n.status === 'revealed' ? 'recovered' : 'recovering') : n.status,
+        scheduledFor: n.scheduledFor,
+      })),
+      failedCounters: group.filter((n) => n.status === 'failed').map((n) => n.counter),
+      reclaimableCounters: group
+        .filter(
+          (n) =>
+            (n.status === 'committed' || n.status === 'scheduled') &&
+            Date.now() - (n.createdAt ?? 0) > stuckThresholdMs(n.privacyLevel)
+        )
+        .map((n) => n.counter),
+    },
+  }
+}
+
+// Fold private payments into the Horizon op list: a sender's commits collapse into one "Private sent"
+// row, and a pool crediting this account becomes "Private received".
+export function enrichWithPrivate(
+  ops: Operation[],
+  notes: PrivateNote[],
+  poolSet: Set<string>,
+  publicKey: string,
+  formatStroops: (stroops: string, asset: string) => string
+): Operation[] {
+  const committedHashes = new Set(
+    notes.flatMap((n) => [n.txHash, n.revealTxHash]).filter((h): h is string => !!h)
+  )
+  const senderRows = groupSenderNotes(notes).map((g) => buildSenderRow(g, formatStroops))
+
+  const rest: Operation[] = []
+  for (const op of ops) {
+    if (op.transaction_hash && committedHashes.has(op.transaction_hash)) {
+      continue // a commit, now represented by its grouped sender row
+    }
+    if (op.type === 'invoke_host_function' && poolSet.size > 0) {
+      const changes = op.asset_balance_changes ?? []
+      const recv = changes.find((c) => c.to === publicKey && !!c.from && poolSet.has(c.from))
+      if (recv) {
+        rest.push({
+          ...op,
+          cyphras_private: {
+            direction: 'in',
+            amount: recv.amount ?? '0',
+            asset: recv.asset_type === 'native' ? 'XLM' : (recv.asset_code ?? ''),
+          },
+        })
+        continue
+      }
+      // Fallback when the in-band changes carry no pool credit: treat an effects-stream credit as a
+      // private receive. The effect lacks the source contract, so this is best-effort, not proof.
+      if (op.credited_effect) {
+        const c = op.credited_effect
+        rest.push({
+          ...op,
+          cyphras_private: {
+            direction: 'in',
+            amount: c.amount,
+            asset: c.asset_type === 'native' ? 'XLM' : (c.asset_code ?? ''),
+          },
+        })
+        continue
+      }
+    }
+    rest.push(op)
+  }
+
+  return [...senderRows, ...rest].sort((a, b) => b.created_at.localeCompare(a.created_at))
 }

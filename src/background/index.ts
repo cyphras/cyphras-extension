@@ -30,6 +30,7 @@ import {
   decryptString,
   validateMnemonic,
   verifyPassword,
+  changePassword,
   getHDWallets,
   saveHDWallets,
   getImportedKeys,
@@ -58,6 +59,24 @@ import {
   revokeAllAccess,
   getConnectedApps,
 } from './allowlistManager'
+import {
+  prepareSend,
+  revealNote,
+  recoverNote,
+  recoverFromSeed,
+  selfReclaim,
+  processNotes,
+  listNotes,
+  quoteSend,
+  NoteNotReadyError,
+  NoPoolError,
+  type PrivateEnv,
+  type ProcessDeps,
+  type SendParams,
+  type SubmitReveal,
+} from './privatePayments'
+import { NonRepresentableAmountError } from '../private/denominations'
+import { generateProof } from './offscreenProver'
 import {
   trackInstall,
   trackDailyPing,
@@ -217,10 +236,9 @@ function scValSpecToXdr(spec: ScValSpec): xdr.ScVal {
 }
 
 interface SorobanSimResult {
-  results?: Array<{ xdr?: string }>
+  results?: Array<{ xdr?: string; auth?: string[] }>
   minResourceFee?: string
   transactionData?: string
-  auth?: string[]
   error?: string
 }
 
@@ -241,6 +259,56 @@ async function sorobanSimulate(rpcUrl: string, txXdr: string): Promise<SorobanSi
     return data.result ?? null
   } catch {
     return null
+  }
+}
+
+// Congestion-aware inclusion fee from fee_stats so a commit bids competitively when the network is
+// busy. Falls back to the base fee when fee_stats is unavailable.
+async function fetchInclusionFeeStroops(horizonUrl: string): Promise<number> {
+  const fallback = parseInt(BASE_FEE, 10)
+  try {
+    const res = await fetch(`${horizonUrl}/fee_stats`)
+    if (!res.ok) return fallback
+    const data = (await res.json()) as { max_fee?: { mode?: string; p10?: string } }
+    const base = Math.max(parseInt(data.max_fee?.p10 ?? '') || fallback, fallback)
+    return Math.max(parseInt(data.max_fee?.mode ?? '') || fallback, base * 5)
+  } catch {
+    return fallback
+  }
+}
+
+// Estimate the per-commit max fee by simulating one commit; never signs or submits. Returns "0" when
+// simulation is unavailable so the caller can show the relayer fee alone rather than a fabricated number.
+async function estimateCommitFeeStroops(
+  net: NetworkConfig,
+  source: string,
+  pool: string,
+  relayerFeeStroops: string
+): Promise<string> {
+  if (!net.sorobanRpcUrl) return '0'
+  try {
+    const inclusionFee = await fetchInclusionFeeStroops(net.horizonUrl)
+    const args = [
+      nativeToScVal(source, { type: 'address' }),
+      nativeToScVal(Buffer.alloc(32), { type: 'bytes' }),
+      nativeToScVal(BigInt(relayerFeeStroops), { type: 'i128' }),
+    ]
+    const op = new Contract(pool).call('commit', ...args)
+    const accountRes = await fetch(`${net.horizonUrl}/accounts/${source}`)
+    if (!accountRes.ok) return '0'
+    const accountData = (await accountRes.json()) as { sequence: string }
+    const baseTx = new TransactionBuilder(new Account(source, accountData.sequence), {
+      fee: String(inclusionFee),
+      networkPassphrase: net.passphrase,
+    })
+      .addOperation(op)
+      .setTimeout(60)
+      .build()
+    const sim = await sorobanSimulate(net.sorobanRpcUrl, baseTx.toEnvelope().toXDR('base64'))
+    if (!sim || sim.error || !sim.minResourceFee) return '0'
+    return String(inclusionFee + parseInt(sim.minResourceFee, 10))
+  } catch {
+    return '0'
   }
 }
 
@@ -336,10 +404,267 @@ async function requireUnlockedAndAllowed(
   return resolvedPubkey
 }
 
+const PRIVATE_ALARM = 'cyphras_private_processor'
+
+function setupPrivateProcessorAlarm(): void {
+  chrome.alarms.get(PRIVATE_ALARM, (existing: chrome.alarms.Alarm | undefined) => {
+    if (!existing) {
+      chrome.alarms.create(PRIVATE_ALARM, { periodInMinutes: 1 })
+    }
+  })
+}
+
+// Map private-payment internals to user-safe copy. Raw RPC/relayer/XDR strings leak topology, so
+// anything unrecognized falls back to a generic message instead of being passed through.
+function friendlyPrivateError(err: unknown, asset: string): string {
+  if (err instanceof NoPoolError) {
+    return `No privacy pool is available for ${asset} yet.`
+  }
+  if (err instanceof NonRepresentableAmountError) {
+    return "This amount can't be split into the available privacy denominations. Try a rounder amount."
+  }
+  return 'Private payment service is temporarily unavailable. Try again shortly.'
+}
+
+// A reveal pays via SAC transfer (cannot fund a new account; wrapped assets need a trustline). Verify
+// both before commit so funds never enter an undeliverable pool. Returns null on OK or transient error.
+async function recipientReceiveError(
+  net: NetworkConfig,
+  recipient: string,
+  assetCfg: { asset: string; issuer?: string }
+): Promise<string | null> {
+  let acc: { balances?: { asset_code?: string; asset_issuer?: string }[] }
+  try {
+    const res = await fetch(`${net.horizonUrl}/accounts/${recipient}`)
+    if (res.status === 404) {
+      return 'Recipient account is not activated yet. They need to fund it first.'
+    }
+    if (!res.ok) {
+      return null
+    }
+    acc = (await res.json()) as typeof acc
+  } catch {
+    return null
+  }
+  // Any existing account can receive the native asset; no trustline needed.
+  if (!assetCfg.issuer) {
+    return null
+  }
+  const hasTrustline = (acc.balances ?? []).some(
+    (b) => b.asset_code === assetCfg.asset && b.asset_issuer === assetCfg.issuer
+  )
+  if (!hasTrustline) {
+    return `Recipient has no ${assetCfg.asset} trustline yet. They need to add it before they can receive.`
+  }
+  return null
+}
+
+// A payment cannot create an unfunded destination, so a never-funded account is created with XLM
+// instead. A non-native asset can never reach a missing account, and a new account needs >= 1 XLM.
+async function buildTransferOperation(
+  horizonUrl: string,
+  destination: string,
+  asset: Asset,
+  amount: string
+) {
+  const res = await fetch(`${horizonUrl}/accounts/${destination}`)
+  if (res.ok) {
+    return Operation.payment({ destination, asset, amount })
+  }
+  if (res.status === 404) {
+    if (!asset.isNative()) {
+      throw new Error(
+        'Recipient account is not activated. Send it XLM first to create the account.'
+      )
+    }
+    if (Number(amount) < 1) {
+      throw new Error('Sending to a new account requires at least 1 XLM to activate it.')
+    }
+    return Operation.createAccount({ destination, startingBalance: amount })
+  }
+  // A transient Horizon error: fall back to payment and let submission surface the real failure.
+  return Operation.payment({ destination, asset, amount })
+}
+
+// Builds the shared private-payment env. Note derivation keys off the active account's secret, so the
+// secret must control the active account; a mismatch is refused. Returns null when locked or mismatched.
+async function buildPrivateEnv(net: NetworkConfig): Promise<PrivateEnv | null> {
+  const secret = await getSessionSecret()
+  const session = await chrome.storage.session?.get(SESSION_KEY)
+  const source = session?.[SESSION_KEY] as string | undefined
+  if (!secret || !source) {
+    return null
+  }
+  let derivedPublicKey: string
+  try {
+    derivedPublicKey = Keypair.fromSecret(secret).publicKey()
+  } catch {
+    return null
+  }
+  if (derivedPublicKey !== source) {
+    return null
+  }
+  return {
+    factory: {
+      factoryId: net.privatePoolFactory ?? '',
+      rpcUrl: net.sorobanRpcUrl,
+      networkPassphrase: net.passphrase,
+    },
+    relayerUrl: net.relayerUrl ?? '',
+    network: net.id,
+    source,
+    secret,
+    horizonUrl: net.horizonUrl,
+    tokens: net.privateAssets?.map((a) => a.token) ?? [],
+    // Same timeout used to build the commit tx, so the resubmit window outlasts the tx validity
+    // window and a still-pending commit is never double-submitted.
+    txTimeout: net.txTimeout ?? 90,
+  }
+}
+
+// Build the env + deps the background note processor needs, or null when the wallet is locked or the
+// active network has no private-payment config.
+async function buildPrivateContext(): Promise<{ env: PrivateEnv; deps: ProcessDeps } | null> {
+  const net = await getActiveNetwork()
+  if (!net.sorobanRpcUrl || !net.privatePoolFactory || !net.relayerUrl) {
+    return null
+  }
+  const env = await buildPrivateEnv(net)
+  if (!env) {
+    return null
+  }
+  const deps: ProcessDeps = {
+    submitCommit: async (pool, innerHex, relayerFee, onBroadcast) => {
+      // Re-read the key at sign time so a wallet locked since the pass started aborts instead of
+      // signing with a stale secret.
+      const freshSecret = await getSessionSecret()
+      if (!freshSecret) {
+        throw new Error('wallet locked')
+      }
+      // Same congestion-aware inclusion fee the quote estimated, so the confirmed max fee matches what is paid.
+      const inclusionFee = await fetchInclusionFeeStroops(net.horizonUrl)
+      const args = [
+        nativeToScVal(env.source, { type: 'address' }),
+        nativeToScVal(Buffer.from(innerHex, 'hex'), { type: 'bytes' }),
+        nativeToScVal(relayerFee, { type: 'i128' }),
+      ]
+      return {
+        txHash: await invokeSignedContract(
+          net,
+          freshSecret,
+          env.source,
+          pool,
+          'commit',
+          args,
+          onBroadcast,
+          String(inclusionFee)
+        ),
+      }
+    },
+    generateProof,
+    isUnlocked: async () => {
+      const s = await chrome.storage.session?.get(SESSION_KEY)
+      return !!s?.[SESSION_KEY]
+    },
+  }
+  return { env, deps }
+}
+
+// Sign and submit pool.reveal from the active account for a self-reclaim (recipient = relayer = self),
+// sourced and paid by the user, bypassing the relayer entirely.
+function makeSubmitReveal(net: NetworkConfig, source: string): SubmitReveal {
+  return async (pool, proved) => {
+    const freshSecret = await getSessionSecret()
+    if (!freshSecret) {
+      throw new Error('wallet locked')
+    }
+    const inclusionFee = await fetchInclusionFeeStroops(net.horizonUrl)
+    const bytes = (hex: string) => nativeToScVal(Buffer.from(hex, 'hex'), { type: 'bytes' })
+    const args = [
+      bytes(proved.proof),
+      bytes(proved.root),
+      bytes(proved.nullifierHash),
+      bytes(proved.amountHash),
+      nativeToScVal(proved.recipient, { type: 'address' }),
+      nativeToScVal(proved.relayer, { type: 'address' }),
+      nativeToScVal(BigInt(proved.xlmFee), { type: 'i128' }),
+    ]
+    const txHash = await invokeSignedContract(
+      net,
+      freshSecret,
+      source,
+      pool,
+      'reveal',
+      args,
+      undefined,
+      String(inclusionFee)
+    )
+    return { txHash }
+  }
+}
+
+// Coalesce concurrent triggers into one active pass plus at most one queued rerun. Serialised storage
+// writes are guaranteed by processNotes' per-source lock; this flag only avoids redundant passes.
+let privateRunning = false
+let privateRerun = false
+
+async function kickPrivateProcessor(): Promise<void> {
+  if (privateRunning) {
+    privateRerun = true
+    return
+  }
+  privateRunning = true
+  try {
+    do {
+      privateRerun = false
+      const ctx = await buildPrivateContext()
+      if (!ctx) {
+        return
+      }
+      await processNotes(ctx.env, ctx.deps)
+    } while (privateRerun)
+  } catch (err) {
+    console.error('private note processor failed', err)
+  } finally {
+    privateRunning = false
+  }
+}
+
+// Best-effort: rebuild any note this account committed on-chain that is missing locally (cleared
+// storage, reinstall, new device), then process them. Never throws.
+let privateRecovering = false
+const lastRecoveryAt = new Map<string, number>()
+const RECOVERY_THROTTLE_MS = 120_000
+
+// force re-scans now (unlock / account switch); throttled callers (a History refresh poll) re-scan at
+// most once per window so polling does not hammer Horizon.
+async function kickPrivateRecovery(force = false): Promise<void> {
+  if (privateRecovering) {
+    return
+  }
+  privateRecovering = true
+  try {
+    const ctx = await buildPrivateContext()
+    if (ctx) {
+      const last = lastRecoveryAt.get(ctx.env.source) ?? 0
+      if (force || Date.now() - last >= RECOVERY_THROTTLE_MS) {
+        lastRecoveryAt.set(ctx.env.source, Date.now())
+        await recoverFromSeed(ctx.env)
+      }
+    }
+  } catch (err) {
+    console.error('private note recovery failed', err)
+  } finally {
+    privateRecovering = false
+  }
+  void kickPrivateProcessor()
+}
+
 chrome.runtime.onInstalled.addListener(async (details) => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false })
   chrome.sidePanel.setOptions({ path: 'wallet.html?ctx=sidepanel', enabled: true })
   setupAnalyticsAlarm()
+  setupPrivateProcessorAlarm()
   if (details.reason === 'install') trackInstall()
 
   const walletExists = await hasWallet()
@@ -352,10 +677,24 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === DAILY_ALARM) trackDailyPing()
+  if (alarm.name === PRIVATE_ALARM) void kickPrivateProcessor()
 })
 
-// Re-register alarm on service-worker restart (MV3 workers can be killed)
+// Re-register alarms on service-worker restart (MV3 workers can be killed)
 setupAnalyticsAlarm()
+setupPrivateProcessorAlarm()
+
+// Resume processing on unlock or account switch: SESSION_KEY appearing means the key needed for
+// commit/reveal is back.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'session' && changes[SESSION_KEY]?.newValue) {
+    void kickPrivateRecovery(true)
+  }
+})
+
+// Resume on worker startup, picking up any note left mid-flight by a killed worker (session storage
+// and the note store survive the restart). No-op while locked.
+void kickPrivateProcessor()
 
 // Restore sidebar-by-default behavior on service-worker restart
 chrome.storage.local.get('cyphras_sidebar_by_default', (result) => {
@@ -1971,9 +2310,8 @@ async function handleExternalRequest(
       }
 
       case EXTERNAL_SERVICE_TYPES.SIMULATE_CONTRACT: {
-        // No wallet unlock required - simulation is read-only and does not need signing.
-        // Use session pubkey if wallet is already unlocked, otherwise fall back to a
-        // placeholder address (sequence number has no effect on simulation output).
+        // Read-only simulation needs no signing: use the session pubkey if unlocked, else a placeholder
+        // (the sequence number does not affect simulation output).
         const scContractId = payload?.contractId as string
         const scMethod = payload?.method as string
         const scArgSpecs = (payload?.args ?? []) as ScValSpec[]
@@ -2377,6 +2715,101 @@ async function checkLockout(): Promise<{ locked: boolean; minutesLeft?: number }
   return { locked: false }
 }
 
+// Build, sign, submit, and confirm a contract call signed by the active account. Mirrors the
+// INVOKE_CONTRACT path without an approval window: the private-send confirm screen is the approval.
+async function invokeSignedContract(
+  net: NetworkConfig,
+  secret: string,
+  source: string,
+  contractId: string,
+  method: string,
+  args: xdr.ScVal[],
+  onBroadcast?: (hash: string) => Promise<void>,
+  // Inclusion-fee bid in stroops; defaults to the base fee. A commit passes a congestion-aware value
+  // so it is not outbid when the network is busy.
+  inclusionFee?: string
+): Promise<string> {
+  if (!net.sorobanRpcUrl) {
+    throw new Error('Soroban RPC not configured for this network')
+  }
+  const op = new Contract(contractId).call(method, ...args)
+  const accountRes = await fetch(`${net.horizonUrl}/accounts/${source}`)
+  if (!accountRes.ok) throw new Error('Failed to load account')
+  const accountData = (await accountRes.json()) as { sequence: string }
+  const baseTx = new TransactionBuilder(new Account(source, accountData.sequence), {
+    fee: inclusionFee ?? BASE_FEE,
+    networkPassphrase: net.passphrase,
+  })
+    .addOperation(op)
+    .setTimeout(net.txTimeout ?? 90)
+    .build()
+
+  const sim = await sorobanSimulate(net.sorobanRpcUrl, baseTx.toEnvelope().toXDR('base64'))
+  if (!sim) throw new Error('Soroban simulation failed')
+  if (sim.error) throw new Error(sim.error)
+
+  const baseFee = parseInt(baseTx.fee, 10)
+  const resourceFee = parseInt(sim.minResourceFee ?? '0', 10)
+  const builder = TransactionBuilder.cloneFrom(baseTx, { fee: String(baseFee + resourceFee) })
+  if (sim.transactionData) {
+    builder.setSorobanData(new SorobanDataBuilder(sim.transactionData).build())
+  }
+  // Soroban RPC returns auth under results[0].auth, not the top level. commit's auth is the source
+  // account, satisfied by the envelope signature; attach it or require_auth traps on-chain.
+  const auth = (sim.results?.[0]?.auth ?? []).map((a) =>
+    xdr.SorobanAuthorizationEntry.fromXDR(a, 'base64')
+  )
+  builder.clearOperations()
+  const baseOp = baseTx.operations[0] as ReturnType<typeof Operation.invokeHostFunction>
+  builder.addOperation(Operation.invokeHostFunction({ ...baseOp, auth }))
+  const assembled = builder.build()
+  assembled.sign(Keypair.fromSecret(secret))
+
+  const sendRes = await fetch(net.sorobanRpcUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'sendTransaction',
+      params: { transaction: assembled.toEnvelope().toXDR('base64') },
+    }),
+  })
+  const sendData = (await sendRes.json()) as {
+    result?: { hash?: string }
+    error?: { message: string }
+  }
+  if (sendData.error || !sendData.result?.hash) {
+    throw new Error(sendData.error?.message ?? 'Failed to send transaction')
+  }
+  const hash = sendData.result.hash
+  // Surface the hash before the slow confirmation poll so the caller can persist it and avoid
+  // resubmitting if the worker is killed mid-confirmation.
+  if (onBroadcast) {
+    await onBroadcast(hash)
+  }
+
+  const server = new SorobanRpc.Server(net.sorobanRpcUrl)
+  const attempts = Math.ceil((net.txTimeout ?? 90) / 2)
+  for (let i = 0; i < attempts; i++) {
+    await new Promise((r) => setTimeout(r, 2000))
+    const poll = await server.getTransaction(hash)
+    if (poll.status === 'SUCCESS') return hash
+    if (poll.status === 'FAILED') {
+      let detail = ''
+      try {
+        detail = `: ${(poll as { resultXdr?: { toXDR(f: string): string } }).resultXdr?.toXDR('base64') ?? ''}`
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`Transaction failed on-chain ${hash}${detail}`)
+    }
+  }
+  // Broadcast but unconfirmed: the commit may still land, so return the hash and let the caller
+  // reconcile against the relayer's indexed leaves.
+  return hash
+}
+
 async function handleService(message: ServicePayload, sendResponse: (r: ServiceResponse) => void) {
   switch (message.type) {
     case SERVICE_TYPES.CREATE_WALLET: {
@@ -2496,18 +2929,24 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
         let activeSecret: string
         let activePublicKey: string
+        // Set when the active account's key is missing and primary is used instead; the stored active
+        // account is realigned below so session and UI never diverge.
+        let coercedToPrimary = false
 
         if (!activeAccount || !activeAccount.walletId || activeAccount.walletId === 'primary') {
           const { secret } = await deriveKeypairRaw(mnemonic, activeAccount?.index ?? 0)
           activeSecret = secret
           activePublicKey = Keypair.fromSecret(secret).publicKey()
         } else if (activeAccount.walletId.startsWith('sk:')) {
-          activeSecret = importedSecrets[activeAccount.walletId] ?? ''
-          activePublicKey = activeAccount.publicKey
-          if (!activeSecret) {
+          const importedSecret = importedSecrets[activeAccount.walletId]
+          if (importedSecret) {
+            activeSecret = importedSecret
+            activePublicKey = activeAccount.publicKey
+          } else {
             const { secret } = await deriveKeypairRaw(mnemonic, 0)
             activeSecret = secret
             activePublicKey = Keypair.fromSecret(secret).publicKey()
+            coercedToPrimary = true
           }
         } else {
           const extraMnemonic = extraMnemonics[activeAccount.walletId]
@@ -2519,7 +2958,15 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
             const { secret } = await deriveKeypairRaw(mnemonic, 0)
             activeSecret = secret
             activePublicKey = Keypair.fromSecret(secret).publicKey()
+            coercedToPrimary = true
           }
+        }
+
+        // Match the stored active account, or the session signs as primary while the UI shows the
+        // unreachable account and a send silently spends primary's funds.
+        if (coercedToPrimary && store.activePublicKey !== activePublicKey) {
+          store.activePublicKey = activePublicKey
+          await saveAccountsStore(store)
         }
 
         await chrome.storage.session?.set({ [SESSION_KEY]: activePublicKey })
@@ -2734,12 +3181,13 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         const account = new Account(pubkey, accountData.sequence)
 
         const asset = assetCode === 'XLM' ? Asset.native() : new Asset(assetCode, assetIssuer)
+        const op = await buildTransferOperation(message.horizonUrl, destination, asset, amount)
 
         let txBuilder = new TransactionBuilder(account, {
           fee: fee ?? BASE_FEE,
           networkPassphrase: message.networkPassphrase,
         })
-          .addOperation(Operation.payment({ destination, asset, amount }))
+          .addOperation(op)
           .setTimeout(timeout ?? 30)
 
         if (memo && memoType === 'text') txBuilder = txBuilder.addMemo(Memo.text(memo))
@@ -2783,12 +3231,13 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         const account = new Account(pubkey, accountData.sequence)
 
         const asset = assetCode === 'XLM' ? Asset.native() : new Asset(assetCode, assetIssuer)
+        const op = await buildTransferOperation(message.horizonUrl, destination, asset, amount)
 
         let txBuilder = new TransactionBuilder(account, {
           fee: fee ?? BASE_FEE,
           networkPassphrase: message.networkPassphrase,
         })
-          .addOperation(Operation.payment({ destination, asset, amount }))
+          .addOperation(op)
           .setTimeout(timeout ?? 30)
 
         if (memo && memoType === 'text') {
@@ -2822,6 +3271,252 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       } catch (err) {
         sendResponse({ error: (err as Error).message })
       }
+      break
+    }
+
+    case SERVICE_TYPES.PRIVATE_QUOTE: {
+      const pqNet = await getActiveNetwork()
+      if (!pqNet.relayerUrl || !pqNet.privatePoolFactory) {
+        sendResponse({ error: 'Private payments are not available on this network' })
+        return
+      }
+      const pqEnv = await buildPrivateEnv(pqNet)
+      if (!pqEnv) {
+        sendResponse({ error: 'Wallet locked' })
+        return
+      }
+      const pq = message as unknown as { asset: string; amount: string; recipient?: string }
+      if (!/^[0-9]+$/.test(pq.amount)) {
+        sendResponse({ error: 'amount must be a positive integer in stroops' })
+        return
+      }
+      try {
+        // Block early (at the quote step) if the recipient cannot receive, before the user confirms.
+        const pqAsset = pqNet.privateAssets?.find((a) => a.asset === pq.asset)
+        if (pq.recipient && pqAsset) {
+          const pqRecvErr = await recipientReceiveError(pqNet, pq.recipient, pqAsset)
+          if (pqRecvErr) {
+            sendResponse({ error: pqRecvErr })
+            return
+          }
+        }
+        const quote = await quoteSend(pq.asset, BigInt(pq.amount), pqEnv)
+        const commitFeeStroops = await estimateCommitFeeStroops(
+          pqNet,
+          pqEnv.source,
+          quote.samplePool,
+          quote.feeStroops
+        )
+        sendResponse({
+          privateQuote: {
+            feeStroops: quote.feeStroops,
+            pieces: quote.pieces,
+            totalNotes: quote.totalNotes,
+            commitFeeStroops,
+          },
+        })
+      } catch (err) {
+        sendResponse({ error: friendlyPrivateError(err, pq.asset) })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.PRIVATE_PREPARE_SEND: {
+      const ppNet = await getActiveNetwork()
+      if (!ppNet.sorobanRpcUrl || !ppNet.privatePoolFactory || !ppNet.relayerUrl) {
+        sendResponse({ error: 'Private payments are not available on this network' })
+        return
+      }
+      const ppEnv = await buildPrivateEnv(ppNet)
+      if (!ppEnv) {
+        sendResponse({ error: 'Wallet locked' })
+        return
+      }
+      const m = message as unknown as {
+        recipient: string
+        asset: string
+        amount: string
+        privacyLevel: SendParams['privacyLevel']
+      }
+      try {
+        // amount is in stroops to match the pool denominations; reject non-integers before BigInt.
+        if (!/^[0-9]+$/.test(m.amount)) {
+          sendResponse({ error: 'amount must be a positive integer in stroops' })
+          return
+        }
+        // The SAC is a trust anchor: resolve it from shipped config, never the message, so a caller
+        // cannot make the commit move a different asset than the user chose.
+        const ppAsset = ppNet.privateAssets?.find((a) => a.asset === m.asset)
+        if (!ppAsset) {
+          sendResponse({ error: `asset ${m.asset} is not available for private payments` })
+          return
+        }
+        // Recipient receivability is checked at the preceding quote step, and a failed reveal is
+        // recoverable, so it is not rechecked here to avoid a redundant round-trip.
+        const created = await prepareSend(
+          {
+            recipient: m.recipient,
+            asset: m.asset,
+            token: ppAsset.token,
+            amount: BigInt(m.amount),
+            privacyLevel: m.privacyLevel,
+          },
+          ppEnv
+        )
+        sendResponse({ notes: created })
+        // Commit and reveal run in the background processor so the send returns instantly and keeps
+        // progressing even if this page closes or the worker restarts.
+        void kickPrivateProcessor()
+      } catch (err) {
+        sendResponse({ error: friendlyPrivateError(err, m.asset) })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.PRIVATE_REVEAL_NOTE: {
+      const prNet = await getActiveNetwork()
+      if (!prNet.sorobanRpcUrl || !prNet.privatePoolFactory || !prNet.relayerUrl) {
+        sendResponse({ error: 'Private payments are not available on this network' })
+        return
+      }
+      const prEnv = await buildPrivateEnv(prNet)
+      if (!prEnv) {
+        sendResponse({ error: 'Wallet locked' })
+        return
+      }
+      try {
+        const m = message as unknown as {
+          counter: number
+          privacyLevel: SendParams['privacyLevel']
+        }
+        if (!Number.isInteger(m.counter) || m.counter < 0) {
+          sendResponse({ error: 'counter must be a non-negative integer' })
+          return
+        }
+        await revealNote(Number(m.counter), prEnv, { generateProof })
+        sendResponse({ ok: true })
+        // The reveal is now scheduled; let the processor confirm delivery and pick up other notes.
+        void kickPrivateProcessor()
+      } catch (err) {
+        const notReady = err instanceof NoteNotReadyError
+        sendResponse({
+          error: (err as Error).message,
+          code: notReady ? 'NOT_READY' : 'REVEAL_FAILED',
+        })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.PRIVATE_RECOVER_NOTE: {
+      const rcNet = await getActiveNetwork()
+      if (!rcNet.sorobanRpcUrl || !rcNet.privatePoolFactory || !rcNet.relayerUrl) {
+        sendResponse({ error: 'Private payments are not available on this network' })
+        return
+      }
+      const rcEnv = await buildPrivateEnv(rcNet)
+      if (!rcEnv) {
+        sendResponse({ error: 'Wallet locked' })
+        return
+      }
+      try {
+        const m = message as unknown as { counter: number }
+        if (!Number.isInteger(m.counter) || m.counter < 0) {
+          sendResponse({ error: 'counter must be a non-negative integer' })
+          return
+        }
+        await recoverNote(Number(m.counter), rcEnv, { generateProof })
+        sendResponse({ ok: true })
+        // Recovery is scheduled to the sender's own account; let the processor confirm it.
+        void kickPrivateProcessor()
+      } catch (err) {
+        const notReady = err instanceof NoteNotReadyError
+        sendResponse({
+          error: (err as Error).message,
+          code: notReady ? 'NOT_READY' : 'REVEAL_FAILED',
+        })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.PRIVATE_SELF_RECLAIM: {
+      const sclNet = await getActiveNetwork()
+      if (!sclNet.sorobanRpcUrl || !sclNet.privatePoolFactory || !sclNet.relayerUrl) {
+        sendResponse({ error: 'Private payments are not available on this network' })
+        return
+      }
+      const sclEnv = await buildPrivateEnv(sclNet)
+      if (!sclEnv) {
+        sendResponse({ error: 'Wallet locked' })
+        return
+      }
+      try {
+        const m = message as unknown as { counter: number }
+        if (!Number.isInteger(m.counter) || m.counter < 0) {
+          sendResponse({ error: 'counter must be a non-negative integer' })
+          return
+        }
+        await selfReclaim(Number(m.counter), sclEnv, {
+          generateProof,
+          submitReveal: makeSubmitReveal(sclNet, sclEnv.source),
+        })
+        sendResponse({ ok: true })
+        void kickPrivateProcessor()
+      } catch (err) {
+        const notReady = err instanceof NoteNotReadyError
+        sendResponse({
+          error: (err as Error).message,
+          code: notReady ? 'NOT_READY' : 'RECLAIM_FAILED',
+        })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.PRIVATE_RECOVER_FROM_SEED: {
+      const rsNet = await getActiveNetwork()
+      if (!rsNet.sorobanRpcUrl || !rsNet.privatePoolFactory || !rsNet.relayerUrl) {
+        sendResponse({ error: 'Private payments are not available on this network' })
+        return
+      }
+      const rsEnv = await buildPrivateEnv(rsNet)
+      if (!rsEnv) {
+        sendResponse({ error: 'Wallet locked' })
+        return
+      }
+      try {
+        const recovered = await recoverFromSeed(rsEnv)
+        sendResponse({ recovered: recovered.length })
+        // Recovered notes are committed; let the processor reveal them back to the owner.
+        void kickPrivateProcessor()
+      } catch (err) {
+        sendResponse({ error: (err as Error).message })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.PRIVATE_LIST_NOTES: {
+      const plNet = await getActiveNetwork()
+      const plEnv = await buildPrivateEnv(plNet)
+      if (!plEnv) {
+        sendResponse({ error: 'Wallet locked' })
+        return
+      }
+      // Viewing history surfaces on-chain notes missing locally without needing a lock/unlock; throttled
+      // and not awaited, so the list returns now and a recovered note shows on the next poll.
+      void kickPrivateRecovery()
+      try {
+        const notes = await listNotes(plEnv)
+        sendResponse({ notes })
+      } catch (err) {
+        sendResponse({ error: (err as Error).message })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.PRIVATE_PROCESS_NOTES: {
+      // Manual nudge for the background processor (e.g. opening Private Notes or a manual retry).
+      // No-ops if the wallet is locked or private payments are unavailable on this network.
+      void kickPrivateProcessor()
+      sendResponse({ ok: true })
       break
     }
 
@@ -3339,6 +4034,16 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         return
       }
 
+      // Primary (index 0) is the seed-derived anchor every unlock falls back to; removing it would
+      // leave the active account pointing at a missing entry.
+      if (
+        (!removeTarget.walletId || removeTarget.walletId === 'primary') &&
+        removeTarget.index === 0
+      ) {
+        sendResponse({ error: 'Cannot remove the primary account' })
+        return
+      }
+
       const activePk =
         store.activePublicKey ??
         store.accounts.find((a) => a.index === store.activeIndex)?.publicKey
@@ -3585,13 +4290,12 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         sendResponse({ error: 'Incorrect current password' })
         return
       }
-      const cpMnemonic = await decryptMnemonic(message.currentPassword)
-      if (!cpMnemonic) {
-        sendResponse({ error: 'Failed to decrypt wallet data' })
-        return
+      try {
+        await changePassword(message.currentPassword, message.newPassword)
+        sendResponse({ ok: true })
+      } catch (err) {
+        sendResponse({ error: (err as Error).message })
       }
-      await encryptAndStoreMnemonic(cpMnemonic, message.newPassword)
-      sendResponse({ ok: true })
       break
     }
 
@@ -3699,13 +4403,18 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         () => null
       )
       if (!res || !res.ok) {
-        sendResponse({ unfunded: !res || res.status === 404, rawBalances: null })
+        sendResponse({ unfunded: !res || res.status === 404, rawBalances: null, subentryCount: 0 })
         return
       }
       const data = (await res.json()) as {
         balances: Array<{ balance: string; asset_type: string; asset_code?: string }>
+        subentry_count?: number
       }
-      sendResponse({ unfunded: false, rawBalances: data.balances })
+      sendResponse({
+        unfunded: false,
+        rawBalances: data.balances,
+        subentryCount: data.subentry_count ?? 0,
+      })
       break
     }
 

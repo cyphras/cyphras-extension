@@ -65,7 +65,9 @@ export function PasswordInput({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <div className={`overflow-hidden rounded-lg bg-input transition-shadow ${error ? 'ring-2 ring-destructive/60' : ''}`}>
+      <div
+        className={`overflow-hidden rounded-lg bg-input transition-shadow ${error ? 'ring-2 ring-destructive/60' : ''}`}
+      >
         <div className="relative">
           <input
             type={show ? 'text' : 'password'}
@@ -80,7 +82,8 @@ export function PasswordInput({
           />
           <button
             type="button"
-            tabIndex={-1}
+            aria-label={show ? 'Hide password' : 'Show password'}
+            aria-pressed={show}
             onClick={() => setShow((prev) => !prev)}
             className="cursor-pointer absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
           >

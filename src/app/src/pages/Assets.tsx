@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useWallet } from '@/context/WalletContext'
 import { useBalances } from '@/hooks/useBalances'
 import { useCustomAssets } from '@/hooks/useCustomAssets'
+import { useHiddenAssets } from '@/hooks/useHiddenAssets'
 import { Button } from '@/components/ui/button'
 import { Layout } from '@/components/Layout'
 import TokenDetailSheet from '@/components/TokenDetailSheet'
@@ -20,6 +21,7 @@ import {
   ExternalLink,
   SlidersHorizontal,
   ChevronLeft,
+  Layers,
 } from 'lucide-react'
 import { Toggle } from '@/components/ui/toggle'
 import WalletNavbar from '@/components/WalletNavbar'
@@ -82,11 +84,16 @@ export default function Assets() {
   const { status } = useWallet()
   const { activeNetwork } = useNetwork()
   const { balances, loading, refresh: refreshBalances } = useBalances(status.publicKey)
-  const { getExplorerTxUrl, hiddenAssets, toggleHiddenAsset } = usePreferences()
+  const { getExplorerTxUrl } = usePreferences()
+  const { hiddenAssets, toggleHiddenAsset } = useHiddenAssets(
+    activeNetwork.id,
+    status.publicKey ?? ''
+  )
   const { assets: customAssets, removeAsset } = useCustomAssets(
     activeNetwork.id,
     activeNetwork.horizonUrl,
-    activeNetwork.passphrase
+    activeNetwork.passphrase,
+    status.publicKey ?? ''
   )
   const [manageMode, setManageMode] = useState(false)
   const [selectedToken, setSelectedToken] = useState<AssetBalance | null>(null)
@@ -159,15 +166,6 @@ export default function Assets() {
       .catch(() => {})
   }, [removeResult?.txHash, activeNetwork.horizonUrl])
 
-  useEffect(() => {
-    if (!menuOpenKey) return
-    function close() {
-      setMenuOpenKey(null)
-    }
-    document.addEventListener('click', close)
-    return () => document.removeEventListener('click', close)
-  }, [menuOpenKey])
-
   const allAssets: Array<AssetBalance & { isCustomOnly: boolean }> = [
     ...balances.map((b) => ({ ...b, isCustomOnly: false })),
     ...customAssets
@@ -189,13 +187,16 @@ export default function Assets() {
     ? allAssets
     : allAssets.filter((a) => !hiddenAssets.includes(`${a.code}:${a.issuer}`))
 
+  const menuAsset = displayedAssets.find((a) => `${a.code}:${a.issuer}` === menuOpenKey) ?? null
+
   return (
     <>
       <Layout navbar={<WalletNavbar />}>
         <div className="flex flex-col gap-4 pb-20">
           <div className="relative flex items-center justify-center">
             <button
-              onClick={() => navigate('/')}
+              onClick={() => navigate(-1)}
+              aria-label="Go back"
               className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
             >
               <ChevronLeft size={18} />
@@ -203,6 +204,8 @@ export default function Assets() {
             <h2 className="text-lg font-bold text-foreground">Assets</h2>
             <button
               onClick={() => setManageMode((p) => !p)}
+              aria-label="Manage tokens"
+              aria-pressed={manageMode}
               className={`cursor-pointer absolute right-0 rounded-lg p-2 transition-colors ${manageMode ? 'text-primary bg-primary/10' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
             >
               <SlidersHorizontal size={18} />
@@ -227,15 +230,15 @@ export default function Assets() {
 
             {displayedAssets.map((asset) => {
               const key = `${asset.code}:${asset.issuer}`
-              const hasBalance = parseFloat(asset.balance) > 0
               const isHidden = hiddenAssets.includes(key)
               return (
                 <div
                   key={key}
                   className={`flex w-full items-center justify-between rounded-xl bg-card px-4 py-3 hover:bg-muted/60 transition-colors ${isHidden && manageMode ? 'opacity-40' : ''}`}
                 >
-                  <div
-                    className="flex items-center gap-3 flex-1 cursor-pointer min-w-0"
+                  <button
+                    type="button"
+                    className="flex items-center gap-3 flex-1 cursor-pointer min-w-0 text-left"
                     onClick={() => !manageMode && setSelectedToken(asset)}
                   >
                     <AssetIcon icon={asset.icon} code={asset.code} />
@@ -245,7 +248,7 @@ export default function Assets() {
                         {formatBalance(asset.balance)}
                       </p>
                     </div>
-                  </div>
+                  </button>
                   <div className="relative flex-shrink-0">
                     {manageMode ? (
                       <Toggle
@@ -261,10 +264,11 @@ export default function Assets() {
                               ? undefined
                               : (e) => {
                                   e.stopPropagation()
-                                  setMenuOpenKey(menuOpenKey === key ? null : key)
+                                  setMenuOpenKey(key)
                                 }
                           }
                           disabled={asset.isNative}
+                          aria-label={`${asset.code} token options`}
                           className={`rounded-lg p-1.5 transition-colors ${
                             asset.isNative
                               ? 'text-muted-foreground/30 cursor-not-allowed'
@@ -273,42 +277,6 @@ export default function Assets() {
                         >
                           <MoreHorizontal size={16} />
                         </button>
-                        {!asset.isNative && menuOpenKey === key && (
-                          <div
-                            className="absolute right-0 top-full z-50 mt-1 w-48 rounded-xl bg-card border border-border shadow-lg overflow-hidden"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <button
-                              onClick={() => {
-                                navigator.clipboard.writeText(asset.issuer)
-                                setCopiedKey(key)
-                                setTimeout(() => setCopiedKey(null), 2000)
-                              }}
-                              className="cursor-pointer flex w-full items-center gap-2.5 px-3.5 py-2.5 text-sm text-foreground hover:bg-muted transition-colors"
-                            >
-                              {copiedKey === key ? <Check size={14} /> : <Copy size={14} />}
-                              {copiedKey === key ? 'Copied!' : 'Copy address'}
-                            </button>
-                            <button
-                              onClick={() => {
-                                if (!hasBalance) {
-                                  setMenuOpenKey(null)
-                                  setRemoveTarget(asset)
-                                }
-                              }}
-                              disabled={hasBalance}
-                              title={hasBalance ? 'Clear your balance first' : undefined}
-                              className={`flex w-full items-center gap-2.5 px-3.5 py-2.5 text-sm transition-colors ${
-                                hasBalance
-                                  ? 'text-muted-foreground/40 cursor-not-allowed'
-                                  : 'cursor-pointer text-destructive hover:bg-destructive/10'
-                              }`}
-                            >
-                              <Trash2 size={14} />
-                              Remove trustline
-                            </button>
-                          </div>
-                        )}
                       </>
                     )}
                   </div>
@@ -317,24 +285,70 @@ export default function Assets() {
             })}
 
             {!loading && displayedAssets.length === 0 && (
-              <div className="flex flex-col items-center gap-2 py-8 text-center">
-                <p className="text-sm text-muted-foreground">No assets yet</p>
-                <p className="text-xs text-muted-foreground">Add assets to track them here</p>
+              <div className="flex flex-col items-center gap-3 py-8 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted">
+                  <Layers size={24} className="text-muted-foreground" />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <p className="text-sm text-muted-foreground">No assets yet</p>
+                  <p className="text-xs text-muted-foreground">Add assets to track them here</p>
+                </div>
+                <Button variant="outline" onClick={() => navigate('/assets/add')}>
+                  <Plus size={14} />
+                  Add asset
+                </Button>
               </div>
             )}
           </div>
         </div>
       </Layout>
 
+      {menuAsset && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setMenuOpenKey(null)} />
+          <div className="relative w-full max-w-xs overflow-hidden rounded-2xl bg-background p-2 shadow-2xl">
+            <div className="px-3 py-2">
+              <p className="truncate text-sm font-medium text-foreground">{menuAsset.code}</p>
+              <p className="truncate font-mono text-xs text-muted-foreground">{menuAsset.issuer}</p>
+            </div>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(menuAsset.issuer)
+                setCopiedKey(menuOpenKey)
+                setTimeout(() => setCopiedKey(null), 2000)
+              }}
+              className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm text-foreground hover:bg-muted transition-colors"
+            >
+              {copiedKey === menuOpenKey ? <Check size={14} /> : <Copy size={14} />}
+              {copiedKey === menuOpenKey ? 'Copied!' : 'Copy address'}
+            </button>
+            <button
+              disabled={parseFloat(menuAsset.balance) > 0}
+              title={parseFloat(menuAsset.balance) > 0 ? 'Clear your balance first' : undefined}
+              onClick={() => {
+                const target = menuAsset
+                setMenuOpenKey(null)
+                setRemoveTarget(target)
+              }}
+              className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
+                parseFloat(menuAsset.balance) > 0
+                  ? 'text-muted-foreground/40 cursor-not-allowed'
+                  : 'cursor-pointer text-destructive hover:bg-destructive/10'
+              }`}
+            >
+              <Trash2 size={14} />
+              Remove trustline
+            </button>
+          </div>
+        </div>
+      )}
+
       {!manageMode && (
         <div className="fixed bottom-0 left-0 right-0 z-10 bg-background border-t border-border px-5 pb-5 pt-3">
-          <button
-            onClick={() => navigate('/assets/add')}
-            className="cursor-pointer flex items-center justify-center gap-2 w-full rounded-xl bg-card px-4 py-3 text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-          >
+          <Button variant="outline" className="w-full" onClick={() => navigate('/assets/add')}>
             <Plus size={14} />
             Add an asset
-          </button>
+          </Button>
         </div>
       )}
 

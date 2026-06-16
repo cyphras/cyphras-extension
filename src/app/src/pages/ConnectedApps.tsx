@@ -10,10 +10,16 @@ export default function ConnectedApps() {
   const [apps, setApps] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [revoking, setRevoking] = useState<string | null>(null)
+  const [error, setError] = useState('')
 
   function fetchApps() {
     chrome.runtime.sendMessage({ type: SERVICE_TYPES.GET_CONNECTED_APPS }, (response) => {
-      if (chrome.runtime.lastError) return
+      if (chrome.runtime.lastError) {
+        setError('Could not load connected apps.')
+        setLoading(false)
+        return
+      }
+      setError('')
       setApps(response?.connectedApps ?? [])
       setLoading(false)
     })
@@ -44,7 +50,8 @@ export default function ConnectedApps() {
       <div className="flex flex-col gap-4">
         <div className="relative flex items-center justify-center">
           <button
-            onClick={() => navigate('/settings')}
+            onClick={() => navigate(-1)}
+            aria-label="Go back"
             className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
             <ChevronLeft size={18} />
@@ -58,7 +65,22 @@ export default function ConnectedApps() {
           </div>
         )}
 
-        {!loading && apps.length === 0 && (
+        {!loading && error && (
+          <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-center">
+            <p className="text-sm text-destructive">{error}</p>
+            <button
+              onClick={() => {
+                setLoading(true)
+                fetchApps()
+              }}
+              className="mt-1 cursor-pointer text-xs text-destructive underline"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {!loading && !error && apps.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-8 text-center">
             <Globe size={32} className="text-muted-foreground" />
             <p className="text-sm text-muted-foreground">No connected apps</p>
@@ -95,6 +117,7 @@ export default function ConnectedApps() {
                   <button
                     onClick={() => handleRevoke(origin)}
                     disabled={revoking === origin}
+                    aria-label={`Revoke access for ${domain}`}
                     className="cursor-pointer rounded p-1.5 text-destructive hover:bg-destructive/10 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Trash2 size={14} />

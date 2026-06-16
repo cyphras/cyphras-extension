@@ -153,6 +153,17 @@ export default function TokenDetailSheet({ asset, horizonUrl, onClose }: TokenDe
     getIconMap(activeNetwork.id).then(setIconMap)
   }, [activeNetwork.id])
 
+  // Close on account/network switch so the sheet never shows the previous context's asset against
+  // freshly-fetched history. The guard skips the first run so it does not close on mount.
+  const switchGuard = useRef(true)
+  useEffect(() => {
+    if (switchGuard.current) {
+      switchGuard.current = false
+      return
+    }
+    onClose()
+  }, [activeNetwork.id, status.publicKey])
+
   // Keep the last non-null asset so content stays visible during the close animation
   const lastAssetRef = useRef<AssetBalance | null>(null)
   if (asset) lastAssetRef.current = asset

@@ -7,12 +7,14 @@ export interface CustomAsset {
   domain?: string
 }
 
-function customAssetsKey(networkId: string): string {
-  return `cyphras_custom_assets_${networkId}`
+// Scoped per account: a trustline is per-account on-chain, so an asset added by one account must not
+// appear under another on the same network.
+function customAssetsKey(networkId: string, account: string): string {
+  return `cyphras_custom_assets_${networkId}_${account}`
 }
 
-function getStoredAssets(networkId: string): Promise<CustomAsset[]> {
-  const key = customAssetsKey(networkId)
+function getStoredAssets(networkId: string, account: string): Promise<CustomAsset[]> {
+  const key = customAssetsKey(networkId, account)
   return new Promise((resolve) => {
     chrome.storage.local.get(key, (result) => {
       const data = result[key]
@@ -21,19 +23,28 @@ function getStoredAssets(networkId: string): Promise<CustomAsset[]> {
   })
 }
 
-export function useCustomAssets(networkId: string, horizonUrl: string, networkPassphrase: string) {
+export function useCustomAssets(
+  networkId: string,
+  horizonUrl: string,
+  networkPassphrase: string,
+  account: string
+) {
   const [assets, setAssets] = useState<CustomAsset[]>([])
 
   const loadAssets = useCallback(() => {
-    getStoredAssets(networkId).then(setAssets)
-  }, [networkId])
+    if (!account) {
+      setAssets([])
+      return
+    }
+    getStoredAssets(networkId, account).then(setAssets)
+  }, [networkId, account])
 
   useEffect(() => {
     loadAssets()
   }, [loadAssets])
 
   async function addAsset(asset: CustomAsset): Promise<{ txHash?: string; error?: string }> {
-    const current = await getStoredAssets(networkId)
+    const current = await getStoredAssets(networkId, account)
     const exists = current.find((a) => a.code === asset.code && a.issuer === asset.issuer)
     if (exists) return { error: 'Asset already added' }
 
@@ -55,7 +66,7 @@ export function useCustomAssets(networkId: string, horizonUrl: string, networkPa
             return
           }
           const updated = [...current, asset]
-          await chrome.storage.local.set({ [customAssetsKey(networkId)]: updated })
+          await chrome.storage.local.set({ [customAssetsKey(networkId, account)]: updated })
           setAssets(updated)
           resolve({ txHash: response.txHash })
         }
@@ -84,9 +95,9 @@ export function useCustomAssets(networkId: string, horizonUrl: string, networkPa
             resolve({ error: response.error })
             return
           }
-          const current = await getStoredAssets(networkId)
+          const current = await getStoredAssets(networkId, account)
           const updated = current.filter((a) => !(a.code === code && a.issuer === issuer))
-          await chrome.storage.local.set({ [customAssetsKey(networkId)]: updated })
+          await chrome.storage.local.set({ [customAssetsKey(networkId, account)]: updated })
           setAssets(updated)
           resolve({ txHash: response.txHash })
         }

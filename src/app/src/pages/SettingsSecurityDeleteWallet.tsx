@@ -54,7 +54,7 @@ export default function SettingsSecurityDeleteWallet() {
         <div className="flex flex-col gap-6">
           <div className="relative flex items-center justify-center">
             <button
-              onClick={() => navigate('/settings/security')}
+              onClick={() => navigate(-1)}
               className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
             >
               <ChevronLeft size={18} />
@@ -169,7 +169,7 @@ export default function SettingsSecurityDeleteWallet() {
       <div className="flex flex-col gap-6">
         <div className="relative flex items-center justify-center">
           <button
-            onClick={() => navigate('/settings/security')}
+            onClick={() => navigate(-1)}
             className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
             <ChevronLeft size={18} />

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Layout } from '@/components/Layout'
@@ -13,6 +13,26 @@ export default function SettingsSecurityRecoveryPhrase() {
   const [error, setError] = useState<string | null>(null)
   const [phrase, setPhrase] = useState<string | null>(null)
   const [revealed, setRevealed] = useState(false)
+
+  // Re-hide on focus loss and wipe entirely when the wallet is hidden (e.g. a side panel left open),
+  // so the seed is never left exposed on an unattended screen.
+  useEffect(() => {
+    if (!phrase) return
+    const reblur = () => setRevealed(false)
+    const onHidden = () => {
+      if (document.hidden) {
+        setPhrase(null)
+        setRevealed(false)
+        setPassword('')
+      }
+    }
+    window.addEventListener('blur', reblur)
+    document.addEventListener('visibilitychange', onHidden)
+    return () => {
+      window.removeEventListener('blur', reblur)
+      document.removeEventListener('visibilitychange', onHidden)
+    }
+  }, [phrase])
 
   function handleReveal() {
     setError(null)
@@ -66,7 +86,7 @@ export default function SettingsSecurityRecoveryPhrase() {
       <div className="flex flex-col gap-6">
         <div className="relative flex items-center justify-center">
           <button
-            onClick={() => navigate('/settings/security')}
+            onClick={() => navigate(-1)}
             className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
             <ChevronLeft size={18} />
@@ -100,7 +120,8 @@ export default function SettingsSecurityRecoveryPhrase() {
         ) : (
           <div className="flex flex-col gap-4">
             <p className="text-xs text-muted-foreground px-1">
-              Write these words down in order and store them somewhere safe.
+              Write these words down in order and store them somewhere safe. They also restore your
+              pending private payments on a new device.
             </p>
             <div className="relative rounded-xl bg-muted p-4">
               <div

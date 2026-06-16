@@ -31,7 +31,9 @@ function skeletonFromElement(element: React.ReactElement): React.ReactNode {
   }
 
   if (type === 'img') {
-    return <Skeleton className={`h-10 w-10 rounded-full ${className}`} />
+    // Mirror the image's own size classes (avatars range ~14-40px) so the skeleton does not jump to a
+    // fixed size and shift the layout; fall back only when the element carries no sizing.
+    return <Skeleton className={className ? `rounded-full ${className}` : 'h-10 w-10 rounded-full'} />
   }
 
   if (type === 'input' || type === 'textarea') {

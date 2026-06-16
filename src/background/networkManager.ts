@@ -58,6 +58,11 @@ function migrateNetwork(n: Partial<NetworkConfig> & { id: string }): NetworkConf
     explorerUrl: n.explorerUrl ?? defaults?.explorerUrl,
     txTimeout: n.txTimeout ?? defaults?.txTimeout ?? 90,
     isDefault: n.isDefault ?? false,
+    // For built-in networks the shipped defaults override stored values, so a stale or tampered
+    // entry cannot redirect private payments. Custom networks (no defaults) keep their own.
+    privatePoolFactory: defaults?.privatePoolFactory ?? n.privatePoolFactory,
+    relayerUrl: defaults?.relayerUrl ?? n.relayerUrl,
+    privateAssets: defaults?.privateAssets ?? n.privateAssets,
   }
 }
 
