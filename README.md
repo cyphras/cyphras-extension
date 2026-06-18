@@ -5,7 +5,7 @@
 
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/manifest-v3-orange.svg" alt="Manifest v3">
-  <img src="https://img.shields.io/badge/version-0.1.0-22c55e.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.2.0-22c55e.svg" alt="Version">
 </div>
 
 ---
@@ -14,7 +14,8 @@ Manage accounts, sign transactions, and connect to decentralized applications, a
 
 ## Features
 
-- Create and import wallets using a 12-word recovery phrase or secret key
+- Private payments on testnet: send XLM and Stellar assets with the sender, amount, and on-chain link hidden, using zero-knowledge proofs
+- Create and import wallets using a recovery phrase or secret key
 - Multiple accounts with HD key derivation (BIP44)
 - Connect to dApps with a single approval flow
 - Sign transactions, messages, and authorization entries
