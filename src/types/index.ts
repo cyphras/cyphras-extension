@@ -64,6 +64,13 @@ export interface PrivateNote {
   revealTxHash?: string
   jobId: string | null
   scheduledFor?: string
+  // When scheduling happened, so the delivery bar can advance in step with the ETA countdown.
+  scheduledAt?: number
+  // The processor's last on-chain check that this note's commit leaf is in the pool, so the UI shows
+  // what actually left the wallet rather than the intended amount.
+  committedOnChain?: boolean
+  // The commit tx fee_charged (stroops), set when the commit confirms, so the fee total renders locally without a Horizon fetch.
+  commitFeeStroops?: string
   commitAttempts?: number
   lastError?: string
   recovered?: boolean

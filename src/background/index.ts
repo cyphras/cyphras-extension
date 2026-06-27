@@ -62,7 +62,6 @@ import {
 import {
   prepareSend,
   revealNote,
-  recoverNote,
   recoverFromSeed,
   selfReclaim,
   processNotes,
@@ -76,6 +75,7 @@ import {
   type SubmitReveal,
 } from './privatePayments'
 import { NonRepresentableAmountError } from '../private/denominations'
+import { RelayerError } from '../private/relayerClient'
 import { generateProof } from './offscreenProver'
 import {
   trackInstall,
@@ -529,6 +529,7 @@ async function buildPrivateContext(): Promise<{ env: PrivateEnv; deps: ProcessDe
   if (!net.sorobanRpcUrl || !net.privatePoolFactory || !net.relayerUrl) {
     return null
   }
+  const rpcUrl = net.sorobanRpcUrl
   const env = await buildPrivateEnv(net)
   if (!env) {
     return null
@@ -548,23 +549,36 @@ async function buildPrivateContext(): Promise<{ env: PrivateEnv; deps: ProcessDe
         nativeToScVal(Buffer.from(innerHex, 'hex'), { type: 'bytes' }),
         nativeToScVal(relayerFee, { type: 'i128' }),
       ]
-      return {
-        txHash: await invokeSignedContract(
-          net,
-          freshSecret,
-          env.source,
-          pool,
-          'commit',
-          args,
-          onBroadcast,
-          String(inclusionFee)
-        ),
-      }
+      let feeStroops: string | undefined
+      const txHash = await invokeSignedContract(
+        net,
+        freshSecret,
+        env.source,
+        pool,
+        'commit',
+        args,
+        onBroadcast,
+        String(inclusionFee),
+        (fee) => {
+          feeStroops = fee
+        }
+      )
+      return { txHash, feeStroops }
     },
-    generateProof,
+    generateProof: (inputs) => generateProof(inputs, env.network),
     isUnlocked: async () => {
       const s = await chrome.storage.session?.get(SESSION_KEY)
       return !!s?.[SESSION_KEY]
+    },
+    getTxStatus: async (txHash) => {
+      const res = await new SorobanRpc.Server(rpcUrl).getTransaction(txHash)
+      if (res.status === 'SUCCESS') {
+        return 'success'
+      }
+      if (res.status === 'FAILED') {
+        return 'failed'
+      }
+      return 'not_found'
     },
   }
   return { env, deps }
@@ -603,6 +617,12 @@ function makeSubmitReveal(net: NetworkConfig, source: string): SubmitReveal {
   }
 }
 
+// A relayer/network blip (5xx, offline) is expected and self-heals on the next tick, so it is logged
+// quietly rather than surfaced as an error; only an unexpected fault is treated as a real failure.
+function isTransientPrivateError(err: unknown): boolean {
+  return err instanceof RelayerError || (err instanceof TypeError && /fetch/i.test(err.message))
+}
+
 // Coalesce concurrent triggers into one active pass plus at most one queued rerun. Serialised storage
 // writes are guaranteed by processNotes' per-source lock; this flag only avoids redundant passes.
 let privateRunning = false
@@ -624,7 +644,11 @@ async function kickPrivateProcessor(): Promise<void> {
       await processNotes(ctx.env, ctx.deps)
     } while (privateRerun)
   } catch (err) {
-    console.error('private note processor failed', err)
+    if (isTransientPrivateError(err)) {
+      console.debug('private note processor: relayer/network unavailable, retrying later', err)
+    } else {
+      console.error('private note processor failed', err)
+    }
   } finally {
     privateRunning = false
   }
@@ -653,7 +677,11 @@ async function kickPrivateRecovery(force = false): Promise<void> {
       }
     }
   } catch (err) {
-    console.error('private note recovery failed', err)
+    if (isTransientPrivateError(err)) {
+      console.debug('private note recovery: relayer/network unavailable, retrying later', err)
+    } else {
+      console.error('private note recovery failed', err)
+    }
   } finally {
     privateRecovering = false
   }
@@ -2727,7 +2755,9 @@ async function invokeSignedContract(
   onBroadcast?: (hash: string) => Promise<void>,
   // Inclusion-fee bid in stroops; defaults to the base fee. A commit passes a congestion-aware value
   // so it is not outbid when the network is busy.
-  inclusionFee?: string
+  inclusionFee?: string,
+  // Reports the confirmed tx's fee_charged (stroops) on SUCCESS so the caller can persist the exact cost; not fired on the broadcast-but-unconfirmed path.
+  onConfirmed?: (feeStroops: string) => void
 ): Promise<string> {
   if (!net.sorobanRpcUrl) {
     throw new Error('Soroban RPC not configured for this network')
@@ -2794,7 +2824,20 @@ async function invokeSignedContract(
   for (let i = 0; i < attempts; i++) {
     await new Promise((r) => setTimeout(r, 2000))
     const poll = await server.getTransaction(hash)
-    if (poll.status === 'SUCCESS') return hash
+    if (poll.status === 'SUCCESS') {
+      if (onConfirmed) {
+        try {
+          const result = (poll as { resultXdr?: { feeCharged(): { toString(): string } } })
+            .resultXdr
+          if (result) {
+            onConfirmed(result.feeCharged().toString())
+          }
+        } catch {
+          /* the fee is a display-only extra; a parse miss just falls back to a Horizon fetch */
+        }
+      }
+      return hash
+    }
     if (poll.status === 'FAILED') {
       let detail = ''
       try {
@@ -3393,40 +3436,11 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           sendResponse({ error: 'counter must be a non-negative integer' })
           return
         }
-        await revealNote(Number(m.counter), prEnv, { generateProof })
+        await revealNote(Number(m.counter), prEnv, {
+          generateProof: (inputs) => generateProof(inputs, prEnv.network),
+        })
         sendResponse({ ok: true })
         // The reveal is now scheduled; let the processor confirm delivery and pick up other notes.
-        void kickPrivateProcessor()
-      } catch (err) {
-        const notReady = err instanceof NoteNotReadyError
-        sendResponse({
-          error: (err as Error).message,
-          code: notReady ? 'NOT_READY' : 'REVEAL_FAILED',
-        })
-      }
-      break
-    }
-
-    case SERVICE_TYPES.PRIVATE_RECOVER_NOTE: {
-      const rcNet = await getActiveNetwork()
-      if (!rcNet.sorobanRpcUrl || !rcNet.privatePoolFactory || !rcNet.relayerUrl) {
-        sendResponse({ error: 'Private payments are not available on this network' })
-        return
-      }
-      const rcEnv = await buildPrivateEnv(rcNet)
-      if (!rcEnv) {
-        sendResponse({ error: 'Wallet locked' })
-        return
-      }
-      try {
-        const m = message as unknown as { counter: number }
-        if (!Number.isInteger(m.counter) || m.counter < 0) {
-          sendResponse({ error: 'counter must be a non-negative integer' })
-          return
-        }
-        await recoverNote(Number(m.counter), rcEnv, { generateProof })
-        sendResponse({ ok: true })
-        // Recovery is scheduled to the sender's own account; let the processor confirm it.
         void kickPrivateProcessor()
       } catch (err) {
         const notReady = err instanceof NoteNotReadyError
@@ -3456,7 +3470,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           return
         }
         await selfReclaim(Number(m.counter), sclEnv, {
-          generateProof,
+          generateProof: (inputs) => generateProof(inputs, sclEnv.network),
           submitReveal: makeSubmitReveal(sclNet, sclEnv.source),
         })
         sendResponse({ ok: true })

@@ -37,8 +37,7 @@ export interface SendParams {
   privacyLevel: PrivacyLevel
 }
 
-// Build, sign, and submit one pool.commit, resolving once it confirms. Injected because the
-// background owns signing and Soroban submission.
+// Build, sign, and submit one pool.commit; resolves on confirm with the tx hash and (when observed) its fee_charged. Injected because the background owns signing.
 export type SubmitCommit = (
   pool: string,
   innerCommitmentHex: string,
@@ -46,7 +45,7 @@ export type SubmitCommit = (
   // Called when the commit is broadcast, before confirmation, so the caller persists the hash and
   // never resubmits a deposit if the worker dies mid-confirmation.
   onBroadcast: (txHash: string) => Promise<void>
-) => Promise<{ txHash: string }>
+) => Promise<{ txHash: string; feeStroops?: string }>
 
 // Generate the Groth16 proof off the service worker; snarkjs is too heavy for an ephemeral worker,
 // so this routes to an offscreen document.
@@ -64,12 +63,19 @@ export interface ReclaimDeps {
   submitReveal: SubmitReveal
 }
 
+// The fate of a broadcast commit tx, so a dropped or reverted one is resubmitted as soon as it can no
+// longer land, instead of always waiting the full validity + indexer window.
+export type CommitTxStatus = 'success' | 'failed' | 'not_found'
+
 // isUnlocked aborts the loop the moment the wallet locks mid-run, so an auto-lock never leaves the
 // processor running without a key.
 export interface ProcessDeps {
   submitCommit: SubmitCommit
   generateProof: GenerateProof
   isUnlocked?: () => Promise<boolean>
+  // Look up a broadcast commit's on-chain status by hash. Optional: without it, recovery falls back to
+  // the conservative validity + indexer time-window.
+  getTxStatus?: (txHash: string) => Promise<CommitTxStatus>
 }
 
 export class NoteNotReadyError extends Error {}
@@ -89,6 +95,43 @@ const MAX_COMMIT_ATTEMPTS = 5
 // Margin past a commit's validity window before a leaf-less broadcast is resubmitted. Must exceed the
 // relayer's index lag (~30s poll + finality) so a landed commit is seen before a resubmit double-deposits.
 const COMMIT_INDEXER_MARGIN_MS = 150_000
+
+// True once a broadcast commit can no longer land (its validity window + the relayer's index margin
+// have elapsed since broadcast), so resubmitting it cannot double-deposit.
+function commitReArmElapsed(note: NoteRecord, env: PrivateEnv): boolean {
+  if (!note.txHash) {
+    return true
+  }
+  if (note.broadcastAt == null) {
+    return false
+  }
+  const reArmAfterMs = (env.txTimeout ?? 90) * 1000 + COMMIT_INDEXER_MARGIN_MS
+  return Date.now() - note.broadcastAt >= reArmAfterMs
+}
+
+type CommitRetry = 'wait' | 'resubmit' | 'landed'
+
+// Decide what to do with a leaf-absent note that has a broadcast hash. Trust the RPC only on terminal
+// answers (SUCCESS = landed, hold; FAILED = reverted, resubmit); NOT_FOUND or an error falls back to the
+// validity + indexer window. The leaf-absent precondition means a resubmit never double-deposits.
+async function commitRetryDecision(
+  note: NoteRecord,
+  env: PrivateEnv,
+  getTxStatus?: (txHash: string) => Promise<CommitTxStatus>
+): Promise<CommitRetry> {
+  if (getTxStatus && note.txHash) {
+    try {
+      const status = await getTxStatus(note.txHash)
+      if (status === 'success') {
+        return 'landed'
+      }
+      if (status === 'failed') {
+        return 'resubmit'
+      }
+    } catch {}
+  }
+  return commitReArmElapsed(note, env) ? 'resubmit' : 'wait'
+}
 
 function toHex32(value: bigint): string {
   const hex = value.toString(16)
@@ -209,13 +252,15 @@ function noteLeaf(note: NoteRecord): bigint {
 }
 
 // Commit one pending note. If the leaf is already on-chain the commit landed (maybe in a prior run) and
-// resubmitting would double-deposit, so submit only when the leaf is absent and no broadcast hash exists.
+// resubmitting would double-deposit, so submit only when the leaf is absent and the prior broadcast can
+// no longer land (confirmed via the tx status, or the validity window as a fallback).
 async function commitOne(
   note: NoteRecord,
   env: PrivateEnv,
   getLeaves: (pool: string) => Promise<bigint[]>,
   submitCommit: SubmitCommit,
-  persist: () => Promise<void>
+  persist: () => Promise<void>,
+  getTxStatus?: (txHash: string) => Promise<CommitTxStatus>
 ): Promise<void> {
   const leaf = noteLeaf(note)
   const leaves = await getLeaves(note.pool)
@@ -223,12 +268,14 @@ async function commitOne(
     note.status = 'committed'
     return
   }
-  // A prior broadcast with no leaf may still be in flight. Only after its validity window + indexer
-  // margin can it no longer land, so with the leaf still absent a resubmit cannot double-deposit.
   if (note.txHash) {
-    // Unset txTimeout assumes the maximum allowed; a note from before broadcastAt treats it as 0.
-    const reArmAfterMs = (env.txTimeout ?? 300) * 1000 + COMMIT_INDEXER_MARGIN_MS
-    if (Date.now() - (note.broadcastAt ?? 0) < reArmAfterMs) {
+    if (note.broadcastAt == null) {
+      note.broadcastAt = Date.now()
+      await persist()
+    }
+    const decision = await commitRetryDecision(note, env, getTxStatus)
+    if (decision !== 'resubmit') {
+      note.status = 'committed'
       return
     }
     note.txHash = null
@@ -245,7 +292,7 @@ async function commitOne(
     // Count only attempts past the pool check, so a transient RPC failure there does not burn the
     // retry budget toward a permanent failure.
     note.commitAttempts = (note.commitAttempts ?? 0) + 1
-    const { txHash } = await submitCommit(
+    const { txHash, feeStroops } = await submitCommit(
       note.pool,
       note.commitment as string,
       BigInt(note.relayerFee),
@@ -256,6 +303,9 @@ async function commitOne(
       }
     )
     note.txHash = txHash
+    if (feeStroops) {
+      note.commitFeeStroops = feeStroops
+    }
     note.status = 'committed'
     delete note.lastError
   } catch (err) {
@@ -297,46 +347,6 @@ async function revealNoteLocked(counter: number, env: PrivateEnv, deps: RevealDe
   const leaves = await relayer.leaves(note.pool)
   try {
     await reveal(note, seed, relayer, leaves, deps.generateProof)
-    await saveNotes(env.source, key, notes)
-  } catch (err) {
-    await saveNotes(env.source, key, notes)
-    throw err
-  }
-}
-
-// Reveal a stuck note back to the sender's own account, for when the recipient cannot receive (no
-// trustline / unactivated). The deposit's nullifier is unspent, so revealing to self returns the funds.
-export function recoverNote(counter: number, env: PrivateEnv, deps: RevealDeps): Promise<void> {
-  return withSourceLock(env.source, () => recoverNoteLocked(counter, env, deps))
-}
-
-async function recoverNoteLocked(
-  counter: number,
-  env: PrivateEnv,
-  deps: RevealDeps
-): Promise<void> {
-  await initPoseidon()
-  const key = await noteKeyFor(env)
-  const seed = seedFor(env)
-  const notes = await loadNotes(env.source, key)
-  const note = notes.find((n) => n.counter === counter)
-  if (!note || note.commitment === null) {
-    throw new NoteError(`note ${counter} not found`)
-  }
-  if (note.status === 'pending') {
-    throw new NoteError(`note ${counter} is not committed yet`)
-  }
-  if (note.status === 'scheduled') {
-    throw new RevealConflictError('a reveal is already in progress for this payment')
-  }
-  if (note.status === 'revealed') {
-    throw new RevealConflictError('this payment was already delivered')
-  }
-  const relayer = new RelayerClient(env.relayerUrl, env.network)
-  const leaves = await relayer.leaves(note.pool)
-  try {
-    await reveal(note, seed, relayer, leaves, deps.generateProof, env.source)
-    note.recovered = true
     await saveNotes(env.source, key, notes)
   } catch (err) {
     await saveNotes(env.source, key, notes)
@@ -599,6 +609,7 @@ async function reveal(
   note.status = 'scheduled'
   note.jobId = result.jobId
   note.scheduledFor = result.scheduledFor
+  note.scheduledAt = Date.now()
   note.leafIndex = leafIndex
   note.root = proved.root
   delete note.lastError
@@ -614,6 +625,9 @@ async function confirmScheduled(note: NoteRecord, relayer: RelayerClient): Promi
     const job = await relayer.status(note.jobId)
     if (job.status === 'confirmed') {
       note.status = 'revealed'
+      if (job.txHash) {
+        note.revealTxHash = job.txHash
+      }
     } else if (job.status === 'failed' || job.status === 'dead') {
       // A revert on an already-used nullifier means an earlier attempt already delivered this note.
       if ((job.failureReason ?? '').toLowerCase().includes('nullifier')) {
@@ -748,10 +762,18 @@ async function processNotesLocked(env: PrivateEnv, deps: ProcessDeps): Promise<v
       return
     }
     try {
+      const poolLeaves = await getLeaves(note.pool)
+      const onChain = poolLeaves.includes(noteLeaf(note))
+      note.committedOnChain = onChain
       if (note.status === 'pending') {
-        await commitOne(note, env, getLeaves, deps.submitCommit, persist)
+        await commitOne(note, env, getLeaves, deps.submitCommit, persist, deps.getTxStatus)
       } else if (note.status === 'committed') {
-        await reveal(note, seed, relayer, await getLeaves(note.pool), deps.generateProof)
+        if (onChain) {
+          await reveal(note, seed, relayer, poolLeaves, deps.generateProof)
+        } else if (!note.recovered) {
+          note.status = 'pending'
+          await commitOne(note, env, getLeaves, deps.submitCommit, persist, deps.getTxStatus)
+        }
       } else {
         await confirmScheduled(note, relayer)
       }
@@ -764,6 +786,8 @@ async function processNotesLocked(env: PrivateEnv, deps: ProcessDeps): Promise<v
   }
 }
 
+// Storage-only and network-free, so the frequent History/Home poll is fast and never momentarily empties
+// the list on a relayer hiccup. The committedOnChain flag is maintained by the processor.
 export async function listNotes(env: PrivateEnv): Promise<NoteRecord[]> {
   const key = await noteKeyFor(env)
   const notes = await loadNotes(env.source, key)
