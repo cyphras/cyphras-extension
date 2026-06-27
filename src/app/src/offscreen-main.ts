@@ -2,13 +2,15 @@
 import { initPoseidon } from '@private/poseidon.js'
 import { proveReveal } from '@private/proof.js'
 import { deserializeProofInputs } from '@private/proofMessage.js'
-import { CIRCUIT_WASM_SHA256, CIRCUIT_ZKEY_SHA256 } from '@private/circuitHashes.js'
+import { CIRCUIT_WASM_SHA256, circuitZkey } from '@private/circuitHashes.js'
 
 // snarkjs proving is too heavy for the ephemeral service worker, so it runs in this offscreen document.
 const WASM_URL = chrome.runtime.getURL('circuit/withdraw.wasm')
-const ZKEY_URL = chrome.runtime.getURL('circuit/withdraw.zkey')
 
-let artifacts: { wasm: Uint8Array; zkey: Uint8Array } | null = null
+// The wasm is shared across networks; the zkey is network-specific, so artifacts are cached per network
+// and a testnet proof can never be built against the mainnet key or vice versa.
+const artifactsByNetwork = new Map<string, { wasm: Uint8Array; zkey: Uint8Array }>()
+let poseidonReady = false
 
 async function sha256Hex(buf: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', buf)
@@ -17,20 +19,34 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
     .join('')
 }
 
-async function loadArtifacts(): Promise<{ wasm: Uint8Array; zkey: Uint8Array }> {
-  if (!artifacts) {
-    const [w, z] = await Promise.all([fetch(WASM_URL), fetch(ZKEY_URL)])
-    const [wBuf, zBuf] = await Promise.all([w.arrayBuffer(), z.arrayBuffer()])
-    // Reject a tampered or swapped artifact before proving, so a modified circuit cannot silently
-    // produce proofs against the wrong constraints.
-    const [wasmHash, zkeyHash] = await Promise.all([sha256Hex(wBuf), sha256Hex(zBuf)])
-    if (wasmHash !== CIRCUIT_WASM_SHA256 || zkeyHash !== CIRCUIT_ZKEY_SHA256) {
-      throw new Error('circuit artifact integrity check failed, refusing to generate a proof')
-    }
-    artifacts = { wasm: new Uint8Array(wBuf), zkey: new Uint8Array(zBuf) }
-    await initPoseidon()
+async function loadArtifacts(network: string): Promise<{ wasm: Uint8Array; zkey: Uint8Array }> {
+  const cached = artifactsByNetwork.get(network)
+  if (cached) {
+    return cached
   }
-  return artifacts
+  const zkey = circuitZkey(network)
+  const [w, z] = await Promise.all([fetch(WASM_URL), fetch(chrome.runtime.getURL(zkey.file))])
+  const [wBuf, zBuf] = await Promise.all([w.arrayBuffer(), z.arrayBuffer()])
+  // Reject a tampered, swapped, or wrong-network artifact before proving, so a modified circuit cannot
+  // silently produce proofs against the wrong constraints or the other network's key.
+  const [wasmHash, zkeyHash] = await Promise.all([sha256Hex(wBuf), sha256Hex(zBuf)])
+  if (wasmHash !== CIRCUIT_WASM_SHA256) {
+    throw new Error(
+      `circuit wasm integrity check failed, refusing to prove: got ${wasmHash} want ${CIRCUIT_WASM_SHA256}`
+    )
+  }
+  if (zkeyHash !== zkey.sha256) {
+    throw new Error(
+      `circuit zkey integrity check failed for ${network}, refusing to prove: got ${zkeyHash} want ${zkey.sha256} from ${zkey.file}`
+    )
+  }
+  const pair = { wasm: new Uint8Array(wBuf), zkey: new Uint8Array(zBuf) }
+  artifactsByNetwork.set(network, pair)
+  if (!poseidonReady) {
+    await initPoseidon()
+    poseidonReady = true
+  }
+  return pair
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -41,7 +57,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   void (async () => {
     try {
-      const { wasm, zkey } = await loadArtifacts()
+      if (typeof msg.network !== 'string' || !msg.network) {
+        throw new Error('offscreen-prove message missing network')
+      }
+      const { wasm, zkey } = await loadArtifacts(msg.network)
       const proved = await proveReveal(deserializeProofInputs(msg.inputs), wasm, zkey)
       sendResponse({ ok: true, proved })
     } catch (e) {

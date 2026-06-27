@@ -8,12 +8,14 @@ import {
   ExternalLink,
   CheckCircle2,
   XCircle,
+  AlertTriangle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { AutoSkeleton } from '@/components/AutoSkeleton'
 import { StellarAvatar } from '@/components/StellarAvatar'
 import { OpIcon } from '@/components/OpIcon'
 import { PhaseBadge } from '@/components/PhaseBadge'
+import { DeliveryProgressBar } from '@/components/DeliveryProgressBar'
 import type { Operation } from '@/hooks/useHistory'
 import { getDirection, getOpLabel, getAmountDisplay, stroopsToXlm } from '@/lib/historyUtils'
 import { splitPhase } from '@/lib/phase'
@@ -78,7 +80,10 @@ export default function OperationDetailSheet({
   const cur = lastOpRef.current
 
   const [txDetails, setTxDetails] = useState<TxDetails | null>(null)
+  const [feeStroops, setFeeStroops] = useState<number | null>(null)
+  const feeCache = useRef<Map<string, bigint>>(new Map())
   const [xdrOpen, setXdrOpen] = useState(false)
+  const [splitsOpen, setSplitsOpen] = useState(false)
   const [hashCopied, setHashCopied] = useState(false)
   const [xdrCopied, setXdrCopied] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -98,11 +103,81 @@ export default function OperationDetailSheet({
       .catch(() => {})
   }, [op?.transaction_hash, horizonUrl])
 
+  // Re-derive only on a fee-relevant transition (commit, fail, recover, reclaim), not on reveal progress.
+  const sendNotes = op?.cyphras_private?.direction === 'out' ? op.cyphras_private.notes : undefined
+  const feeSig = sendNotes
+    ? sendNotes
+        .map(
+          (n) =>
+            `${n.txHash ?? ''}|${n.commitFeeStroops ?? ''}|${n.status === 'failed' ? 'F' : ''}|${n.recovered ? 'R' : ''}|${n.revealTxHash ?? ''}`
+        )
+        .join(',')
+    : ''
+
+  // Total sender fee: each committed note's commit gas (its captured commitFeeStroops, else Horizon) plus the relayer fee, or the reveal gas for self-reclaimed notes.
+  useEffect(() => {
+    if (!op) return
+    const priv = op.cyphras_private
+    if (priv?.direction !== 'out' || !priv.notes) {
+      setFeeStroops(null)
+      return
+    }
+    const notes = priv.notes
+    const committed = notes.filter((n) => !!n.txHash)
+    const relayerStroops = committed
+      .filter((n) => !n.recovered)
+      .reduce((sum, n) => sum + BigInt(n.relayerFee || '0'), 0n)
+    const localCommitGas = committed.reduce((sum, n) => sum + BigInt(n.commitFeeStroops || '0'), 0n)
+    const fetchCommitHashes = [
+      ...new Set(committed.filter((n) => !n.commitFeeStroops).map((n) => n.txHash as string)),
+    ]
+    const reclaimHashes = notes
+      .filter((n) => n.recovered && n.revealTxHash)
+      .map((n) => n.revealTxHash as string)
+    const hashes = [...fetchCommitHashes, ...reclaimHashes]
+    const baseStroops = relayerStroops + localCommitGas
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let attempts = 0
+    const gasOf = async (h: string): Promise<bigint> => {
+      const hit = feeCache.current.get(h)
+      if (hit !== undefined) return hit
+      const fee = await fetch(`${horizonUrl}/transactions/${h}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => (d?.fee_charged ? BigInt(d.fee_charged) : 0n))
+        .catch(() => 0n)
+      if (fee > 0n) feeCache.current.set(h, fee)
+      return fee
+    }
+    const recompute = async () => {
+      const charged = await Promise.all(hashes.map(gasOf))
+      if (cancelled) return
+      const gas = charged.reduce((a, b) => a + b, 0n)
+      setFeeStroops(Number(baseStroops + gas))
+      attempts += 1
+      if (attempts < 12 && hashes.some((h) => !feeCache.current.has(h))) {
+        timer = setTimeout(recompute, 3000)
+      }
+    }
+    void recompute()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [feeSig, horizonUrl])
+
   if (!cur) return null
 
   const dir = getDirection(cur, publicKey)
   const amount = getAmountDisplay(cur)
   const label = getOpLabel(cur, publicKey)
+
+  // A private send is many splits: flag any failed split as Partial (some delivered) or Failed, not a false "Confirmed".
+  const priv = cur.cyphras_private
+  const privFailures = priv
+    ? (priv.failedCounters?.length ?? 0) + (priv.unsentCounters?.length ?? 0)
+    : 0
+  const privSomeDelivered = priv ? parseFloat(priv.deliveredAmount ?? '0') > 0 : false
 
   function Row({
     label,
@@ -216,7 +291,19 @@ export default function OperationDetailSheet({
           <div className="flex gap-2">
             <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3 flex-1">
               <p className="text-xs text-muted-foreground">Status</p>
-              {cur.transaction_successful !== false ? (
+              {priv && privFailures > 0 ? (
+                privSomeDelivered ? (
+                  <div className="flex items-center gap-1.5 text-amber-500">
+                    <AlertTriangle size={13} />
+                    <span className="text-xs font-medium">Partial</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5 text-destructive">
+                    <XCircle size={13} />
+                    <span className="text-xs font-medium">Failed</span>
+                  </div>
+                )
+              ) : cur.transaction_successful !== false ? (
                 <div className="flex items-center gap-1.5 text-green-500">
                   <CheckCircle2 size={13} />
                   <span className="text-xs font-medium">Confirmed</span>
@@ -380,9 +467,34 @@ export default function OperationDetailSheet({
                 {cur.cyphras_private.splits !== undefined && (
                   <Row label="Private splits" value={String(cur.cyphras_private.splits)} mono />
                 )}
+                {cur.cyphras_private.direction === 'out' && feeStroops ? (
+                  <Row label="Fee" value={`${stroopsToXlm(String(feeStroops))} XLM`} mono />
+                ) : null}
                 {cur.cyphras_private.phase && (
                   <Row label="Delivery" value={<PhaseBadge phase={cur.cyphras_private.phase} />} />
                 )}
+                {cur.cyphras_private.direction === 'out' &&
+                  cur.cyphras_private.notes &&
+                  cur.cyphras_private.deliveredAmount !== cur.cyphras_private.amount && (
+                    <div className="flex flex-col gap-1.5 pt-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">Delivered</span>
+                        <span className="font-mono text-foreground tabular-nums">
+                          {cur.cyphras_private.deliveredAmount} of {cur.cyphras_private.amount}{' '}
+                          {cur.cyphras_private.asset}
+                        </span>
+                      </div>
+                      <DeliveryProgressBar key={cur.id} notes={cur.cyphras_private.notes} />
+                      {cur.cyphras_private.committedAmount !== undefined &&
+                        cur.cyphras_private.committedAmount !==
+                          cur.cyphras_private.deliveredAmount && (
+                          <span className="text-[11px] text-muted-foreground">
+                            {cur.cyphras_private.committedAmount} of {cur.cyphras_private.amount}{' '}
+                            {cur.cyphras_private.asset} has left your wallet so far
+                          </span>
+                        )}
+                    </div>
+                  )}
               </>
             )}
             {cur.type === 'claim_claimable_balance' && (
@@ -443,18 +555,50 @@ export default function OperationDetailSheet({
 
           {cur.cyphras_private?.splitsDetail && cur.cyphras_private.splitsDetail.length > 0 && (
             <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
-              <p className="text-xs font-medium text-foreground">
-                Private splits ({cur.cyphras_private.splitsDetail.length})
-              </p>
-              <div className="h-px bg-border" />
-              {cur.cyphras_private.splitsDetail.map((s, i) => (
-                <div key={i} className="flex items-center justify-between gap-2 text-xs">
-                  <span className="text-foreground">
-                    {s.amount} {cur.cyphras_private!.asset}
+              <button
+                onClick={() => setSplitsOpen((p) => !p)}
+                aria-expanded={splitsOpen}
+                className="cursor-pointer flex items-center justify-between gap-2 text-xs font-medium text-foreground w-full"
+              >
+                <span>
+                  Private splits ({cur.cyphras_private.splitsDetail.length})
+                  <span className="font-normal text-muted-foreground">
+                    {' '}
+                    -{' '}
+                    {
+                      cur.cyphras_private.splitsDetail.filter((s) => s.status === 'revealed').length
+                    }{' '}
+                    of {cur.cyphras_private.splitsDetail.length} delivered
                   </span>
-                  <PhaseBadge phase={splitPhase(s.status, s.scheduledFor)} size={12} />
-                </div>
-              ))}
+                </span>
+                {splitsOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              </button>
+              {splitsOpen && (
+                <>
+                  <div className="h-px bg-border" />
+                  {cur.cyphras_private.splitsDetail.map((s, i) => (
+                    <div key={i} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="text-foreground tabular-nums">
+                        {s.amount} {cur.cyphras_private!.asset}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <PhaseBadge phase={splitPhase(s.status, s.scheduledFor)} size={12} />
+                        {s.revealTxHash && (
+                          <a
+                            href={getExplorerTxUrl(s.revealTxHash, networkId)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="View delivery transaction"
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            <ExternalLink size={12} />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           )}
 
@@ -537,29 +681,31 @@ export default function OperationDetailSheet({
 
         <div className="flex flex-col gap-3 border-t border-border px-5 py-4 shrink-0">
           {cur.cyphras_private?.direction === 'out' &&
-            (cur.cyphras_private.failedCounters?.length ?? 0) > 0 && (
+            (cur.cyphras_private.failedCounters?.length ?? 0) +
+              (cur.cyphras_private.reclaimableCounters?.length ?? 0) >
+              0 && (
               <div className="flex gap-3">
                 <Button
                   className="flex-1"
                   disabled={submitting}
                   onClick={() =>
-                    void privateAction(
-                      SERVICE_TYPES.PRIVATE_RECOVER_NOTE,
-                      cur.cyphras_private?.failedCounters ?? []
-                    )
+                    void privateAction(SERVICE_TYPES.PRIVATE_SELF_RECLAIM, [
+                      ...(cur.cyphras_private?.failedCounters ?? []),
+                      ...(cur.cyphras_private?.reclaimableCounters ?? []),
+                    ])
                   }
                 >
-                  {submitting ? 'Recovering' : 'Recover to my wallet'}
+                  {submitting ? 'Reclaiming' : 'Reclaim to my wallet'}
                 </Button>
                 <Button
                   variant="outline"
                   className="flex-1"
                   disabled={submitting}
                   onClick={() =>
-                    void privateAction(
-                      SERVICE_TYPES.PRIVATE_REVEAL_NOTE,
-                      cur.cyphras_private?.failedCounters ?? []
-                    )
+                    void privateAction(SERVICE_TYPES.PRIVATE_REVEAL_NOTE, [
+                      ...(cur.cyphras_private?.failedCounters ?? []),
+                      ...(cur.cyphras_private?.reclaimableCounters ?? []),
+                    ])
                   }
                 >
                   Deliver again
@@ -567,25 +713,20 @@ export default function OperationDetailSheet({
               </div>
             )}
           {cur.cyphras_private?.direction === 'out' &&
-            (cur.cyphras_private.reclaimableCounters?.length ?? 0) > 0 && (
-              <Button
-                variant="outline"
-                className="w-full"
-                disabled={submitting}
-                onClick={() =>
-                  void privateAction(
-                    SERVICE_TYPES.PRIVATE_SELF_RECLAIM,
-                    cur.cyphras_private?.reclaimableCounters ?? []
-                  )
-                }
-              >
-                {submitting ? 'Reclaiming' : 'Reclaim to my wallet'}
-              </Button>
+            (cur.cyphras_private.unsentCounters?.length ?? 0) > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {cur.cyphras_private.unsentCounters!.length} part
+                {cur.cyphras_private.unsentCounters!.length > 1 ? 's' : ''} could not be deposited
+                (for example the balance was too low), so those funds never left your wallet. You
+                can send again.
+              </p>
             )}
           {actionError && (
             <div className="flex flex-col gap-1">
               <p className="text-xs text-foreground">
-                Could not complete that just now. Your funds are safe in the pool, try again.
+                {/not yet indexed/i.test(actionError)
+                  ? 'This part has not been deposited on-chain yet, so there is nothing to reclaim. Your funds are still in your wallet and Cyphras will keep retrying the delivery.'
+                  : 'Could not complete that just now. Your funds are safe in the pool, try again.'}
               </p>
               <p className="text-xs text-muted-foreground">{actionError}</p>
             </div>

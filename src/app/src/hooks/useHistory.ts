@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNetwork } from '@/context/NetworkContext'
 import type { PhaseInfo } from '@/lib/phase'
+import type { PrivateNote } from '@ext-types/index'
 
 // SAC transfers Horizon reports on invoke_host_function ops; used to recognise a private receive
 // (a pool contract crediting this account).
@@ -26,14 +27,22 @@ export interface CreditedEffect {
 // sender row) as a Cyphras private payment so the history renders it as a real send/receive.
 export interface CyphrasPrivate {
   direction: 'in' | 'out'
-  amount: string // display units
+  amount: string // display units; what actually left the wallet (intended minus splits that never deposited)
+  // What the chain confirms actually left the wallet, and what reached the recipient. Shown against
+  // amount so the row never claims more was sent than the chain verifies.
+  committedAmount?: string
+  deliveredAmount?: string
+  // Raw splits of this send, for the live delivery bar that time-interpolates scheduled splits.
+  notes?: PrivateNote[]
   asset: string
   recipient?: string
   splits?: number
   phase?: PhaseInfo // drives the colored label, icon, and ETA in the UI
-  splitsDetail?: { amount: string; status: string; scheduledFor?: string }[]
-  failedCounters?: number[] // counters of failed splits, for recover/retry from history
-  reclaimableCounters?: number[] // counters of in-flight (committed/scheduled) splits, for self-reclaim
+  splitsDetail?: { amount: string; status: string; scheduledFor?: string; revealTxHash?: string }[]
+  failedCounters?: number[] // failed splits WITH a leaf on-chain (in the pool), for recover/deliver-again
+  unsentCounters?: number[] // failed splits with no leaf: never deposited, funds still in the wallet
+  reclaimableCounters?: number[] // committed (leaf on-chain) splits past the stuck window, for self-reclaim
+  retryableCounters?: number[] // splits whose deposit never landed (no leaf); re-committed automatically
 }
 
 export interface Operation {

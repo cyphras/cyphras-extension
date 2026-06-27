@@ -182,12 +182,93 @@ function stuckThresholdMs(level: string): number {
   return maxDelay + 5 * 60_000
 }
 
+// A split has left the wallet once its commit leaf is on-chain (status committed/scheduled/revealed, or committedOnChain); a still-pending one is never counted.
+function noteCommitted(n: PrivateNote): boolean {
+  return (
+    n.committedOnChain === true ||
+    n.status === 'committed' ||
+    n.status === 'scheduled' ||
+    n.status === 'revealed'
+  )
+}
+
+// Sum a send's split denominations into intended/committed/delivered totals, so History and the Home
+// status card show the same chain-verified figures from one source.
+export function summarizeSendAmounts(group: PrivateNote[]): {
+  intended: bigint
+  committed: bigint
+  delivered: bigint
+} {
+  const intended = group.reduce((sum, n) => sum + BigInt(n.denomination), 0n)
+  const committed = group.reduce(
+    (sum, n) => (noteCommitted(n) ? sum + BigInt(n.denomination) : sum),
+    0n
+  )
+  const delivered = group.reduce(
+    (sum, n) => (n.status === 'revealed' && !n.recovered ? sum + BigInt(n.denomination) : sum),
+    0n
+  )
+  return { intended, committed, delivered }
+}
+
+// Fallback delay window per privacy level, only used for notes scheduled before scheduledAt was recorded.
+function nominalDelayMs(level: string): number {
+  return (level === 'fast' ? 5 : level === 'maximum' ? 45 : 20) * 60_000
+}
+
+// A split's 0-1 delivery progress for the moving bar: deposited is 0.5, a scheduled split advances toward
+// 1 with its ETA countdown, delivered is 1. Drives the bar only; shown amounts stay chain-verified.
+function noteDeliveryFraction(n: PrivateNote, now: number): number {
+  if (n.status === 'revealed') {
+    return 1
+  }
+  if (n.status === 'scheduled' && n.scheduledFor) {
+    const target = new Date(n.scheduledFor).getTime()
+    const total = n.scheduledAt ? target - n.scheduledAt : nominalDelayMs(n.privacyLevel)
+    const elapsed = total - (target - now)
+    return 0.5 + 0.5 * Math.min(1, Math.max(0, total > 0 ? elapsed / total : 1))
+  }
+  if (n.status === 'committed' || n.status === 'scheduled') {
+    return 0.5
+  }
+  return 0
+}
+
+// Overall 0-1 delivery progress, amount-weighted across splits so a multi-split send reads as one fill.
+// Clamped to never fall below what has actually reached the recipient.
+export function deliveryProgress(group: PrivateNote[], now: number): number {
+  let intended = 0
+  let delivered = 0
+  let progress = 0
+  for (const n of group) {
+    // A split that failed before depositing never left the wallet; keep it out of the bar's total.
+    if (n.status === 'failed' && !noteCommitted(n)) {
+      continue
+    }
+    const d = Number(n.denomination)
+    intended += d
+    if (n.status === 'revealed' && !n.recovered) {
+      delivered += d
+    }
+    progress += d * noteDeliveryFraction(n, now)
+  }
+  if (intended === 0) {
+    return 0
+  }
+  return Math.max(progress / intended, delivered / intended)
+}
+
 function buildSenderRow(
   group: PrivateNote[],
   formatStroops: (stroops: string, asset: string) => string
 ): Operation {
   const asset = group[0].asset
-  const total = group.reduce((sum, n) => sum + BigInt(n.denomination), 0n)
+  const { intended, committed, delivered } = summarizeSendAmounts(group)
+  // What actually left the wallet: drop splits that failed before depositing (their funds never moved).
+  const unsent = group
+    .filter((n) => n.status === 'failed' && !noteCommitted(n))
+    .reduce((sum, n) => sum + BigInt(n.denomination), 0n)
+  const sent = intended - unsent
   const count = group.length
   const phase = summarizePhase(group)
   const createdAt = Math.max(...group.map((n) => n.createdAt ?? 0))
@@ -200,7 +281,10 @@ function buildSenderRow(
     transaction_hash: '',
     cyphras_private: {
       direction: 'out',
-      amount: formatStroops(total.toString(), asset),
+      amount: formatStroops(sent.toString(), asset),
+      committedAmount: formatStroops(committed.toString(), asset),
+      deliveredAmount: formatStroops(delivered.toString(), asset),
+      notes: group,
       asset,
       recipient: group[0].recipient,
       splits: count,
@@ -209,12 +293,27 @@ function buildSenderRow(
         amount: formatStroops(n.denomination, asset),
         status: n.recovered ? (n.status === 'revealed' ? 'recovered' : 'recovering') : n.status,
         scheduledFor: n.scheduledFor,
+        revealTxHash: n.revealTxHash,
       })),
-      failedCounters: group.filter((n) => n.status === 'failed').map((n) => n.counter),
+      failedCounters: group
+        .filter((n) => n.status === 'failed' && noteCommitted(n))
+        .map((n) => n.counter),
+      unsentCounters: group
+        .filter((n) => n.status === 'failed' && !noteCommitted(n))
+        .map((n) => n.counter),
       reclaimableCounters: group
         .filter(
           (n) =>
+            noteCommitted(n) &&
             (n.status === 'committed' || n.status === 'scheduled') &&
+            Date.now() - (n.createdAt ?? 0) > stuckThresholdMs(n.privacyLevel)
+        )
+        .map((n) => n.counter),
+      retryableCounters: group
+        .filter(
+          (n) =>
+            !noteCommitted(n) &&
+            (n.status === 'committed' || n.status === 'pending') &&
             Date.now() - (n.createdAt ?? 0) > stuckThresholdMs(n.privacyLevel)
         )
         .map((n) => n.counter),

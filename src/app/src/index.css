@@ -168,3 +168,21 @@ html.is-popup #root {
 html.is-popup #root {
   overflow-y: auto;
 }
+
+@keyframes cyphras-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  transform: translateX(-100%);
+  animation: cyphras-shimmer 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+  }
+}

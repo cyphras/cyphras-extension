@@ -1,3 +1,4 @@
+import { useRef, type CSSProperties } from 'react'
 import { Loader2, Clock, CircleCheck, AlertCircle, RotateCcw } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { PhaseKey, PhaseInfo } from '@/lib/phase'
@@ -26,14 +27,34 @@ interface Props {
   hideLabel?: boolean
 }
 
+// Anchor an icon's spin/pulse to the global cycle (negative delay = elapsed time) so badges share a
+// phase. Cached per icon element: recomputing every render would reset the delay and stutter the icon.
+function useSyncedAnimationDelay(Icon: LucideIcon, cycleMs: number): CSSProperties | undefined {
+  const cache = useRef<{ icon: LucideIcon | null; style: CSSProperties | undefined }>({
+    icon: null,
+    style: undefined,
+  })
+  if (cache.current.icon !== Icon) {
+    cache.current = {
+      icon: Icon,
+      style: cycleMs ? { animationDelay: `-${Date.now() % cycleMs}ms` } : undefined,
+    }
+  }
+  return cache.current.style
+}
+
 export function PhaseBadge({ phase, size = 13, className = '', hideLabel = false }: Props) {
   const v = VISUAL[phase.key]
   const anim = v.spin ? 'animate-spin' : v.pulse ? 'animate-pulse' : ''
+  const cycleMs = v.spin ? 1000 : v.pulse ? 2000 : 0
+  const animStyle = useSyncedAnimationDelay(v.Icon, cycleMs)
   const text = hideLabel ? phase.eta : `${phase.label}${phase.eta ? ` - ${phase.eta}` : ''}`
   return (
     <span className={`inline-flex min-w-0 items-center gap-1.5 ${v.color} ${className}`}>
-      <v.Icon size={size} className={`shrink-0 ${anim}`} />
-      {text && <span className="truncate whitespace-nowrap text-xs font-medium">{text}</span>}
+      <v.Icon size={size} className={`shrink-0 ${anim}`} style={animStyle} />
+      {text && (
+        <span className="truncate whitespace-nowrap text-xs font-medium tabular-nums">{text}</span>
+      )}
     </span>
   )
 }

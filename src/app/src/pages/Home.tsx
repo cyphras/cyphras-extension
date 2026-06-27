@@ -12,8 +12,9 @@ import WalletNavbar from '@/components/WalletNavbar'
 import TokenDetailSheet from '@/components/TokenDetailSheet'
 import { Alert } from '@/components/Alert'
 import { PhaseBadge } from '@/components/PhaseBadge'
+import { DeliveryProgressBar } from '@/components/DeliveryProgressBar'
 import { StellarAvatar } from '@/components/StellarAvatar'
-import { groupSenderNotes } from '@/lib/historyUtils'
+import { groupSenderNotes, summarizeSendAmounts } from '@/lib/historyUtils'
 import { summarizePhase, aggregatePhase } from '@/lib/phase'
 import type { PhaseInfo } from '@/lib/phase'
 import type { AssetBalance } from '@/hooks/useBalances'
@@ -150,20 +151,39 @@ export default function Home() {
 
   const publicKey = status.publicKey ?? ''
 
+  const formatStroops = (stroops: string, asset: string): string => {
+    const decimals = activeNetwork.privateAssets?.find((a) => a.asset === asset)?.decimals ?? 7
+    const base = 10n ** BigInt(decimals)
+    const v = BigInt(stroops)
+    const frac = (v % base).toString().padStart(decimals, '0').replace(/0+$/, '')
+    return frac ? `${v / base}.${frac}` : (v / base).toString()
+  }
+
   // Group by send (batchId) with the same logic as History, so two sends to the same recipient stay
   // distinct rather than merging on a time window.
   const sendStatus = (() => {
     const batches = groupSenderNotes(notes)
     const inFlight = (s: PrivateNote['status']) =>
       s === 'pending' || s === 'committed' || s === 'scheduled'
-    const activeSends: { key: string; recipient: string; phase: PhaseInfo }[] = []
+    const activeSends: {
+      key: string
+      recipient: string
+      phase: PhaseInfo
+      asset: string
+      amount: string
+      notes: PrivateNote[]
+    }[] = []
     let latestDeliveredAt = 0
     for (const b of batches) {
       if (b.some((n) => inFlight(n.status))) {
+        const sums = summarizeSendAmounts(b)
         activeSends.push({
           key: b[0].batchId ?? String(b[0].counter),
           recipient: b[0].recipient,
           phase: summarizePhase(b),
+          asset: b[0].asset,
+          amount: formatStroops(sums.intended.toString(), b[0].asset),
+          notes: b,
         })
         continue
       }
@@ -206,7 +226,9 @@ export default function Home() {
 
   const refreshNotes = useCallback(() => {
     chrome.runtime.sendMessage({ type: SERVICE_TYPES.PRIVATE_LIST_NOTES }, (r: ServiceResponse) => {
-      setNotes(r?.notes ?? [])
+      if (Array.isArray(r?.notes)) {
+        setNotes(r.notes)
+      }
     })
   }, [])
 
@@ -314,11 +336,13 @@ export default function Home() {
                   </button>
                 </div>
                 <p className="mt-1 text-2xl font-bold text-foreground tracking-wider">
-                  {hideBalance
-                    ? '******'
-                    : totalUsd !== null
-                      ? formatSmall(totalUsd)
-                      : formatValue(0)}
+                  {hideBalance ? (
+                    '******'
+                  ) : totalUsd !== null ? (
+                    formatSmall(totalUsd)
+                  ) : (
+                    <span className="inline-block h-7 w-28 animate-pulse rounded bg-muted align-middle" />
+                  )}
                 </p>
                 {!hideBalance && dailyChangeUsd !== null && dailyChangePct !== null && (
                   <p
@@ -368,13 +392,19 @@ export default function Home() {
                         </div>
                       )}
                       <div className="flex flex-1 flex-col gap-1 min-w-0">
-                        <p
-                          className={`truncate text-sm font-medium text-foreground ${activeSends.length === 1 ? 'font-mono' : ''}`}
-                        >
-                          {activeSends.length > 1
-                            ? `${activeSends.length} private sends`
-                            : `${activeSends[0].recipient.slice(0, 4)}...${activeSends[0].recipient.slice(-4)}`}
-                        </p>
+                        {activeSends.length > 1 ? (
+                          <p className="truncate text-sm font-medium text-foreground">
+                            {activeSends.length} private sends
+                          </p>
+                        ) : (
+                          <p className="truncate text-sm font-medium text-foreground tabular-nums">
+                            {activeSends[0].amount} {activeSends[0].asset}
+                            <span className="ml-1.5 font-mono text-xs font-normal text-muted-foreground">
+                              to {activeSends[0].recipient.slice(0, 4)}...
+                              {activeSends[0].recipient.slice(-4)}
+                            </span>
+                          </p>
+                        )}
                         {aggregate && <PhaseBadge phase={aggregate} />}
                       </div>
                     </button>
@@ -399,6 +429,13 @@ export default function Home() {
                       </button>
                     )}
                   </div>
+                  {activeSends.length === 1 && (
+                    <DeliveryProgressBar
+                      key={activeSends[0].key}
+                      notes={activeSends[0].notes}
+                      className="mt-2.5"
+                    />
+                  )}
                   {activeSends.length > 1 && progressExpanded && (
                     <div className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
                       {activeSends.map((s) => (

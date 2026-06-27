@@ -66,6 +66,16 @@ export async function getIconMap(networkId: string): Promise<Map<string, string>
   return iconMap
 }
 
+// Native first, then by USD value, then alphabetically; before prices load (usdValue null) it falls to native-then-alphabetical.
+function compareBalances(a: AssetBalance, b: AssetBalance): number {
+  if (a.isNative) return -1
+  if (b.isNative) return 1
+  if (a.usdValue !== null && b.usdValue !== null) return b.usdValue - a.usdValue
+  if (a.usdValue !== null) return -1
+  if (b.usdValue !== null) return 1
+  return a.code.localeCompare(b.code)
+}
+
 export function useBalances(publicKey: string | undefined): BalanceState & { refresh: () => void } {
   const { activeNetwork } = useNetwork()
   const [state, setState] = useState<BalanceState>({
@@ -139,15 +149,28 @@ export function useBalances(publicKey: string | undefined): BalanceState & { ref
         const subentryCount = response.subentryCount ?? 0
         const account = { balances: response.rawBalances }
 
-        const rawBalances = account.balances.map((b) => ({
+        const rawBalances: AssetBalance[] = account.balances.map((b) => ({
           code: b.asset_type === 'native' ? 'XLM' : (b.asset_code ?? ''),
           issuer: b.asset_issuer ?? '',
           balance: b.balance,
           isNative: b.asset_type === 'native',
-          usdPrice: null as number | null,
-          usdValue: null as number | null,
-          icon: undefined as string | undefined,
+          usdPrice: null,
+          usdValue: null,
+          change24h: null,
+          icon: undefined,
         }))
+
+        // Show amounts as soon as the account loads so the wallet opens without waiting on prices; totalUsd null marks prices still loading.
+        setState({
+          balances: [...rawBalances].sort(compareBalances),
+          totalUsd: null,
+          dailyChangeUsd: null,
+          dailyChangePct: null,
+          loading: false,
+          error: null,
+          isFunded: true,
+          subentryCount,
+        })
 
         const tokenCodes = [...new Set(rawBalances.map((b) => b.code))]
         const [{ prices, changes_24h }, iconMap] = await Promise.all([
@@ -165,14 +188,7 @@ export function useBalances(publicKey: string | undefined): BalanceState & { ref
             const icon = b.isNative ? undefined : iconMap.get(`${b.code}:${b.issuer}`)
             return { ...b, usdPrice: price, usdValue, change24h, icon }
           })
-          .sort((a, b) => {
-            if (a.isNative) return -1
-            if (b.isNative) return 1
-            if (a.usdValue !== null && b.usdValue !== null) return b.usdValue - a.usdValue
-            if (a.usdValue !== null) return -1
-            if (b.usdValue !== null) return 1
-            return a.code.localeCompare(b.code)
-          })
+          .sort(compareBalances)
 
         const totalUsd = balancesWithPrices.reduce((sum, b) => {
           return b.usdValue !== null ? sum + b.usdValue : sum

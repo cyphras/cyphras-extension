@@ -23,9 +23,17 @@ export interface NoteRecord {
   jobId: string | null
   // When the relayer will execute the reveal (privacy delay), so the UI can show a delivery ETA.
   scheduledFor?: string
+  // When scheduling happened, so the UI knows the full delay window (scheduledFor - scheduledAt) and can
+  // advance the delivery bar in step with the countdown rather than guessing the duration.
+  scheduledAt?: number
   // A broadcast whose leaf never appears is only resubmitted after its validity window elapses, so
   // the original can no longer land.
   broadcastAt?: number
+  // The processor's last on-chain check that this note's commit leaf is in the pool. Lets the UI show
+  // what actually left the wallet (a verified deposit) instead of the intended amount; refreshed each pass.
+  committedOnChain?: boolean
+  // The commit tx's fee_charged (stroops), captured at commit confirm for an exact local fee total; absent on crash-recovered/pre-feature notes.
+  commitFeeStroops?: string
   // Bounds commit retries so a note that keeps failing is eventually given up on.
   commitAttempts?: number
   lastError?: string

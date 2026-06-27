@@ -12,6 +12,7 @@ import {
   AppWindow,
   Info,
   ExternalLink,
+  MessageSquare,
   X,
 } from 'lucide-react'
 
@@ -22,6 +23,8 @@ const LINKS = [
   { label: 'Privacy Policy', url: 'https://cyphras.com/privacy' },
   { label: 'Visit Website', url: 'https://cyphras.com' },
 ]
+
+const FEEDBACK_URL = 'https://cyphras.com/feedback'
 
 interface GroupRowProps {
   icon: React.ElementType
@@ -167,6 +170,11 @@ export default function Settings() {
         </div>
 
         <div className="flex flex-col rounded-xl bg-card overflow-hidden divide-y divide-border">
+          <GroupRow
+            icon={MessageSquare}
+            title="Send Feedback"
+            onClick={() => window.open(FEEDBACK_URL, '_blank', 'noopener,noreferrer')}
+          />
           <GroupRow icon={Info} title="About Cyphras" onClick={() => setAboutOpen(true)} />
         </div>
       </div>

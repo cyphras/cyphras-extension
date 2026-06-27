@@ -32,16 +32,21 @@ function etaSeconds(eta: string): number {
   return m[2] === 'm' ? Number(m[1]) * 60 : Number(m[1])
 }
 
-// One split's phase. The committed and scheduled states both read as "Delivering" so the user sees a
-// single Committing -> Delivering -> Delivered progression; only scheduled carries a delivery ETA.
+// One split's phase. "Deposited" (committed) means the funds are in the pool but the relayer has not
+// scheduled the reveal yet, so there is no ETA; "Delivering" (scheduled) always carries the delivery
+// ETA. Progression: Shielding -> Deposited -> Delivering -> Delivered.
 export function splitPhase(status: string, scheduledFor?: string): PhaseInfo {
   switch (status) {
     case 'pending':
       return { key: 'committing', label: 'Shielding' }
     case 'committed':
-      return { key: 'delivering', label: 'Delivering' }
-    case 'scheduled':
-      return { key: 'waiting', label: 'Delivering', eta: formatEta(scheduledFor) }
+      return { key: 'delivering', label: 'Deposited' }
+    case 'scheduled': {
+      const eta = formatEta(scheduledFor)
+      return eta
+        ? { key: 'waiting', label: 'Delivering', eta }
+        : { key: 'delivering', label: 'Finalizing' }
+    }
     case 'revealed':
       return { key: 'delivered', label: 'Delivered' }
     case 'recovering':
@@ -98,9 +103,12 @@ export function summarizePhase(group: PrivateNote[]): PhaseInfo {
       .filter((s): s is string => !!s)
       .sort()
       .at(-1)
-    return { key: 'waiting', label: `Delivering${suffix}`, eta: formatEta(latest) }
+    const eta = formatEta(latest)
+    return eta
+      ? { key: 'waiting', label: `Delivering${suffix}`, eta }
+      : { key: 'delivering', label: `Finalizing${suffix}` }
   }
-  if (committed > 0) return { key: 'delivering', label: `Delivering${suffix}` }
+  if (committed > 0) return { key: 'delivering', label: `Deposited${suffix}` }
   return { key: 'recovering', label: `Recovering${suffix}` }
 }
 

@@ -30,10 +30,15 @@ export const DEFAULT_NETWORKS: NetworkConfig[] = [
     explorerUrl: 'https://stellar.expert/explorer/public',
     txTimeout: 90,
     isDefault: true,
-    // Empty until the mainnet factory/SACs are deployed; placeholders would point sends at non-existent contracts.
-    privatePoolFactory: '',
+    privatePoolFactory: 'CBMBKXI7YNMJYLLHP7CVKMRWUMVPJ4MTVOEP3UKDMA7FIPTD3QLJQ227',
     relayerUrl: 'https://api.cyphras.com',
-    privateAssets: [],
+    privateAssets: [
+      {
+        asset: 'XLM',
+        token: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA',
+        decimals: 7,
+      },
+    ],
   },
   {
     id: 'testnet',
