@@ -60,7 +60,7 @@ const PreferencesContext = createContext<PreferencesContextValue | null>(null)
 
 export function PreferencesProvider({ children }: { children: React.ReactNode }) {
   const [currency, setCurrencyState] = useState<Currency>('USD')
-  const [theme, setThemeState] = useState<Theme>('system')
+  const [theme, setThemeState] = useState<Theme>('light')
   const [explorer, setExplorerState] = useState<Explorer>('stellar.expert')
   const [hideSmallPayments, setHideSmallPaymentsState] = useState(false)
   const [sidebarByDefault, setSidebarByDefaultState] = useState(false)
@@ -82,7 +82,7 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
         applyTheme(t)
         localStorage.setItem('cyphras_theme', t)
       } else {
-        applyTheme('system')
+        applyTheme('light')
       }
       if (e) setExplorerState(e)
       if (h !== undefined) setHideSmallPaymentsState(h)
