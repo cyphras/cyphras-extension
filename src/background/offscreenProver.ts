@@ -23,10 +23,11 @@ async function ensureOffscreen(): Promise<void> {
   await creating
 }
 
-export async function generateProof(inputs: ProofInputs): Promise<ProvedReveal> {
+export async function generateProof(inputs: ProofInputs, network: string): Promise<ProvedReveal> {
   await ensureOffscreen()
   const res = (await chrome.runtime.sendMessage({
     target: 'offscreen-prove',
+    network,
     inputs: serializeProofInputs(inputs),
   })) as {
     ok: boolean
