@@ -1,4 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useAssetList } from '@/hooks/useAssetList'
+import { useVerifiedAssets } from '@/hooks/useVerifiedAssets'
+import { VerifiedMark } from '@/components/token/VerifiedMark'
+import { Collapse } from '@/components/Collapse'
 import { useNavigate } from 'react-router-dom'
 import { useWallet } from '@/context/WalletContext'
 import { useNetwork } from '@/context/NetworkContext'
@@ -6,7 +10,25 @@ import { usePreferences } from '@/context/PreferencesContext'
 import { useBalances } from '@/hooks/useBalances'
 import { Button } from '@/components/ui/button'
 import {
-  ArrowUpDown,
+  SideCard,
+  AmountInput,
+  AmountValue,
+  QuickFillChips,
+  FlipButton,
+} from '@/components/PairCard'
+import { AssetPickerSheet, type PickerItem } from '@/components/AssetPickerSheet'
+import { getChainIcons } from '@/lib/chainInfo'
+import { formatFiat } from '@/lib/activity'
+import {
+  parseUnits,
+  formatUnits,
+  fractionUnits,
+  formatBalanceText,
+  formatSignificant,
+  spendableUnits,
+  truncateDecimals,
+} from '@/lib/amount'
+import {
   ExternalLink,
   Settings,
   ChevronDown,
@@ -17,13 +39,17 @@ import {
   CheckCircle2,
   ArrowDown,
   X,
-  Search,
   AlertTriangle,
+  ArrowLeftRight,
+  ChevronRight,
 } from 'lucide-react'
 import WalletNavbar from '@/components/WalletNavbar'
 import { SERVICE_TYPES } from '@constants/services'
+import { chainById } from '@constants/chains'
 import type { SwapQuote } from '@ext-types/index'
-import type { AssetBalance } from '@/hooks/useBalances'
+import { CopyValue, DetailRow, NetworkValue } from '@/components/TxDetailParts'
+import { RoutePath } from '@/components/BrandMarks'
+import { useStellarChain } from '@/hooks/useStellarChain'
 
 type Step = 'form' | 'confirm' | 'success'
 type FeeTier = 'low' | 'medium' | 'high' | 'custom'
@@ -159,95 +185,10 @@ function AssetIcon({ icon, code, size = 32 }: { icon?: string; code: string; siz
   )
 }
 
-function AssetPickerSheet({
-  balances,
-  selectedKey,
-  excludeKey,
-  onSelect,
-  onClose,
-}: {
-  balances: AssetBalance[]
-  selectedKey: string
-  excludeKey?: string
-  onSelect: (key: string) => void
-  onClose: () => void
-}) {
-  const [query, setQuery] = useState('')
-  const available = excludeKey
-    ? balances.filter((b) => `${b.code}:${b.issuer}` !== excludeKey)
-    : balances
-  const filtered = available.filter((b) => {
-    const q = query.toLowerCase()
-    return b.code.toLowerCase().includes(q) || b.issuer.toLowerCase().includes(q)
-  })
-
-  return (
-    <div className="fixed inset-0 z-[60] flex flex-col">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="absolute bottom-0 left-0 right-0 bg-background rounded-t-2xl flex flex-col max-h-[75vh]">
-        <div className="flex justify-center pt-3 pb-1 shrink-0">
-          <div className="h-1 w-10 rounded-full bg-muted-foreground/20" />
-        </div>
-        <div className="flex items-center justify-between px-5 py-3 shrink-0">
-          <p className="text-sm font-semibold text-foreground">Select asset</p>
-          <button
-            onClick={onClose}
-            className="cursor-pointer rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-          >
-            <X size={16} />
-          </button>
-        </div>
-        {available.length > 4 && (
-          <div className="px-5 pb-3 shrink-0">
-            <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2">
-              <Search size={14} className="text-muted-foreground shrink-0" />
-              <input
-                autoFocus
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search"
-                className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
-              />
-            </div>
-          </div>
-        )}
-        <div className="overflow-y-auto flex-1 px-3 pb-4 flex flex-col gap-1">
-          {filtered.map((b) => {
-            const key = `${b.code}:${b.issuer}`
-            return (
-              <button
-                key={key}
-                onClick={() => {
-                  onSelect(key)
-                  onClose()
-                }}
-                className={`cursor-pointer flex items-center gap-3 w-full rounded-xl px-3 py-3 text-left transition-colors ${key === selectedKey ? 'bg-primary/10 border border-primary/20' : 'hover:bg-muted border border-transparent'}`}
-              >
-                <AssetIcon icon={b.icon} code={b.code} size={36} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground">{b.code}</p>
-                  {!b.isNative && (
-                    <p className="text-xs font-mono text-muted-foreground truncate">
-                      {b.issuer.slice(0, 6)}...{b.issuer.slice(-6)}
-                    </p>
-                  )}
-                </div>
-                <p className="text-sm text-foreground tabular-nums shrink-0">
-                  {parseFloat(b.balance).toLocaleString('en-US', { maximumFractionDigits: 4 })}
-                </p>
-              </button>
-            )
-          })}
-          {filtered.length === 0 && (
-            <p className="text-xs text-muted-foreground text-center py-8">No assets found</p>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '3']
+
+// Picker keys for tokens the user does not hold yet (no trustline).
+const ADD_PREFIX = 'add:'
 
 function SettingsModal({
   feeStats,
@@ -477,7 +418,17 @@ export default function Swap() {
   const navigate = useNavigate()
   const { status } = useWallet()
   const { activeNetwork } = useNetwork()
-  const { balances, loading: balancesLoading, isFunded } = useBalances(status.publicKey)
+  // Stellar is home: the bridge hint invites USDC in from the EVM side.
+  const evmChainName =
+    chainById(activeNetwork.id === 'testnet' ? 'eip155:11155111' : 'eip155:1')?.name ?? 'Ethereum'
+  const stellarChain = useStellarChain()
+  const {
+    balances: allBalances,
+    loading: balancesLoading,
+    isFunded,
+  } = useBalances(status.publicKey)
+  // The swap engine is Stellar DEX path payments; EVM assets never enter it.
+  const balances = allBalances.filter((b) => !b.chain.startsWith('eip155'))
   const { getExplorerTxUrl } = usePreferences()
 
   const [step, setStep] = useState<Step>('form')
@@ -489,6 +440,23 @@ export default function Swap() {
   const [quoteLoading, setQuoteLoading] = useState(false)
   const [submitLoading, setSubmitLoading] = useState(false)
   const [txHash, setTxHash] = useState('')
+  // What the path payment actually delivered, read back from Horizon once confirmed.
+  const [received, setReceived] = useState('')
+  useEffect(() => {
+    if (!txHash) return
+    let cancelled = false
+    setReceived('')
+    fetch(`${activeNetwork.horizonUrl}/transactions/${txHash}/operations`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { _embedded?: { records?: Array<{ type: string; amount?: string }> } } | null) => {
+        const op = d?._embedded?.records?.find((o) => o.type.startsWith('path_payment'))
+        if (!cancelled && op?.amount) setReceived(op.amount)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [txHash, activeNetwork.horizonUrl])
 
   const [showSettings, setShowSettings] = useState(false)
   const [showFromPicker, setShowFromPicker] = useState(false)
@@ -501,6 +469,20 @@ export default function Swap() {
   const [feeStats, setFeeStats] = useState<FeeStats>({ low: '100', medium: '500', high: '2000' })
 
   const [xdrOpen, setXdrOpen] = useState(false)
+  const [showDetails, setShowDetails] = useState(false)
+  const isVerified = useVerifiedAssets()
+  const { assets: curated } = useAssetList()
+  const [stellarIcon, setStellarIcon] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    const id = activeNetwork.id === 'testnet' ? 'stellar:testnet' : 'stellar:pubnet'
+    let cancelled = false
+    getChainIcons([id]).then((icons) => {
+      if (!cancelled) setStellarIcon(icons.get(id))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activeNetwork.id])
   const [xdrCopied, setXdrCopied] = useState(false)
 
   const lastFromKeyRef = useRef(fromKey)
@@ -509,6 +491,8 @@ export default function Swap() {
   if (fromKey) lastFromKeyRef.current = fromKey
   if (toKey) lastToKeyRef.current = toKey
   if (amount) lastAmountRef.current = amount
+  // The quote keeps refreshing after submit; the success screen shows what was confirmed.
+  const lastReceivedRef = useRef('')
 
   useEffect(() => {
     fetchFeeStats(activeNetwork.horizonUrl).then(setFeeStats)
@@ -522,6 +506,20 @@ export default function Swap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [balances])
 
+  // Pre-fill "To" once with the likeliest pair (a held verified USDC first),
+  // and only while nothing is picked, so it never overrides a choice.
+  const autoPickedTo = useRef(false)
+  useEffect(() => {
+    if (autoPickedTo.current || toKey || balances.length === 0) return
+    autoPickedTo.current = true
+    const others = balances.filter((b) => `${b.code}:${b.issuer}` !== fromKey)
+    const pick =
+      others.find((b) => b.code === 'USDC' && isVerified(b.code, b.issuer)) ??
+      others.find((b) => isVerified(b.code, b.issuer)) ??
+      others[0]
+    if (pick) setToKey(`${pick.code}:${pick.issuer}`)
+  }, [balances, fromKey, toKey, isVerified])
+
   const fromBalance = balances.find((b) => `${b.code}:${b.issuer}` === fromKey)
   const toBalance = balances.find((b) => `${b.code}:${b.issuer}` === toKey)
   const fromObj = parseKey(fromKey)
@@ -531,18 +529,45 @@ export default function Swap() {
   const activeFeeXlm = stroopsToXlm(activeFeeStroops)
 
   const amountNum = parseFloat(amount)
-  const fromBalanceNum = fromBalance ? parseFloat(fromBalance.balance) : 0
-  const maxSendable = fromBalance?.isNative ? Math.max(0, fromBalanceNum - 1) : fromBalanceNum
+  // What can leave: the account reserve (grows 0.5 XLM per trustline or offer)
+  // and open-offer liabilities stay behind, plus the fee when selling XLM.
+  const feeUnits = BigInt(activeFeeStroops)
+  const spendable = fromBalance
+    ? spendableUnits(
+        fromBalance.balance,
+        fromBalance.decimals,
+        fromBalance.locked,
+        fromBalance.isNative ? feeUnits : 0n
+      )
+    : 0n
+  const xlmBalance = balances.find((b) => b.isNative)
+  const xlmFree = xlmBalance ? spendableUnits(xlmBalance.balance, 7, xlmBalance.locked) : 0n
+  const amountUnits = fromBalance
+    ? parseUnits(truncateDecimals(amount || '0', fromBalance.decimals), fromBalance.decimals)
+    : null
+
+  // Quick fills work in base units so the reserve, fee and asset decimals are
+  // respected exactly, with no float rounding.
+  const setSwapAmount = (value: string) => {
+    setAmount(value)
+    setQuote(null)
+    setError('')
+  }
+  const fillSwapFraction = (fraction: number) => {
+    if (!fromBalance) return
+    setSwapAmount(formatUnits(fractionUnits(spendable, fraction), fromBalance.decimals))
+  }
 
   const amountError: string | null = (() => {
     if (!amount || amountNum <= 0) return null
     if (fromKey === toKey) return 'Cannot swap an asset with itself'
     if (!fromBalance) return null // balances still loading
-    if (amountNum > maxSendable) {
-      return fromBalance.isNative
-        ? `Insufficient balance. Max sendable: ${maxSendable.toFixed(7)} XLM (1 XLM reserved for fees)`
-        : `Insufficient balance. You have ${parseFloat(fromBalance.balance).toFixed(7)} ${fromObj.code}`
+    if (amountUnits !== null && amountUnits > spendable) {
+      return `You can swap up to ${formatUnits(spendable, fromBalance.decimals)} ${fromObj.code}${
+        fromBalance.isNative ? ' (the rest is the account reserve and the fee)' : ''
+      }`
     }
+    if (!fromBalance.isNative && xlmFree < feeUnits) return 'Not enough XLM for the network fee'
     return null
   })()
 
@@ -555,6 +580,40 @@ export default function Swap() {
     setQuote(null)
     setError('')
   }
+
+  // Going rate for 1 unit of the From asset, read straight from Horizon's
+  // path finder: shown before an amount exists. undefined = loading, null = no route.
+  const [spotRate, setSpotRate] = useState<string | null | undefined>(undefined)
+  useEffect(() => {
+    if (!fromKey || !toKey || fromKey === toKey) return
+    const assetParams = (key: string, prefix: string) => {
+      const a = parseKey(key)
+      if (!a.issuer) return `${prefix}_asset_type=native`
+      const type = a.code.length <= 4 ? 'credit_alphanum4' : 'credit_alphanum12'
+      return `${prefix}_asset_type=${type}&${prefix}_asset_code=${a.code}&${prefix}_asset_issuer=${a.issuer}`
+    }
+    const to = parseKey(toKey)
+    const dest = to.issuer ? `${to.code}:${to.issuer}` : 'native'
+    let cancelled = false
+    setSpotRate(undefined)
+    fetch(
+      `${activeNetwork.horizonUrl}/paths/strict-send?${assetParams(fromKey, 'source')}&source_amount=1&destination_assets=${encodeURIComponent(dest)}`
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { _embedded?: { records?: Array<{ destination_amount: string }> } } | null) => {
+        if (cancelled) return
+        const best = (d?._embedded?.records ?? [])
+          .map((r) => r.destination_amount)
+          .sort((x, y) => parseFloat(y) - parseFloat(x))[0]
+        setSpotRate(best ?? null)
+      })
+      .catch(() => {
+        if (!cancelled) setSpotRate(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [fromKey, toKey, activeNetwork.horizonUrl])
 
   const fetchQuote = useCallback(async () => {
     const fk = fromKey
@@ -609,21 +668,12 @@ export default function Swap() {
     return () => window.clearTimeout(timer)
   }, [amount, fromKey, toKey, slippage, fetchQuote, amountError])
 
-  async function handleReview() {
-    if (amountError) return
-    if (!quote) {
-      await fetchQuote()
-      return
-    }
-    setXdrOpen(false)
-    setStep('confirm')
-  }
-
   function handleConfirm() {
     if (!toKey) return
     const from = parseKey(fromKey)
     const to = parseKey(toKey)
     setSubmitLoading(true)
+    lastReceivedRef.current = quote?.destinationAmount ?? ''
     setError('')
     chrome.runtime.sendMessage(
       {
@@ -663,7 +713,105 @@ export default function Swap() {
   const snapshotFromObj = parseKey(lastFromKeyRef.current)
   const snapshotToObj = lastToKeyRef.current ? parseKey(lastToKeyRef.current) : null
 
-  const canReview = !!toKey && !!amount && amountNum > 0 && !quoteLoading && !amountError
+  const trimAmount = (v: string) => {
+    const n = parseFloat(v)
+    return Number.isFinite(n) ? n.toLocaleString('en-US', { maximumFractionDigits: 7 }) : v
+  }
+  // The big figure only has room for a few decimals; the exact value is in
+  // "Min received" and the review sheet.
+  const displayAmount = (v: string) => {
+    const n = parseFloat(v)
+    if (!Number.isFinite(n)) return v
+    return n >= 1
+      ? n.toLocaleString('en-US', { maximumFractionDigits: 4 })
+      : n.toLocaleString('en-US', { maximumSignificantDigits: 6 })
+  }
+  // Each picker leaves out the asset the other side already uses: a pair of
+  // the same token is not a swap, and the flip button covers reversing.
+  const pickerItems = (otherKey: string, sectioned: boolean): PickerItem[] =>
+    balances
+      .filter((b) => `${b.code}:${b.issuer}` !== otherKey)
+      .map((b) => {
+        const key = `${b.code}:${b.issuer}`
+        return {
+          section: sectioned ? 'Your assets' : undefined,
+          key,
+          code: b.code,
+          name: b.name ?? (b.isNative ? 'Stellar Lumens' : undefined),
+          icon: b.icon,
+          chainName: 'Stellar',
+          chainIcon: stellarIcon,
+          balance: parseFloat(b.balance).toLocaleString('en-US', { maximumFractionDigits: 4 }),
+          fiat: b.usdValue != null ? formatFiat(b.usdValue) : null,
+          verified: b.verified,
+        }
+      })
+  const heldKeys = new Set(balances.map((b) => `${b.code}:${b.issuer}`))
+  // Two tokens can share a code (testnet has two USDC issuers); such rows name
+  // their issuer, by domain when the list knows it, so they never read alike.
+  const issuerLabel = (key: string) => {
+    const { code, issuer } = parseKey(
+      key.startsWith(ADD_PREFIX) ? key.slice(ADD_PREFIX.length) : key
+    )
+    const listed = curated.find((a) => a.code === code && a.issuer === issuer)
+    return listed?.domain || (issuer ? `${issuer.slice(0, 4)}...${issuer.slice(-4)}` : '')
+  }
+  const disambiguate = (items: PickerItem[]): PickerItem[] => {
+    const counts = new Map<string, number>()
+    for (const i of items) counts.set(i.code, (counts.get(i.code) ?? 0) + 1)
+    return items.map((i) =>
+      (counts.get(i.code) ?? 0) > 1 ? { ...i, name: issuerLabel(i.key) } : i
+    )
+  }
+  // Verified tokens the user could receive once they add a trustline; held
+  // ones are already listed above.
+  const receiveSuggestions: PickerItem[] = curated
+    .filter((a) => !heldKeys.has(`${a.code}:${a.issuer}`) && isVerified(a.code, a.issuer))
+    .slice(0, 8)
+    .map((a) => ({
+      key: `${ADD_PREFIX}${a.code}:${a.issuer}`,
+      code: a.code,
+      name: a.name,
+      icon: a.icon,
+      chainName: 'Stellar',
+      chainIcon: stellarIcon,
+      balance: 'Add',
+      hint: 'Needs trustline',
+      verified: true,
+      section: 'Add to receive',
+    }))
+  const fromFiat =
+    fromBalance?.usdPrice != null
+      ? formatFiat(!isNaN(amountNum) && amountNum > 0 ? amountNum * fromBalance.usdPrice : 0)
+      : ''
+  const toFiat =
+    toBalance?.usdPrice != null
+      ? formatFiat(quote ? parseFloat(quote.destinationAmount) * toBalance.usdPrice : 0)
+      : ''
+  const rate = quote && amountNum > 0 ? parseFloat(quote.destinationAmount) / amountNum : null
+
+  // The button says what is missing, in the order a user fixes things.
+  const cta: { label: string; enabled: boolean } =
+    !isFunded && !balancesLoading
+      ? { label: 'Activate the account first', enabled: false }
+      : !toKey
+        ? { label: 'Select an asset', enabled: false }
+        : !amount || !(amountNum > 0)
+          ? { label: 'Enter an amount', enabled: false }
+          : fromKey === toKey
+            ? { label: 'Pick two different assets', enabled: false }
+            : amountError
+              ? {
+                  label: amountError.startsWith('Not enough XLM')
+                    ? 'Not enough XLM for fees'
+                    : `Insufficient ${fromObj.code}`,
+                  enabled: false,
+                }
+              : quoteLoading
+                ? { label: 'Getting quote...', enabled: false }
+                : !quote
+                  ? { label: error ? 'No route for this pair' : 'Getting quote...', enabled: false }
+                  : { label: 'Review swap', enabled: true }
 
   return (
     <>
@@ -673,189 +821,207 @@ export default function Swap() {
         </div>
 
         <div className="flex-1 overflow-y-auto min-h-0 px-5">
-          <div className="flex flex-col gap-4 py-4 pb-6">
-            {/* Header */}
-            <div className="relative flex items-center justify-center">
+          <div className="flex flex-col gap-2.5 py-5">
+            <div className="relative mb-0.5 flex items-center justify-center">
               <button
                 onClick={() => navigate(-1)}
+                aria-label="Go back"
                 className="cursor-pointer absolute left-0 rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
               >
                 <ChevronLeft size={18} />
               </button>
-              <h2 className="text-lg font-bold text-foreground">Swap</h2>
+              <div className="text-center leading-tight">
+                <h2 className="text-lg font-bold text-foreground">Swap</h2>
+                <p className="flex items-center justify-center gap-1 text-[11px] text-muted-foreground">
+                  {stellarIcon && <img src={stellarIcon} alt="" className="h-3 w-3 rounded-full" />}
+                  Stellar assets on the Stellar DEX
+                </p>
+              </div>
             </div>
 
-            {/* Unfunded account warning */}
             {!balancesLoading && !isFunded && (
-              <div className="flex items-start gap-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 px-3.5 py-3">
-                <AlertTriangle size={14} className="text-amber-500 mt-0.5 shrink-0" />
-                <p className="text-xs text-amber-700 dark:text-amber-400">
-                  Account not funded. Send at least 1 XLM to this address to activate it before
-                  swapping.
+              <div className="flex items-start gap-2 rounded-xl bg-amber-500/10 px-3 py-2.5">
+                <AlertTriangle size={14} className="mt-px shrink-0 text-amber-500" />
+                <p className="text-[11px] leading-snug text-foreground">
+                  Send at least 1 XLM to this account to activate it before swapping.
                 </p>
               </div>
             )}
 
-            {/* From + To combined card */}
-            <div className="rounded-2xl bg-card">
-              {/* From section */}
-              <div className="p-4 pb-3">
+            <div className="relative flex flex-col gap-1.5">
+              <SideCard
+                label="From"
+                corner={
+                  fromBalance
+                    ? formatBalanceText(fromBalance.balance, fromObj.code, fromBalance.decimals)
+                    : balancesLoading
+                      ? 'Loading...'
+                      : 'Balance: 0'
+                }
+                chip={{
+                  code: fromObj.code,
+                  issuer: fromObj.issuer,
+                  icon: fromBalance?.icon,
+                  chainIcon: stellarIcon,
+                  subLabel: 'Stellar',
+                  onPick: () => setShowFromPicker(true),
+                  ariaLabel: 'Select asset to swap from',
+                }}
+                value={<AmountInput value={amount} onChange={setSwapAmount} />}
+                footAmount={fromFiat}
+                footAsset={fromBalance ? <QuickFillChips onFill={fillSwapFraction} /> : null}
+                error={amountError && fromKey !== toKey ? amountError : null}
+              />
+
+              <FlipButton onClick={handleSwapAssets} disabled={!toKey} />
+
+              <SideCard
+                label="To"
+                corner={
+                  toBalance
+                    ? formatBalanceText(toBalance.balance, toBalance.code, toBalance.decimals)
+                    : ''
+                }
+                chip={{
+                  code: toObj?.code,
+                  issuer: toObj?.issuer,
+                  icon: toBalance?.icon,
+                  chainIcon: stellarIcon,
+                  subLabel: toObj ? 'Stellar' : undefined,
+                  onPick: () => setShowToPicker(true),
+                  ariaLabel: 'Select asset to receive',
+                }}
+                value={
+                  <AmountValue
+                    text={
+                      quote ? displayAmount(quote.destinationAmount) : quoteLoading ? '...' : '0'
+                    }
+                    muted={!quote}
+                  />
+                }
+                footAmount={toFiat}
+                footAsset={quote && toObj ? `Min ${trimAmount(quote.destMin)} ${toObj.code}` : ''}
+              />
+            </div>
+
+            {quote && toObj && !quoteLoading && (
+              <div className="rounded-xl bg-card">
                 <button
-                  onClick={() => setShowFromPicker(true)}
-                  className="cursor-pointer self-start flex items-center gap-2 rounded-xl bg-muted px-3 py-2 hover:bg-muted/70 transition-colors mb-3"
+                  onClick={() => setShowDetails((v) => !v)}
+                  aria-expanded={showDetails}
+                  className="cursor-pointer flex w-full items-center justify-between gap-2 px-4 py-2.5 text-left"
                 >
-                  <AssetIcon icon={fromBalance?.icon} code={fromObj.code} size={22} />
-                  <span className="text-sm font-semibold text-foreground">{fromObj.code}</span>
-                  {fromObj.issuer && (
-                    <span className="text-xs font-mono text-muted-foreground">
-                      {fromObj.issuer.slice(0, 4)}...{fromObj.issuer.slice(-4)}
+                  <span className="min-w-0 text-xs">
+                    <span className="block font-medium text-foreground">
+                      1 {fromObj.code} = {rate !== null ? trimAmount(rate.toPrecision(6)) : '-'}{' '}
+                      {toObj.code}
                     </span>
-                  )}
-                  <ChevronDown size={14} className="text-muted-foreground" />
+                    <span className="block text-[11px] text-muted-foreground">
+                      {slippage}% slippage, fee up to {formatSignificant(activeFeeXlm)} XLM
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-muted-foreground">
+                    Details
+                    <ChevronDown
+                      size={14}
+                      className={`transition-transform ${showDetails ? 'rotate-180' : ''}`}
+                    />
+                  </span>
                 </button>
-
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={amount}
-                  onChange={(e) => {
-                    setAmount(e.target.value)
-                    setQuote(null)
-                    setError('')
-                  }}
-                  className="text-4xl font-bold bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground/40 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                />
-
-                <div className="flex items-center justify-between mt-2">
-                  <p className="text-xs text-muted-foreground">
-                    {fromBalance
-                      ? `Balance: ${parseFloat(fromBalance.balance).toLocaleString('en-US', { maximumFractionDigits: 7 })} ${fromObj.code}`
-                      : balancesLoading
-                        ? 'Loading...'
-                        : 'Balance: -'}
-                  </p>
-                  {fromBalance && (
+                <Collapse open={showDetails}>
+                  <div className="flex flex-col divide-y divide-border/60 border-t border-border/60 px-4 text-xs">
+                    <div className="flex items-center justify-between py-2.5">
+                      <span className="text-muted-foreground">Minimum received</span>
+                      <span className="font-medium text-foreground">
+                        {trimAmount(quote.destMin)} {toObj.code}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between py-2.5">
+                      <span className="text-muted-foreground">Slippage tolerance</span>
+                      <span className="font-medium text-foreground">{slippage}%</span>
+                    </div>
+                    <div className="flex items-center justify-between py-2.5">
+                      <span className="text-muted-foreground">Network fee (max)</span>
+                      <span className="flex items-center gap-1.5 font-medium text-foreground">
+                        {activeFeeXlm} XLM <FeeBar level={feeLevel(feeTier, customFee, feeStats)} />
+                      </span>
+                    </div>
+                    {quote.path.length > 0 && (
+                      <div className="flex items-center justify-between gap-3 py-2.5">
+                        <span className="text-muted-foreground">Route</span>
+                        <RoutePath
+                          codes={[fromObj.code, ...quote.path.map((p) => p.assetCode), toObj.code]}
+                        />
+                      </div>
+                    )}
                     <button
-                      onClick={() => {
-                        setAmount(maxSendable.toFixed(7))
-                        setQuote(null)
-                        setError('')
-                      }}
-                      className="cursor-pointer text-xs font-medium text-primary hover:underline"
+                      onClick={() => setShowSettings(true)}
+                      className="flex cursor-pointer items-center justify-center gap-1.5 py-2.5 font-medium text-primary hover:underline"
                     >
-                      Max
+                      <Settings size={12} /> Slippage and fee settings
                     </button>
-                  )}
-                </div>
+                  </div>
+                </Collapse>
               </div>
+            )}
 
-              {/* Divider with swap arrow */}
-              <div className="relative flex items-center px-4 py-0">
-                <div className="flex-1 h-px bg-border" />
-                <button
-                  onClick={handleSwapAssets}
-                  disabled={!toKey}
-                  className="cursor-pointer mx-2 rounded-xl bg-background border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-                >
-                  <ArrowUpDown size={14} />
-                </button>
-                <div className="flex-1 h-px bg-border" />
-              </div>
-
-              {/* To section */}
-              <div className="p-4 pt-3">
-                <button
-                  onClick={() => setShowToPicker(true)}
-                  className="cursor-pointer self-start flex items-center gap-2 rounded-xl bg-muted px-3 py-2 hover:bg-muted/70 transition-colors mb-3"
-                >
-                  {toObj ? (
-                    <>
-                      <AssetIcon icon={toBalance?.icon} code={toObj.code} size={22} />
-                      <span className="text-sm font-semibold text-foreground">{toObj.code}</span>
-                      {toObj.issuer && (
-                        <span className="text-xs font-mono text-muted-foreground">
-                          {toObj.issuer.slice(0, 4)}...{toObj.issuer.slice(-4)}
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <span className="text-sm text-muted-foreground">Select asset</span>
-                  )}
-                  <ChevronDown size={14} className="text-muted-foreground" />
-                </button>
-
-                <div className="min-h-[44px] flex items-center">
-                  {quoteLoading ? (
-                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                  ) : (
-                    <p
-                      className={`text-4xl font-bold ${quote ? 'text-foreground' : 'text-muted-foreground/40'}`}
-                    >
-                      {quote ? `~${parseFloat(quote.destinationAmount).toFixed(7)}` : '0.00'}
-                    </p>
-                  )}
-                </div>
-
+            {!quote && !quoteLoading && (
+              // No amount yet: still show the going rate and terms to judge the pair.
+              <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4 text-xs">
                 {toObj && (
-                  <p className="text-xs text-muted-foreground mt-2">
-                    {toBalance
-                      ? `Balance: ${parseFloat(toBalance.balance).toLocaleString('en-US', { maximumFractionDigits: 7 })} ${toObj.code}`
-                      : 'Balance: 0'}
-                  </p>
+                  <div className="flex items-center justify-between gap-3 py-2.5">
+                    <span className="text-muted-foreground">Rate</span>
+                    <span className="truncate font-medium text-foreground">
+                      {spotRate === undefined
+                        ? '...'
+                        : spotRate === null
+                          ? 'No route yet'
+                          : `1 ${fromObj.code} = ${trimAmount(Number(spotRate).toPrecision(6))} ${toObj.code}`}
+                    </span>
+                  </div>
                 )}
-              </div>
-            </div>
-
-            {/* Inline amount error */}
-            {amountError && (
-              <div className="flex items-start gap-2.5 rounded-xl bg-destructive/10 border border-destructive/20 px-3.5 py-3">
-                <AlertTriangle size={14} className="text-destructive mt-0.5 shrink-0" />
-                <p className="text-xs text-destructive">{amountError}</p>
+                <button
+                  onClick={() => setShowSettings(true)}
+                  className="group flex cursor-pointer items-center justify-between gap-3 py-2.5 text-left"
+                >
+                  <span className="text-muted-foreground">
+                    {slippage}% slippage, fee up to {formatSignificant(activeFeeXlm)} XLM
+                  </span>
+                  <Settings
+                    size={13}
+                    className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground"
+                  />
+                </button>
+                <button
+                  onClick={() => navigate('/bridge', { state: { direction: 'evm-to-stellar' } })}
+                  className="group flex cursor-pointer items-center justify-between gap-3 py-2.5 text-left"
+                >
+                  <span className="flex items-center gap-1.5 text-muted-foreground">
+                    <ArrowLeftRight size={12} className="shrink-0" />
+                    Have USDC on {evmChainName}? Bridge it to Stellar
+                  </span>
+                  <ChevronRight
+                    size={13}
+                    className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground"
+                  />
+                </button>
               </div>
             )}
 
-            {/* Rate info row */}
-            {quote && !quoteLoading && toObj && !amountError && (
-              <div className="flex items-center justify-between px-1">
-                <p className="text-xs text-muted-foreground">
-                  1 {fromObj.code} ~ {(parseFloat(quote.destinationAmount) / amountNum).toFixed(4)}{' '}
-                  {toObj.code}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Min: {parseFloat(quote.destMin).toFixed(4)} {toObj.code}
-                </p>
-              </div>
-            )}
-
-            {/* Fee row */}
-            <div className="flex items-center justify-between px-1">
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span>Max fee</span>
-                <span className="text-foreground font-medium">{activeFeeXlm} XLM</span>
-                <FeeBar level={feeLevel(feeTier, customFee, feeStats)} />
-              </div>
-              <button
-                onClick={() => setShowSettings(true)}
-                className="cursor-pointer flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                <Settings size={11} />
-                Edit
-              </button>
-            </div>
+            {error && !quote && <p className="px-1 text-xs text-destructive">{error}</p>}
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="shrink-0 px-5 pb-5 pt-3 border-t border-border/40">
-          {error && (
-            <div className="flex items-start gap-2 mb-3 rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2.5">
-              <AlertTriangle size={13} className="text-destructive mt-0.5 shrink-0" />
-              <p className="text-xs text-destructive">{error}</p>
-            </div>
-          )}
-          <Button className="w-full" onClick={handleReview} disabled={!canReview}>
-            {quoteLoading ? 'Getting quote...' : !quote ? 'Get quote' : 'Review swap'}
+        <div className="shrink-0 border-t border-border/40 px-5 py-4">
+          <Button
+            className="w-full"
+            disabled={!cta.enabled}
+            onClick={() => {
+              setXdrOpen(false)
+              setStep('confirm')
+            }}
+          >
+            {cta.label}
           </Button>
         </div>
       </div>
@@ -881,7 +1047,7 @@ export default function Swap() {
           </div>
           <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
             <p className="text-sm font-semibold text-foreground">
-              {step === 'success' ? 'Swap complete' : 'Confirm swap'}
+              {step === 'success' ? 'Swap complete' : 'Review swap'}
             </p>
             <button
               onClick={() => {
@@ -901,24 +1067,42 @@ export default function Swap() {
 
           {step === 'success' ? (
             <>
-              <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4">
-                <div className="flex flex-col items-center gap-3 pt-2 text-center">
-                  <div className="h-14 w-14 rounded-full bg-green-500/15 flex items-center justify-center">
-                    <CheckCircle2 size={28} className="text-green-500" />
+              <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
+                <div className="flex flex-col items-center rounded-xl bg-card px-4 py-5 text-center">
+                  <div className="value-enter mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-green-500/15">
+                    <CheckCircle2 size={24} className="text-green-500" />
                   </div>
-                  <div>
-                    <p className="text-base font-bold text-foreground">Swap complete</p>
-                    <p className="text-sm text-muted-foreground mt-0.5">
-                      {lastAmountRef.current} {snapshotFromObj.code} to {snapshotToObj?.code}
+                  {snapshotToObj && (
+                    <p className="text-2xl font-bold tabular-nums text-green-500">
+                      {received
+                        ? `+${displayAmount(received)}`
+                        : lastReceivedRef.current
+                          ? `~${displayAmount(lastReceivedRef.current)}`
+                          : ''}{' '}
+                      <span className="text-base font-medium text-muted-foreground">
+                        {snapshotToObj.code}
+                      </span>
+                      <VerifiedMark
+                        code={snapshotToObj.code}
+                        issuer={snapshotToObj.issuer}
+                        className="ml-1 h-4 w-4"
+                      />
                     </p>
-                  </div>
+                  )}
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    for {lastAmountRef.current} {snapshotFromObj.code}
+                  </p>
                 </div>
-                {txHash && (
-                  <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-1.5">
-                    <p className="text-xs text-muted-foreground">Transaction hash</p>
-                    <p className="font-mono text-xs text-foreground break-all">{txHash}</p>
-                  </div>
-                )}
+                <div className="rounded-xl bg-card px-4 divide-y divide-border/60">
+                  <DetailRow label="Network">
+                    <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                  </DetailRow>
+                  {txHash && (
+                    <DetailRow label="Transaction">
+                      <CopyValue value={txHash} />
+                    </DetailRow>
+                  )}
+                </div>
               </div>
               <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
                 {txHash && (
@@ -929,7 +1113,7 @@ export default function Swap() {
                       rel="noopener noreferrer"
                       className="flex items-center gap-1.5"
                     >
-                      Explorer <ExternalLink size={14} />
+                      View on explorer <ExternalLink size={14} />
                     </a>
                   </Button>
                 )}
@@ -940,13 +1124,20 @@ export default function Swap() {
             </>
           ) : (
             <>
-              <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3">
+              <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3 [&>*]:shrink-0">
                 {/* Amount hero */}
                 <div className="rounded-xl bg-card overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-3">
                     <div className="flex items-center gap-2">
                       <AssetIcon icon={snapshotFrom?.icon} code={snapshotFromObj.code} size={18} />
-                      <p className="text-xs text-muted-foreground">{snapshotFromObj.code}</p>
+                      <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                        {snapshotFromObj.code}
+                        <VerifiedMark
+                          code={snapshotFromObj.code}
+                          issuer={snapshotFromObj.issuer}
+                          className="h-3 w-3"
+                        />
+                      </p>
                     </div>
                     <p className="text-xl font-bold text-foreground tabular-nums">
                       {lastAmountRef.current}
@@ -966,7 +1157,14 @@ export default function Swap() {
                         <AssetIcon icon={snapshotTo?.icon} code={snapshotToObj.code} size={18} />
                       )}
                       {snapshotToObj && (
-                        <p className="text-xs text-muted-foreground">{snapshotToObj.code}</p>
+                        <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                          {snapshotToObj.code}
+                          <VerifiedMark
+                            code={snapshotToObj.code}
+                            issuer={snapshotToObj.issuer}
+                            className="h-3 w-3"
+                          />
+                        </p>
                       )}
                     </div>
                     {quote && (
@@ -997,7 +1195,9 @@ export default function Swap() {
                   </div>
                   <div className="flex items-center justify-between px-4 py-3">
                     <p className="text-xs text-muted-foreground">Network</p>
-                    <p className="text-sm text-foreground">{activeNetwork.name}</p>
+                    <p className="text-sm text-foreground">
+                      <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                    </p>
                   </div>
                 </div>
 
@@ -1005,12 +1205,14 @@ export default function Swap() {
                 {quote && quote.path.length > 0 && (
                   <div className="rounded-xl bg-card px-4 py-3 flex items-center justify-between">
                     <p className="text-xs text-muted-foreground">Route</p>
-                    <p className="text-xs font-mono text-foreground">
-                      {[
-                        snapshotFromObj.code,
-                        ...quote.path.map((p) => p.assetCode),
-                        snapshotToObj?.code,
-                      ].join(' > ')}
+                    <p className="text-xs">
+                      <RoutePath
+                        codes={[
+                          snapshotFromObj.code,
+                          ...quote.path.map((p) => p.assetCode),
+                          snapshotToObj?.code ?? '',
+                        ]}
+                      />
                     </p>
                   </div>
                 )}
@@ -1073,32 +1275,41 @@ export default function Swap() {
         </div>
       </div>
 
-      {showFromPicker && (
-        <AssetPickerSheet
-          balances={balances}
-          selectedKey={fromKey}
-          excludeKey={toKey}
-          onSelect={(key) => {
-            setFromKey(key)
-            setQuote(null)
-            setError('')
-          }}
-          onClose={() => setShowFromPicker(false)}
-        />
-      )}
-      {showToPicker && (
-        <AssetPickerSheet
-          balances={balances}
-          selectedKey={toKey}
-          excludeKey={fromKey}
-          onSelect={(key) => {
-            setToKey(key)
-            setQuote(null)
-            setError('')
-          }}
-          onClose={() => setShowToPicker(false)}
-        />
-      )}
+      <AssetPickerSheet
+        open={showFromPicker || showToPicker}
+        title={showToPicker ? 'You receive' : 'You pay'}
+        note={
+          showToPicker
+            ? 'Stellar assets only'
+            : 'Stellar assets you hold. Ethereum swaps are not supported yet'
+        }
+        items={disambiguate(
+          showToPicker
+            ? [...pickerItems(fromKey, true), ...receiveSuggestions]
+            : pickerItems(toKey, false)
+        )}
+        selectedKey={showToPicker ? toKey : fromKey}
+        onSelect={(key) => {
+          if (key.startsWith(ADD_PREFIX)) {
+            // Receiving a token needs its trustline first; the Add Asset page
+            // opens straight on it, and the user comes back to swap.
+            const target = parseKey(key.slice(ADD_PREFIX.length))
+            setShowToPicker(false)
+            navigate('/assets/add', { state: { code: target.code, issuer: target.issuer } })
+            return
+          }
+          if (showToPicker) setToKey(key)
+          else setFromKey(key)
+          setQuote(null)
+          setError('')
+          setShowFromPicker(false)
+          setShowToPicker(false)
+        }}
+        onClose={() => {
+          setShowFromPicker(false)
+          setShowToPicker(false)
+        }}
+      />
       {showSettings && (
         <SettingsModal
           feeStats={feeStats}

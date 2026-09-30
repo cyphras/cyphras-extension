@@ -28,6 +28,7 @@ import History from '@/pages/History'
 import Assets from '@/pages/Assets'
 import AddAsset from '@/pages/AddAsset'
 import Swap from '@/pages/Swap'
+import Bridge from '@/pages/Bridge'
 import ConnectedApps from '@/pages/ConnectedApps'
 
 function Router() {
@@ -53,7 +54,8 @@ function Router() {
       path === '/history' ||
       path === '/assets' ||
       path === '/assets/add' ||
-      path === '/swap'
+      path === '/swap' ||
+      path === '/bridge'
     if (!status.isUnlocked) {
       navigate('/unlock')
     } else if (!isProtected && path !== '/') {
@@ -73,43 +75,53 @@ function Router() {
     return <Onboarding />
   }
 
+  // Render Unlock directly while locked; the post-render redirect would let an authenticated page mount and crash first
+  if (!status.isUnlocked) {
+    return <Unlock />
+  }
+
+  // Keyed by path so every navigation replays the fade; the wrapper fills
+  // #root so each page's own scroll area still works.
   return (
-    <Routes>
-      <Route path="/unlock" element={<Unlock />} />
-      <Route path="/" element={<Home />} />
-      <Route path="/send" element={<Send />} />
-      <Route path="/receive" element={<Receive />} />
-      <Route path="/history" element={<History />} />
-      <Route path="/assets" element={<Assets />} />
-      <Route path="/assets/add" element={<AddAsset />} />
-      <Route path="/swap" element={<Swap />} />
-      <Route path="/settings" element={<Settings />} />
-      <Route path="/settings/preferences" element={<SettingsPreferences />} />
-      <Route path="/settings/preferences/currency" element={<SettingsPreferencesCurrency />} />
-      <Route path="/settings/preferences/theme" element={<SettingsPreferencesTheme />} />
-      <Route path="/settings/preferences/explorer" element={<SettingsPreferencesExplorer />} />
-      <Route path="/settings/preferences/language" element={<SettingsPreferencesLanguage />} />
-      <Route path="/settings/networks" element={<SettingsNetworkList />} />
-      <Route path="/settings/security" element={<SettingsSecurity />} />
-      <Route path="/settings/security/auto-lock" element={<SettingsSecurityAutoLock />} />
-      <Route
-        path="/settings/security/change-password"
-        element={<SettingsSecurityChangePassword />}
-      />
-      <Route
-        path="/settings/security/recovery-phrase"
-        element={<SettingsSecurityRecoveryPhrase />}
-      />
-      <Route path="/settings/security/delete-wallet" element={<SettingsSecurityDeleteWallet />} />
-      <Route path="/settings/security/reset-app" element={<SettingsSecurityResetApp />} />
-      <Route path="/settings/security/secret-key" element={<SettingsSecuritySecretKey />} />
-      <Route path="/settings/wallet" element={<SettingsWallet />} />
-      <Route path="/settings/network/view/:networkId" element={<SettingsNetworkView />} />
-      <Route path="/settings/network/add" element={<NetworkSettings mode="add" />} />
-      <Route path="/settings/network/edit/:networkId" element={<NetworkSettings mode="edit" />} />
-      <Route path="/settings/connected-apps" element={<ConnectedApps />} />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <div key={location.pathname} className="page-enter flex min-h-0 flex-1 flex-col">
+      <Routes>
+        <Route path="/unlock" element={<Unlock />} />
+        <Route path="/" element={<Home />} />
+        <Route path="/send" element={<Send />} />
+        <Route path="/receive" element={<Receive />} />
+        <Route path="/history" element={<History />} />
+        <Route path="/assets" element={<Assets />} />
+        <Route path="/assets/add" element={<AddAsset />} />
+        <Route path="/swap" element={<Swap />} />
+        <Route path="/bridge" element={<Bridge />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="/settings/preferences" element={<SettingsPreferences />} />
+        <Route path="/settings/preferences/currency" element={<SettingsPreferencesCurrency />} />
+        <Route path="/settings/preferences/theme" element={<SettingsPreferencesTheme />} />
+        <Route path="/settings/preferences/explorer" element={<SettingsPreferencesExplorer />} />
+        <Route path="/settings/preferences/language" element={<SettingsPreferencesLanguage />} />
+        <Route path="/settings/networks" element={<SettingsNetworkList />} />
+        <Route path="/settings/security" element={<SettingsSecurity />} />
+        <Route path="/settings/security/auto-lock" element={<SettingsSecurityAutoLock />} />
+        <Route
+          path="/settings/security/change-password"
+          element={<SettingsSecurityChangePassword />}
+        />
+        <Route
+          path="/settings/security/recovery-phrase"
+          element={<SettingsSecurityRecoveryPhrase />}
+        />
+        <Route path="/settings/security/delete-wallet" element={<SettingsSecurityDeleteWallet />} />
+        <Route path="/settings/security/reset-app" element={<SettingsSecurityResetApp />} />
+        <Route path="/settings/security/secret-key" element={<SettingsSecuritySecretKey />} />
+        <Route path="/settings/wallet" element={<SettingsWallet />} />
+        <Route path="/settings/network/view/:networkId" element={<SettingsNetworkView />} />
+        <Route path="/settings/network/add" element={<NetworkSettings mode="add" />} />
+        <Route path="/settings/network/edit/:networkId" element={<NetworkSettings mode="edit" />} />
+        <Route path="/settings/connected-apps" element={<ConnectedApps />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </div>
   )
 }
 

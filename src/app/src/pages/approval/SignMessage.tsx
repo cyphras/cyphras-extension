@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useWallet } from '@/context/WalletContext'
-import { useNetwork } from '@/context/NetworkContext'
 import { MessageSquare } from 'lucide-react'
 import { APPROVAL_PAYLOAD_STORAGE_KEY } from '@constants/external'
 import { ApprovalShell, ActionHeader, InfoCard, InfoRow, TrustNote, AddressChip } from './_shell'
+import { NetworkValue } from '@/components/TxDetailParts'
+import { useStellarChain } from '@/hooks/useStellarChain'
 
 export default function SignMessage() {
   const { status } = useWallet()
-  const { activeNetwork } = useNetwork()
+  const stellarChain = useStellarChain()
   const [origin, setOrigin] = useState('')
   const [requestId, setRequestId] = useState('')
   const [message, setMessage] = useState('')
@@ -69,7 +70,9 @@ export default function SignMessage() {
           </InfoRow>
         )}
         <InfoRow label="Network">
-          <span className="text-sm font-medium text-foreground">{activeNetwork.name}</span>
+          <span className="text-sm font-medium text-foreground">
+            <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+          </span>
         </InfoRow>
       </InfoCard>
 

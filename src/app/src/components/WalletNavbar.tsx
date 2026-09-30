@@ -6,7 +6,7 @@ import { useWindowMode } from '@/hooks/useWindowMode'
 import { StellarAvatar } from '@/components/StellarAvatar'
 import AccountSwitcher from '@/components/AccountSwitcher'
 import NetworkPicker from '@/components/NetworkPicker'
-import { Settings, ChevronDown, PanelRight, PanelRightClose } from 'lucide-react'
+import { Settings, ChevronDown, PanelRight, PanelRightClose, History } from 'lucide-react'
 
 function networkDotColor(networkId: string, hasFriendbot: boolean) {
   if (networkId === 'mainnet') return 'bg-green-500'
@@ -78,6 +78,13 @@ export default function WalletNavbar() {
         </div>
 
         <div className="flex items-center gap-0.5 shrink-0">
+          <button
+            onClick={() => navigate('/history')}
+            aria-label="History"
+            className="cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
+            <History size={18} />
+          </button>
           <button
             onClick={() => navigate('/settings')}
             aria-label="Settings"

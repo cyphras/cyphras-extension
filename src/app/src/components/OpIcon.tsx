@@ -23,7 +23,7 @@ interface Badge {
   color: string
 }
 
-export function getBadge(op: Operation, publicKey: string): Badge {
+function getBadge(op: Operation, publicKey: string): Badge {
   const dir = getDirection(op, publicKey)
   const isRemoveTrust = op.limit === '0' || op.limit === '0.0000000'
   const p = { bg: 'bg-primary', color: 'text-primary-foreground' }

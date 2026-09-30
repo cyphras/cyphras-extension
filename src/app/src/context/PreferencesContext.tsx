@@ -281,6 +281,7 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- hook lives with its provider
 export function usePreferences() {
   const ctx = useContext(PreferencesContext)
   if (!ctx) throw new Error('usePreferences must be used within PreferencesProvider')

@@ -45,9 +45,7 @@ export default function SettingsNetworkList() {
 
         {/* Active network combobox */}
         <div className="flex flex-col gap-2">
-          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Active Network
-          </p>
+          <p className="pixel-label text-[10px] text-muted-foreground">Active Network</p>
           <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
               <button
@@ -103,9 +101,7 @@ export default function SettingsNetworkList() {
 
         {/* Network list */}
         <div className="flex flex-col gap-2">
-          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            All Networks
-          </p>
+          <p className="pixel-label text-[10px] text-muted-foreground">All Networks</p>
           <div className="flex flex-col rounded-xl bg-card overflow-hidden divide-y divide-border">
             {networks.map((n) => (
               <button

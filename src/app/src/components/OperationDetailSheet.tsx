@@ -1,23 +1,30 @@
 import { useState, useEffect, useRef } from 'react'
+import { VerifiedMark } from '@/components/token/VerifiedMark'
+import { Copy, Check, ChevronDown, ExternalLink } from 'lucide-react'
 import {
-  X,
-  Copy,
-  Check,
-  ChevronDown,
-  ChevronUp,
-  ExternalLink,
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-} from 'lucide-react'
+  AddressValue,
+  AdvancedDetails,
+  CopyValue,
+  DetailRow as Row,
+  NetworkValue,
+  StatusPill,
+} from '@/components/TxDetailParts'
 import { Button } from '@/components/ui/button'
-import { AutoSkeleton } from '@/components/AutoSkeleton'
-import { StellarAvatar } from '@/components/StellarAvatar'
-import { OpIcon } from '@/components/OpIcon'
+import { BottomSheet } from '@/components/BottomSheet'
+import { Collapse } from '@/components/Collapse'
+import { AssetIcon } from '@/components/token/AssetIcon'
 import { PhaseBadge } from '@/components/PhaseBadge'
 import { DeliveryProgressBar } from '@/components/DeliveryProgressBar'
 import type { Operation } from '@/hooks/useHistory'
-import { getDirection, getOpLabel, getAmountDisplay, stroopsToXlm } from '@/lib/historyUtils'
+import {
+  getDirection,
+  getOpLabel,
+  getAmountDisplay,
+  parseAsset,
+  stroopsToXlm,
+  trimZeros,
+} from '@/lib/historyUtils'
+import { getChainInfo } from '@/lib/chainInfo'
 import { splitPhase } from '@/lib/phase'
 import { SERVICE_TYPES } from '@constants/services'
 
@@ -31,22 +38,32 @@ interface TxDetails {
   successful: boolean
 }
 
-function AddrVal({ addr }: { addr?: string }) {
-  if (!addr) return <span className="text-xs font-mono text-foreground">-</span>
+// Horizon reports an unlimited trustline as the int64 maximum.
+const MAX_TRUST_LIMIT = '922337203685.4775807'
+
+function AssetName({ code, issuer }: { code: string; issuer?: string }) {
   return (
-    <div className="flex items-center gap-1.5 justify-end">
-      <StellarAvatar publicKey={addr} size={14} />
-      <span className="text-xs font-mono text-foreground">
-        {addr.slice(0, 4)}...{addr.slice(-4)}
-      </span>
-    </div>
+    <span className="inline-flex items-center gap-1 font-medium">
+      {code}
+      <VerifiedMark code={code} issuer={issuer} />
+    </span>
   )
 }
 
-function parseAssetLocal(assetStr?: string): { code: string; issuer?: string } {
-  if (!assetStr || assetStr === 'native') return { code: 'XLM' }
-  const [code, issuer] = assetStr.split(':')
-  return { code: code ?? 'XLM', issuer }
+function formatHostFunction(fn: string): string {
+  if (fn === 'HostFunctionTypeHostFunctionTypeInvokeContract') return 'Invoke contract'
+  if (fn === 'HostFunctionTypeHostFunctionTypeCreateContract') return 'Create contract'
+  if (fn === 'HostFunctionTypeHostFunctionTypeUploadContractWasm') return 'Upload WASM'
+  return fn
+    .replace(/HostFunctionType/g, '')
+    .replace(/([A-Z])/g, ' $1')
+    .trim()
+}
+
+function formatNumber(s: string): string {
+  const [whole, frac] = trimZeros(s).split('.')
+  const grouped = Number(whole).toLocaleString('en-US')
+  return frac ? `${grouped}.${frac}` : grouped
 }
 
 interface Props {
@@ -82,10 +99,10 @@ export default function OperationDetailSheet({
   const [txDetails, setTxDetails] = useState<TxDetails | null>(null)
   const [feeStroops, setFeeStroops] = useState<number | null>(null)
   const feeCache = useRef<Map<string, bigint>>(new Map())
-  const [xdrOpen, setXdrOpen] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [splitsOpen, setSplitsOpen] = useState(false)
-  const [hashCopied, setHashCopied] = useState(false)
   const [xdrCopied, setXdrCopied] = useState(false)
+  const [chain, setChain] = useState<{ name: string; icon?: string } | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
 
@@ -93,10 +110,22 @@ export default function OperationDetailSheet({
     setActionError(null)
   }, [op?.id])
 
+  // The registry name ("Stellar Testnet") beats the bare network name, which
+  // says nothing once EVM chains share the same history.
+  useEffect(() => {
+    let cancelled = false
+    getChainInfo(networkId).then((info) => {
+      if (!cancelled) setChain(info ? { name: info.name, icon: info.icon } : null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [networkId])
+
   useEffect(() => {
     if (!op || !op.transaction_hash) return
     setTxDetails(null)
-    setXdrOpen(false)
+    setAdvancedOpen(false)
     fetch(`${horizonUrl}/transactions/${op.transaction_hash}`)
       .then((r) => r.json())
       .then((data) => setTxDetails(data))
@@ -178,27 +207,38 @@ export default function OperationDetailSheet({
     ? (priv.failedCounters?.length ?? 0) + (priv.unsentCounters?.length ?? 0)
     : 0
   const privSomeDelivered = priv ? parseFloat(priv.deliveredAmount ?? '0') > 0 : false
+  const status: { text: string; tone: 'ok' | 'warn' | 'bad' } =
+    priv && privFailures > 0
+      ? privSomeDelivered
+        ? { text: 'Partial', tone: 'warn' }
+        : { text: 'Failed', tone: 'bad' }
+      : cur.transaction_successful === false
+        ? { text: 'Failed', tone: 'bad' }
+        : priv?.direction === 'out' && priv.phase && priv.phase.key !== 'delivered'
+          ? { text: priv.phase.label, tone: 'warn' }
+          : { text: 'Confirmed', tone: 'ok' }
+  const chainName = chain?.name ?? `Stellar ${networkName}`
 
-  function Row({
-    label,
-    value,
-    mono = false,
-  }: {
-    label: string
-    value: React.ReactNode
-    mono?: boolean
-  }) {
-    return (
-      <div className="flex justify-between gap-2 items-center">
-        <span className="text-xs text-muted-foreground shrink-0">{label}</span>
-        <div
-          className={`text-xs text-foreground text-right min-w-0 truncate ${mono ? 'font-mono' : ''}`}
-        >
-          {value}
-        </div>
-      </div>
-    )
-  }
+  const heroAsset: { code: string; issuer?: string } = (() => {
+    if (priv) return { code: priv.asset }
+    if (cur.type === 'create_claimable_balance') return parseAsset(cur.asset)
+    if (cur.type === 'manage_sell_offer' || cur.type === 'create_passive_sell_offer')
+      return {
+        code: cur.selling_asset_type === 'native' ? 'XLM' : (cur.selling_asset_code ?? 'XLM'),
+        issuer: cur.selling_asset_issuer,
+      }
+    if (cur.type === 'manage_buy_offer')
+      return {
+        code: cur.buying_asset_type === 'native' ? 'XLM' : (cur.buying_asset_code ?? 'XLM'),
+        issuer: cur.buying_asset_issuer,
+      }
+    if (cur.asset_type === 'native' || !cur.asset_code) return { code: amount?.code || 'XLM' }
+    return { code: cur.asset_code, issuer: cur.asset_issuer }
+  })()
+  const heroIcon = heroAsset.issuer
+    ? iconMap.get(`${heroAsset.code}:${heroAsset.issuer}`)
+    : undefined
+  const trustRemoved = cur.limit === '0' || cur.limit === '0.0000000'
 
   // Recovering reveals each failed split back to the sender; retrying re-delivers it to the recipient.
   async function privateAction(type: string, counters: number[]): Promise<void> {
@@ -228,528 +268,428 @@ export default function OperationDetailSheet({
     onClose()
   }
 
-  function formatHostFunction(fn: string): string {
-    if (fn === 'HostFunctionTypeHostFunctionTypeInvokeContract') return 'Invoke contract'
-    if (fn === 'HostFunctionTypeHostFunctionTypeCreateContract') return 'Create contract'
-    if (fn === 'HostFunctionTypeHostFunctionTypeUploadContractWasm') return 'Upload WASM'
-    return fn
-      .replace(/HostFunctionType/g, '')
-      .replace(/([A-Z])/g, ' $1')
-      .trim()
-  }
+  const reclaimCounters = [...(priv?.failedCounters ?? []), ...(priv?.reclaimableCounters ?? [])]
+  const showFee = txDetails && !(priv?.direction === 'out' && feeStroops)
 
   return (
-    <div
-      className={`fixed inset-0 ${zIndex} transition-all duration-300 ${isOpen ? '' : 'pointer-events-none'}`}
+    <BottomSheet
+      open={isOpen}
+      onClose={onClose}
+      zIndex={zIndex}
+      title={
+        <div className="flex items-center gap-3">
+          <AssetIcon code={heroAsset.code} icon={heroIcon} chainIcons={[chain?.icon]} />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-foreground">{label}</p>
+            <p className="text-xs font-normal text-muted-foreground">{chainName}</p>
+          </div>
+        </div>
+      }
     >
-      <div
-        className={`absolute inset-0 bg-black/60 transition-opacity duration-300 ${isOpen ? 'opacity-100' : 'opacity-0'}`}
-        onClick={onClose}
-      />
-      <div
-        className={`absolute bottom-0 left-0 right-0 bg-background rounded-t-2xl flex flex-col max-h-[92vh] transition-transform duration-300 ease-out ${isOpen ? 'translate-y-0' : 'translate-y-full'}`}
-      >
-        <div className="flex justify-center pt-3 pb-1 shrink-0">
-          <div className="h-1 w-10 rounded-full bg-muted-foreground/20" />
-        </div>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-          <p className="text-sm font-semibold text-foreground">{label}</p>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="cursor-pointer rounded-lg p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3">
-          <div className="rounded-xl bg-card p-4 flex items-center gap-4">
-            <OpIcon op={cur} publicKey={publicKey} iconMap={iconMap} />
-            <div className="flex flex-col gap-0.5 min-w-0">
-              {amount?.amount ? (
-                <p
-                  className={`text-xl font-bold ${dir === 'in' ? 'text-green-500' : dir === 'out' ? 'text-red-500' : 'text-foreground'}`}
-                >
-                  {dir === 'in' ? '+' : dir === 'out' ? '-' : ''}
-                  {amount.amount}
-                  {amount.code && (
-                    <span className="text-sm font-normal text-muted-foreground">
-                      {' '}
-                      {amount.code}
-                    </span>
-                  )}
-                </p>
-              ) : amount?.code ? (
-                <p className="text-sm text-muted-foreground font-mono">{amount.code}</p>
-              ) : (
-                <p className="text-sm text-muted-foreground">{label}</p>
-              )}
-            </div>
-          </div>
-
-          <div className="flex gap-2">
-            <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3 flex-1">
-              <p className="text-xs text-muted-foreground">Status</p>
-              {priv && privFailures > 0 ? (
-                privSomeDelivered ? (
-                  <div className="flex items-center gap-1.5 text-amber-500">
-                    <AlertTriangle size={13} />
-                    <span className="text-xs font-medium">Partial</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1.5 text-destructive">
-                    <XCircle size={13} />
-                    <span className="text-xs font-medium">Failed</span>
-                  </div>
-                )
-              ) : cur.transaction_successful !== false ? (
-                <div className="flex items-center gap-1.5 text-green-500">
-                  <CheckCircle2 size={13} />
-                  <span className="text-xs font-medium">Confirmed</span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-1.5 text-destructive">
-                  <XCircle size={13} />
-                  <span className="text-xs font-medium">Failed</span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3">
-            <p className="text-xs text-muted-foreground">Date</p>
-            <p className="text-sm text-foreground">
-              {new Date(cur.created_at).toLocaleString('en-US', {
-                month: 'short',
-                day: 'numeric',
-                year: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
+      <div className="flex flex-col gap-4">
+        <div className="rounded-xl bg-card px-4 py-5 text-center">
+          {amount?.amount ? (
+            <p
+              className={`text-2xl font-bold tabular-nums ${dir === 'in' ? 'text-green-500' : 'text-foreground'}`}
+            >
+              {dir === 'in' ? '+' : dir === 'out' ? '-' : ''}
+              {formatNumber(amount.amount)}{' '}
+              <span className="text-base font-medium text-muted-foreground">{amount.code}</span>
+              <VerifiedMark code={amount.code} issuer={heroAsset.issuer} className="ml-1 h-4 w-4" />
             </p>
-          </div>
-
-          <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
-            <p className="text-xs font-medium text-foreground">Operation details</p>
-            <div className="h-px bg-border" />
-            {cur.type === 'payment' && (
-              <>
-                <Row label="Type" value="payment" mono />
-                <Row
-                  label="Asset"
-                  value={
-                    cur.asset_type === 'native' ? (
-                      'XLM (native)'
-                    ) : (
-                      <span className="font-mono font-medium">{cur.asset_code}</span>
-                    )
-                  }
-                />
-                {cur.asset_issuer && (
-                  <Row label="Issuer" value={<AddrVal addr={cur.asset_issuer} />} />
-                )}
-                <Row label="From" value={<AddrVal addr={cur.from} />} />
-                <Row label="To" value={<AddrVal addr={cur.to} />} />
-                {cur.amount && <Row label="Amount" value={cur.amount} mono />}
-              </>
-            )}
-            {(cur.type === 'path_payment_strict_send' ||
-              cur.type === 'path_payment_strict_receive') && (
-              <>
-                <Row label="Type" value={cur.type} mono />
-                <Row label="From" value={<AddrVal addr={cur.from} />} />
-                <Row label="To" value={<AddrVal addr={cur.to} />} />
-                {cur.source_amount && (
-                  <Row
-                    label="Sent"
-                    value={`${cur.source_amount} ${cur.source_asset_type === 'native' ? 'XLM' : (cur.source_asset_code ?? '')}`}
-                    mono
-                  />
-                )}
-                {cur.amount && (
-                  <Row
-                    label="Received"
-                    value={`${cur.amount} ${cur.asset_type === 'native' ? 'XLM' : (cur.asset_code ?? '')}`}
-                    mono
-                  />
-                )}
-                {cur.source_asset_issuer && (
-                  <Row label="Source issuer" value={<AddrVal addr={cur.source_asset_issuer} />} />
-                )}
-                {cur.asset_issuer && (
-                  <Row label="Dest issuer" value={<AddrVal addr={cur.asset_issuer} />} />
-                )}
-              </>
-            )}
-            {cur.type === 'create_account' && (
-              <>
-                <Row label="Type" value="create_account" mono />
-                <Row label="Funder" value={<AddrVal addr={cur.funder} />} />
-                <Row label="New account" value={<AddrVal addr={cur.account} />} />
-                {cur.starting_balance && (
-                  <Row label="Starting balance" value={`${cur.starting_balance} XLM`} mono />
-                )}
-              </>
-            )}
-            {cur.type === 'change_trust' && (
-              <>
-                <Row label="Type" value="change_trust" mono />
-                <Row
-                  label="Asset"
-                  value={<span className="font-mono font-medium">{cur.asset_code}</span>}
-                />
-                {cur.asset_issuer && (
-                  <Row label="Issuer" value={<AddrVal addr={cur.asset_issuer} />} />
-                )}
-                <Row label="Trustor" value={<AddrVal addr={cur.trustor} />} />
-                <Row
-                  label="Trust limit"
-                  value={
-                    cur.limit === '0' || cur.limit === '0.0000000'
-                      ? '0 (removed)'
-                      : (cur.limit ?? '-')
-                  }
-                  mono
-                />
-              </>
-            )}
-            {(cur.type === 'manage_sell_offer' ||
-              cur.type === 'manage_buy_offer' ||
-              cur.type === 'create_passive_sell_offer') && (
-              <>
-                <Row label="Type" value={cur.type} mono />
-                {cur.selling_asset_code && (
-                  <Row
-                    label="Selling"
-                    value={cur.selling_asset_type === 'native' ? 'XLM' : cur.selling_asset_code}
-                    mono
-                  />
-                )}
-                {cur.buying_asset_code && (
-                  <Row
-                    label="Buying"
-                    value={cur.buying_asset_type === 'native' ? 'XLM' : cur.buying_asset_code}
-                    mono
-                  />
-                )}
-                {cur.amount && <Row label="Amount" value={cur.amount} mono />}
-                {cur.price && <Row label="Price" value={cur.price} mono />}
-                {cur.offer_id && <Row label="Offer ID" value={cur.offer_id} mono />}
-              </>
-            )}
-            {cur.type === 'account_merge' && (
-              <>
-                <Row label="Type" value="account_merge" mono />
-                <Row label="Account" value={<AddrVal addr={cur.source_account} />} />
-                <Row label="Merged into" value={<AddrVal addr={cur.into} />} />
-              </>
-            )}
-            {cur.type === 'invoke_host_function' && !cur.cyphras_private && (
-              <>
-                <Row label="Type" value="Contract call" />
-                {cur.function && <Row label="Function" value={formatHostFunction(cur.function)} />}
-              </>
-            )}
-            {cur.cyphras_private && (
-              <>
-                <Row
-                  label="Type"
-                  value={cur.cyphras_private.direction === 'out' ? 'Private send' : 'Received'}
-                />
-                <Row
-                  label="Asset"
-                  value={<span className="font-mono font-medium">{cur.cyphras_private.asset}</span>}
-                />
-                {cur.cyphras_private.recipient && (
-                  <Row label="To" value={<AddrVal addr={cur.cyphras_private.recipient} />} />
-                )}
-                {cur.cyphras_private.splits !== undefined && (
-                  <Row label="Private splits" value={String(cur.cyphras_private.splits)} mono />
-                )}
-                {cur.cyphras_private.direction === 'out' && feeStroops ? (
-                  <Row label="Fee" value={`${stroopsToXlm(String(feeStroops))} XLM`} mono />
-                ) : null}
-                {cur.cyphras_private.phase && (
-                  <Row label="Delivery" value={<PhaseBadge phase={cur.cyphras_private.phase} />} />
-                )}
-                {cur.cyphras_private.direction === 'out' &&
-                  cur.cyphras_private.notes &&
-                  cur.cyphras_private.deliveredAmount !== cur.cyphras_private.amount && (
-                    <div className="flex flex-col gap-1.5 pt-1">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-muted-foreground">Delivered</span>
-                        <span className="font-mono text-foreground tabular-nums">
-                          {cur.cyphras_private.deliveredAmount} of {cur.cyphras_private.amount}{' '}
-                          {cur.cyphras_private.asset}
-                        </span>
-                      </div>
-                      <DeliveryProgressBar key={cur.id} notes={cur.cyphras_private.notes} />
-                      {cur.cyphras_private.committedAmount !== undefined &&
-                        cur.cyphras_private.committedAmount !==
-                          cur.cyphras_private.deliveredAmount && (
-                          <span className="text-[11px] text-muted-foreground">
-                            {cur.cyphras_private.committedAmount} of {cur.cyphras_private.amount}{' '}
-                            {cur.cyphras_private.asset} has left your wallet so far
-                          </span>
-                        )}
-                    </div>
-                  )}
-              </>
-            )}
-            {cur.type === 'claim_claimable_balance' && (
-              <>
-                <Row label="Type" value="claim_claimable_balance" mono />
-                <Row
-                  label="Claimant"
-                  value={<AddrVal addr={cur.claimant ?? cur.source_account} />}
-                />
-                {cur.balance_id && (
-                  <Row label="Balance ID" value={`${cur.balance_id.slice(0, 12)}...`} mono />
-                )}
-              </>
-            )}
-            {cur.type === 'create_claimable_balance' && (
-              <>
-                <Row label="Type" value="create_claimable_balance" mono />
-                <Row
-                  label="Asset"
-                  value={(() => {
-                    const p = parseAssetLocal(cur.asset)
-                    return p.code === 'XLM' ? (
-                      'XLM (native)'
-                    ) : (
-                      <span className="font-mono font-medium">{p.code}</span>
-                    )
-                  })()}
-                />
-                {cur.asset && cur.asset !== 'native' && (
-                  <Row
-                    label="Issuer"
-                    value={<AddrVal addr={parseAssetLocal(cur.asset).issuer} />}
-                  />
-                )}
-                <Row label="Sender" value={<AddrVal addr={cur.source_account} />} />
-                {cur.amount && <Row label="Amount" value={cur.amount} mono />}
-                {cur.balance_id && (
-                  <Row label="Balance ID" value={`${cur.balance_id.slice(0, 12)}...`} mono />
-                )}
-              </>
-            )}
-            {cur.type === 'set_options' && (
-              <>
-                <Row label="Type" value="set_options" mono />
-                <Row label="Account" value={<AddrVal addr={cur.source_account} />} />
-              </>
-            )}
-            {cur.type === 'manage_data' && (
-              <>
-                <Row label="Type" value="manage_data" mono />
-                {cur.name && <Row label="Key" value={cur.name} mono />}
-              </>
-            )}
-            {cur.type !== 'private_send' && (
-              <Row label="Operation ID" value={`${cur.id.slice(0, 10)}...`} mono />
-            )}
-          </div>
-
-          {cur.cyphras_private?.splitsDetail && cur.cyphras_private.splitsDetail.length > 0 && (
-            <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
-              <button
-                onClick={() => setSplitsOpen((p) => !p)}
-                aria-expanded={splitsOpen}
-                className="cursor-pointer flex items-center justify-between gap-2 text-xs font-medium text-foreground w-full"
-              >
-                <span>
-                  Private splits ({cur.cyphras_private.splitsDetail.length})
-                  <span className="font-normal text-muted-foreground">
-                    {' '}
-                    -{' '}
-                    {
-                      cur.cyphras_private.splitsDetail.filter((s) => s.status === 'revealed').length
-                    }{' '}
-                    of {cur.cyphras_private.splitsDetail.length} delivered
-                  </span>
-                </span>
-                {splitsOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              </button>
-              {splitsOpen && (
-                <>
-                  <div className="h-px bg-border" />
-                  {cur.cyphras_private.splitsDetail.map((s, i) => (
-                    <div key={i} className="flex items-center justify-between gap-2 text-xs">
-                      <span className="text-foreground tabular-nums">
-                        {s.amount} {cur.cyphras_private!.asset}
-                      </span>
-                      <div className="flex items-center gap-1.5">
-                        <PhaseBadge phase={splitPhase(s.status, s.scheduledFor)} size={12} />
-                        {s.revealTxHash && (
-                          <a
-                            href={getExplorerTxUrl(s.revealTxHash, networkId)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            title="View delivery transaction"
-                            className="text-muted-foreground hover:text-foreground transition-colors"
-                          >
-                            <ExternalLink size={12} />
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </>
-              )}
-            </div>
+          ) : cur.type === 'change_trust' && amount?.code ? (
+            <p className="text-2xl font-bold text-foreground">
+              {amount.code}
+              <VerifiedMark code={amount.code} issuer={cur.asset_issuer} className="ml-1 h-4 w-4" />
+            </p>
+          ) : (
+            <p className="text-lg font-semibold text-foreground">{label}</p>
           )}
+          <StatusPill text={status.text} tone={status.tone} />
+        </div>
 
-          {cur.transaction_hash && (
+        <div className="rounded-xl bg-card px-4 divide-y divide-border/60">
+          <Row label="Date">
+            {new Date(cur.created_at).toLocaleString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </Row>
+          <Row label="Network">
+            <NetworkValue name={chainName} icon={chain?.icon} />
+          </Row>
+
+          {cur.type === 'payment' && !priv && (
             <>
-              <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
-                <p className="text-xs font-medium text-foreground">Transaction</p>
-                <div className="h-px bg-border" />
-                <div className="flex justify-between gap-2">
-                  <span className="text-xs text-muted-foreground shrink-0">Hash</span>
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="text-xs font-mono text-foreground">
-                      {cur.transaction_hash.slice(0, 6)}...{cur.transaction_hash.slice(-4)}
-                    </span>
-                    <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(cur.transaction_hash)
-                        setHashCopied(true)
-                        window.setTimeout(() => setHashCopied(false), 2000)
-                      }}
-                      aria-label={hashCopied ? 'Transaction hash copied' : 'Copy transaction hash'}
-                      className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                    >
-                      {hashCopied ? <Check size={11} /> : <Copy size={11} />}
-                    </button>
-                  </div>
-                </div>
-                <AutoSkeleton loading={!txDetails}>
-                  <Row
-                    label="Ledger"
-                    value={txDetails ? `#${txDetails.ledger.toLocaleString()}` : '-'}
-                    mono
-                  />
-                  <Row
-                    label="Fee charged"
-                    value={txDetails ? `${stroopsToXlm(txDetails.fee_charged)} XLM` : '-'}
-                    mono
-                  />
-                  <Row label="Network" value={networkName} />
-                  {txDetails?.memo && txDetails.memo_type !== 'none' && (
-                    <Row label={`Memo (${txDetails.memo_type})`} value={txDetails.memo} />
-                  )}
-                </AutoSkeleton>
-              </div>
-
-              <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-0">
-                <button
-                  onClick={() => setXdrOpen((p) => !p)}
-                  aria-expanded={xdrOpen}
-                  className="cursor-pointer flex items-center justify-between text-xs text-muted-foreground hover:text-foreground w-full py-0.5"
-                >
-                  <span>Envelope XDR</span>
-                  {xdrOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                </button>
-                {xdrOpen &&
-                  (txDetails?.envelope_xdr ? (
-                    <div className="relative rounded-lg bg-muted p-3 mt-2">
-                      <p className="font-mono text-xs text-muted-foreground break-all leading-relaxed pr-6">
-                        {txDetails.envelope_xdr}
-                      </p>
-                      <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(txDetails.envelope_xdr)
-                          setXdrCopied(true)
-                          window.setTimeout(() => setXdrCopied(false), 2000)
-                        }}
-                        aria-label={xdrCopied ? 'Envelope XDR copied' : 'Copy envelope XDR'}
-                        className="cursor-pointer absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        {xdrCopied ? <Check size={12} /> : <Copy size={12} />}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="rounded-lg bg-muted p-3 mt-2 animate-pulse h-12" />
-                  ))}
-              </div>
+              <Row label="From">
+                <AddressValue address={cur.from} isYou={cur.from === publicKey} />
+              </Row>
+              <Row label="To">
+                <AddressValue address={cur.to} isYou={cur.to === publicKey} />
+              </Row>
             </>
           )}
+          {(cur.type === 'path_payment_strict_send' ||
+            cur.type === 'path_payment_strict_receive') && (
+            <>
+              {cur.source_amount && (
+                <Row label="You paid">
+                  <span className="tabular-nums">{formatNumber(cur.source_amount)} </span>
+                  <AssetName
+                    code={
+                      cur.source_asset_type === 'native' ? 'XLM' : (cur.source_asset_code ?? '')
+                    }
+                    issuer={cur.source_asset_issuer}
+                  />
+                </Row>
+              )}
+              {cur.amount && (
+                <Row label="Received">
+                  <span className="tabular-nums">{formatNumber(cur.amount)} </span>
+                  <AssetName
+                    code={cur.asset_type === 'native' ? 'XLM' : (cur.asset_code ?? '')}
+                    issuer={cur.asset_issuer}
+                  />
+                </Row>
+              )}
+              <Row label="From">
+                <AddressValue address={cur.from} isYou={cur.from === publicKey} />
+              </Row>
+              <Row label="To">
+                <AddressValue address={cur.to} isYou={cur.to === publicKey} />
+              </Row>
+            </>
+          )}
+          {cur.type === 'create_account' && (
+            <>
+              <Row label="Funded by">
+                <AddressValue address={cur.funder} isYou={cur.funder === publicKey} />
+              </Row>
+              <Row label="New account">
+                <AddressValue address={cur.account} isYou={cur.account === publicKey} />
+              </Row>
+            </>
+          )}
+          {cur.type === 'change_trust' && (
+            <>
+              <Row label="Asset">
+                <AssetName code={cur.asset_code ?? ''} issuer={cur.asset_issuer} />
+              </Row>
+              {cur.asset_issuer && (
+                <Row label="Issuer">
+                  <AddressValue address={cur.asset_issuer} isYou={cur.asset_issuer === publicKey} />
+                </Row>
+              )}
+              <Row label="Limit">
+                {trustRemoved
+                  ? 'Removed'
+                  : !cur.limit || cur.limit === MAX_TRUST_LIMIT
+                    ? 'Unlimited'
+                    : formatNumber(cur.limit)}
+              </Row>
+            </>
+          )}
+          {(cur.type === 'manage_sell_offer' ||
+            cur.type === 'manage_buy_offer' ||
+            cur.type === 'create_passive_sell_offer') && (
+            <>
+              {cur.selling_asset_type && (
+                <Row label="Selling">
+                  <AssetName
+                    code={
+                      cur.selling_asset_type === 'native' ? 'XLM' : (cur.selling_asset_code ?? '')
+                    }
+                    issuer={cur.selling_asset_issuer}
+                  />
+                </Row>
+              )}
+              {cur.buying_asset_type && (
+                <Row label="Buying">
+                  <AssetName
+                    code={
+                      cur.buying_asset_type === 'native' ? 'XLM' : (cur.buying_asset_code ?? '')
+                    }
+                    issuer={cur.buying_asset_issuer}
+                  />
+                </Row>
+              )}
+              {cur.price && <Row label="Price">{formatNumber(cur.price)}</Row>}
+            </>
+          )}
+          {cur.type === 'account_merge' && (
+            <>
+              <Row label="Account">
+                <AddressValue
+                  address={cur.source_account}
+                  isYou={cur.source_account === publicKey}
+                />
+              </Row>
+              <Row label="Merged into">
+                <AddressValue address={cur.into} isYou={cur.into === publicKey} />
+              </Row>
+            </>
+          )}
+          {cur.type === 'invoke_host_function' && !priv && cur.function && (
+            <Row label="Action">{formatHostFunction(cur.function)}</Row>
+          )}
+          {priv && (
+            <>
+              {priv.recipient && (
+                <Row label="To">
+                  <AddressValue address={priv.recipient} isYou={priv.recipient === publicKey} />
+                </Row>
+              )}
+              {priv.phase && (
+                <Row label="Delivery">
+                  <span className="inline-flex justify-end">
+                    <PhaseBadge phase={priv.phase} />
+                  </span>
+                </Row>
+              )}
+              {priv.direction === 'out' && feeStroops ? (
+                <Row label="Total fee">
+                  <span className="tabular-nums">
+                    {trimZeros(stroopsToXlm(String(feeStroops)))} XLM
+                  </span>
+                </Row>
+              ) : null}
+            </>
+          )}
+          {cur.type === 'claim_claimable_balance' && (
+            <Row label="Claimed by">
+              <AddressValue
+                address={cur.claimant ?? cur.source_account}
+                isYou={(cur.claimant ?? cur.source_account) === publicKey}
+              />
+            </Row>
+          )}
+          {cur.type === 'create_claimable_balance' && (
+            <>
+              <Row label="From">
+                <AddressValue
+                  address={cur.source_account}
+                  isYou={cur.source_account === publicKey}
+                />
+              </Row>
+              {cur.asset && cur.asset !== 'native' && (
+                <Row label="Issuer">
+                  <AddressValue
+                    address={parseAsset(cur.asset).issuer}
+                    isYou={parseAsset(cur.asset).issuer === publicKey}
+                  />
+                </Row>
+              )}
+            </>
+          )}
+          {cur.type === 'set_options' && (
+            <Row label="Account">
+              <AddressValue address={cur.source_account} isYou={cur.source_account === publicKey} />
+            </Row>
+          )}
+          {cur.type === 'manage_data' && cur.name && (
+            <Row label="Key">
+              <span className="font-mono">{cur.name}</span>
+            </Row>
+          )}
+
+          {showFee && (
+            <Row label="Network fee">
+              <span className="tabular-nums">
+                {trimZeros(stroopsToXlm(txDetails.fee_charged))} XLM
+              </span>
+            </Row>
+          )}
+          {txDetails?.memo && txDetails.memo_type !== 'none' && (
+            <Row label="Memo">
+              <span className="break-all">{txDetails.memo}</span>
+            </Row>
+          )}
+          {cur.transaction_hash && (
+            <Row label="Transaction">
+              <CopyValue value={cur.transaction_hash} />
+            </Row>
+          )}
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-border px-5 py-4 shrink-0">
-          {cur.cyphras_private?.direction === 'out' &&
-            (cur.cyphras_private.failedCounters?.length ?? 0) +
-              (cur.cyphras_private.reclaimableCounters?.length ?? 0) >
-              0 && (
-              <div className="flex gap-3">
-                <Button
-                  className="flex-1"
-                  disabled={submitting}
-                  onClick={() =>
-                    void privateAction(SERVICE_TYPES.PRIVATE_SELF_RECLAIM, [
-                      ...(cur.cyphras_private?.failedCounters ?? []),
-                      ...(cur.cyphras_private?.reclaimableCounters ?? []),
-                    ])
-                  }
-                >
-                  {submitting ? 'Reclaiming' : 'Reclaim to my wallet'}
-                </Button>
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  disabled={submitting}
-                  onClick={() =>
-                    void privateAction(SERVICE_TYPES.PRIVATE_REVEAL_NOTE, [
-                      ...(cur.cyphras_private?.failedCounters ?? []),
-                      ...(cur.cyphras_private?.reclaimableCounters ?? []),
-                    ])
-                  }
-                >
-                  Deliver again
-                </Button>
-              </div>
-            )}
-          {cur.cyphras_private?.direction === 'out' &&
-            (cur.cyphras_private.unsentCounters?.length ?? 0) > 0 && (
-              <p className="text-xs text-muted-foreground">
-                {cur.cyphras_private.unsentCounters!.length} part
-                {cur.cyphras_private.unsentCounters!.length > 1 ? 's' : ''} could not be deposited
-                (for example the balance was too low), so those funds never left your wallet. You
-                can send again.
-              </p>
-            )}
-          {actionError && (
-            <div className="flex flex-col gap-1">
-              <p className="text-xs text-foreground">
-                {/not yet indexed/i.test(actionError)
-                  ? 'This part has not been deposited on-chain yet, so there is nothing to reclaim. Your funds are still in your wallet and Cyphras will keep retrying the delivery.'
-                  : 'Could not complete that just now. Your funds are safe in the pool, try again.'}
-              </p>
-              <p className="text-xs text-muted-foreground">{actionError}</p>
+        {priv?.direction === 'out' && priv.notes && priv.deliveredAmount !== priv.amount && (
+          <div className="flex flex-col gap-1.5 rounded-xl bg-card px-4 py-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Delivered</span>
+              <span className="tabular-nums text-foreground">
+                {priv.deliveredAmount} of {priv.amount} {priv.asset}
+              </span>
             </div>
-          )}
-          <div className="flex gap-3">
-            {cur.transaction_hash && (
-              <Button variant="outline" className="flex-1" asChild>
-                <a
-                  href={getExplorerTxUrl(cur.transaction_hash, networkId)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5"
-                >
-                  View on explorer <ExternalLink size={14} />
-                </a>
-              </Button>
+            <DeliveryProgressBar key={cur.id} notes={priv.notes} />
+            {priv.committedAmount !== undefined &&
+              priv.committedAmount !== priv.deliveredAmount && (
+                <span className="text-[11px] text-muted-foreground">
+                  {priv.committedAmount} of {priv.amount} {priv.asset} has left your wallet so far
+                </span>
+              )}
+          </div>
+        )}
+
+        {priv?.splitsDetail && priv.splitsDetail.length > 0 && (
+          <div className="rounded-xl bg-card px-4">
+            <button
+              onClick={() => setSplitsOpen((p) => !p)}
+              aria-expanded={splitsOpen}
+              className="flex w-full cursor-pointer items-center justify-between gap-2 py-3 text-xs text-foreground"
+            >
+              <span>
+                Private splits
+                <span className="text-muted-foreground">
+                  {' '}
+                  {priv.splitsDetail.filter((s) => s.status === 'revealed').length} of{' '}
+                  {priv.splitsDetail.length} delivered
+                </span>
+              </span>
+              <ChevronDown
+                size={14}
+                className={`text-muted-foreground transition-transform duration-300 ease-out ${splitsOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+            <Collapse open={splitsOpen}>
+              <div className="divide-y divide-border/60 border-t border-border/60">
+                {priv.splitsDetail.map((s, i) => (
+                  <div key={i} className="flex items-center justify-between gap-2 py-2 text-xs">
+                    <span className="tabular-nums text-foreground">
+                      {s.amount} {priv.asset}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <PhaseBadge phase={splitPhase(s.status, s.scheduledFor)} size={12} />
+                      {s.revealTxHash && (
+                        <a
+                          href={getExplorerTxUrl(s.revealTxHash, networkId)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="View delivery transaction"
+                          className="text-muted-foreground transition-colors hover:text-foreground"
+                        >
+                          <ExternalLink size={12} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Collapse>
+          </div>
+        )}
+
+        {cur.transaction_hash && (
+          <AdvancedDetails open={advancedOpen} onToggle={() => setAdvancedOpen((p) => !p)}>
+            <Row label="Operation">
+              <span className="font-mono">{cur.type}</span>
+            </Row>
+            {cur.type !== 'private_send' && (
+              <Row label="Operation ID">
+                <CopyValue value={cur.id} />
+              </Row>
             )}
-            <Button variant="outline" className="flex-1" onClick={onClose}>
-              Close
+            {txDetails && <Row label="Ledger">#{txDetails.ledger.toLocaleString()}</Row>}
+            {txDetails?.memo && txDetails.memo_type !== 'none' && (
+              <Row label="Memo type">{txDetails.memo_type}</Row>
+            )}
+            {cur.type === 'change_trust' && cur.limit && !trustRemoved && (
+              <Row label="Raw limit">
+                <span className="font-mono">{cur.limit}</span>
+              </Row>
+            )}
+            {cur.offer_id && <Row label="Offer ID">{cur.offer_id}</Row>}
+            {cur.balance_id && (
+              <Row label="Balance ID">
+                <CopyValue value={cur.balance_id} />
+              </Row>
+            )}
+            {priv?.splits !== undefined && <Row label="Private splits">{priv.splits}</Row>}
+            <div className="py-2.5">
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Envelope XDR</span>
+                {txDetails?.envelope_xdr && (
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(txDetails.envelope_xdr)
+                      setXdrCopied(true)
+                      window.setTimeout(() => setXdrCopied(false), 2000)
+                    }}
+                    aria-label={xdrCopied ? 'Envelope XDR copied' : 'Copy envelope XDR'}
+                    className="cursor-pointer text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    {xdrCopied ? (
+                      <Check size={11} className="text-green-500" />
+                    ) : (
+                      <Copy size={11} />
+                    )}
+                  </button>
+                )}
+              </div>
+              {txDetails?.envelope_xdr ? (
+                <p className="max-h-24 overflow-y-auto break-all rounded-lg bg-muted p-2.5 font-mono text-[10px] leading-relaxed text-muted-foreground">
+                  {txDetails.envelope_xdr}
+                </p>
+              ) : (
+                <div className="skeleton-sweep h-12 rounded-lg bg-muted" />
+              )}
+            </div>
+          </AdvancedDetails>
+        )}
+
+        {priv?.direction === 'out' && reclaimCounters.length > 0 && (
+          <div className="flex gap-3">
+            <Button
+              className="flex-1"
+              disabled={submitting}
+              onClick={() =>
+                void privateAction(SERVICE_TYPES.PRIVATE_SELF_RECLAIM, reclaimCounters)
+              }
+            >
+              {submitting ? 'Reclaiming' : 'Reclaim to my wallet'}
+            </Button>
+            <Button
+              variant="outline"
+              className="flex-1"
+              disabled={submitting}
+              onClick={() => void privateAction(SERVICE_TYPES.PRIVATE_REVEAL_NOTE, reclaimCounters)}
+            >
+              Deliver again
             </Button>
           </div>
-        </div>
+        )}
+        {priv?.direction === 'out' && (priv.unsentCounters?.length ?? 0) > 0 && (
+          <p className="text-xs text-muted-foreground">
+            {priv.unsentCounters!.length} part
+            {priv.unsentCounters!.length > 1 ? 's' : ''} could not be deposited (for example the
+            balance was too low), so those funds never left your wallet. You can send again.
+          </p>
+        )}
+        {actionError && (
+          <div className="flex flex-col gap-1">
+            <p className="text-xs text-foreground">
+              {/not yet indexed/i.test(actionError)
+                ? 'This part has not been deposited on-chain yet, so there is nothing to reclaim. Your funds are still in your wallet and Cyphras will keep retrying the delivery.'
+                : 'Could not complete that just now. Your funds are safe in the pool, try again.'}
+            </p>
+            <p className="text-xs text-muted-foreground">{actionError}</p>
+          </div>
+        )}
+
+        {cur.transaction_hash && (
+          <Button variant="outline" className="w-full" asChild>
+            <a
+              href={getExplorerTxUrl(cur.transaction_hash, networkId)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View on explorer
+              <ExternalLink size={13} className="ml-1.5" />
+            </a>
+          </Button>
+        )}
       </div>
-    </div>
+    </BottomSheet>
   )
 }

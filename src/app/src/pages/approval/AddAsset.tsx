@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useWallet } from '@/context/WalletContext'
-import { useNetwork } from '@/context/NetworkContext'
 import { CirclePlus, Info } from 'lucide-react'
 import { ApprovalShell, ActionHeader, InfoCard, InfoRow, TrustNote, AddressChip } from './_shell'
+import { NetworkValue } from '@/components/TxDetailParts'
+import { useStellarChain } from '@/hooks/useStellarChain'
 
 export default function AddAsset() {
   const { status } = useWallet()
-  const { activeNetwork } = useNetwork()
+  const stellarChain = useStellarChain()
   const [origin, setOrigin] = useState('')
   const [requestId, setRequestId] = useState('')
   const [assetCode, setAssetCode] = useState('')
@@ -53,7 +54,9 @@ export default function AddAsset() {
           </InfoRow>
         )}
         <InfoRow label="Network">
-          <span className="text-sm font-medium text-foreground">{activeNetwork.name}</span>
+          <span className="text-sm font-medium text-foreground">
+            <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+          </span>
         </InfoRow>
         <InfoRow label="Asset">
           <span className="text-sm font-mono font-semibold text-foreground">{assetCode}</span>

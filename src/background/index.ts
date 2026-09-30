@@ -1,7 +1,47 @@
 import { WINDOW_MODES, STORAGE_KEYS, MESSAGE_TYPES } from '@constants/windowMode'
 import { SERVICE_TYPES, PASSWORD_RULES } from '@constants/services'
+import { LEGACY_NETWORK_TO_CHAIN } from '@constants/chains'
+import { getEvmChainsForEnv } from './chainRegistry'
+import { getCuratedEvmTokens } from './evmAssets'
+import type { ChainBalance, EvmActivity } from '@ext-types/index'
+import { EVM_PROXY_BASE } from '@constants/backend'
+import { signTransactionXdr, signMessageBytes } from './signers/stellar'
+import {
+  deriveEvmAddress,
+  deriveEvmPrivateKey,
+  evmAddressFromPrivateKey,
+  signEip1559,
+  erc20TransferData,
+} from './signers/evm'
+import { getRegistryChains } from './chainRegistry'
 import { EXTERNAL_SERVICE_TYPES, APPROVAL_PAYLOAD_STORAGE_KEY } from '@constants/external'
-import type { NetworkConfig } from '@constants/networks'
+import { ACTIVE_NETWORK_KEY, type NetworkConfig } from '@constants/networks'
+import {
+  cctpAnchorsForEnv,
+  cctpProxyBase,
+  cctpEvmRpcUrl,
+  CCTP_MAX_FEE_BPS_CEILING,
+  CCTP_FINALITY_STANDARD,
+  CCTP_FINALITY_FAST,
+} from '@constants/cctp'
+import {
+  createCctpJob,
+  listCctpJobs,
+  withCctpAccountLock,
+  CctpDuplicateJobError,
+} from './cctp/store'
+import { runCctpBurn, decimalToBaseUnits, baseUnitsToDecimal, type CctpEnv } from './cctp/burn'
+import { buildCctpFeeBreakdown } from './cctp/quote'
+import { decodeCctpMessage } from './cctp/encoding'
+import {
+  recordPendingEvmTx,
+  updatePendingEvmTx,
+  getPendingEvmTxs,
+  dropIndexedEvmTxs,
+  fetchEvmReceipt,
+} from './evmPending'
+import { refreshCctpBadge } from './cctp/badge'
+import { runCctpProcessorPass } from './cctp/processor'
 import type {
   MessagePayload,
   MessageResponse,
@@ -78,6 +118,16 @@ import { NonRepresentableAmountError } from '../private/denominations'
 import { RelayerError } from '../private/relayerClient'
 import { generateProof } from './offscreenProver'
 import {
+  shieldedReceiveAddress,
+  shieldedQuote,
+  shieldedGetBalance,
+  shieldedScan,
+  shieldedShield,
+  shieldedSend,
+  shieldedUnshield,
+  shieldedSpendChunk,
+} from './shielded'
+import {
   trackInstall,
   trackDailyPing,
   trackConnect,
@@ -106,6 +156,7 @@ import {
   nativeToScVal,
   scValToNative,
   SorobanDataBuilder,
+  authorizeEntry,
   xdr,
   rpc as SorobanRpc,
   contract as StellarContract,
@@ -166,14 +217,20 @@ function isNonEmptyString(v: unknown): v is string {
 
 async function storeApprovalPayload(id: string, data: Record<string, string>): Promise<void> {
   const result = await chrome.storage.session?.get(APPROVAL_PAYLOAD_STORAGE_KEY)
-  const store: Record<string, Record<string, string>> = result?.[APPROVAL_PAYLOAD_STORAGE_KEY] ?? {}
+  const store =
+    (result?.[APPROVAL_PAYLOAD_STORAGE_KEY] as
+      | Record<string, Record<string, string>>
+      | undefined) ?? {}
   store[id] = data
   await chrome.storage.session?.set({ [APPROVAL_PAYLOAD_STORAGE_KEY]: store })
 }
 
 async function clearApprovalPayload(id: string): Promise<void> {
   const result = await chrome.storage.session?.get(APPROVAL_PAYLOAD_STORAGE_KEY)
-  const store: Record<string, Record<string, string>> = result?.[APPROVAL_PAYLOAD_STORAGE_KEY] ?? {}
+  const store =
+    (result?.[APPROVAL_PAYLOAD_STORAGE_KEY] as
+      | Record<string, Record<string, string>>
+      | undefined) ?? {}
   delete store[id]
   await chrome.storage.session?.set({ [APPROVAL_PAYLOAD_STORAGE_KEY]: store })
 }
@@ -325,9 +382,12 @@ function assembleTx(
     builder.setSorobanData(new SorobanDataBuilder(sim.transactionData).build())
   }
 
-  const auth = (sim.auth ?? []).map((a) => xdr.SorobanAuthorizationEntry.fromXDR(a, 'base64'))
+  // Soroban RPC returns auth under results[0].auth, not at the top level
+  const auth = (sim.results?.[0]?.auth ?? []).map((a) =>
+    xdr.SorobanAuthorizationEntry.fromXDR(a, 'base64')
+  )
   builder.clearOperations()
-  const op = baseTx.operations[0] as ReturnType<typeof Operation.invokeHostFunction>
+  const op = baseTx.operations[0] as Operation.InvokeHostFunction
   builder.addOperation(Operation.invokeHostFunction({ ...op, auth }))
 
   return builder.build()
@@ -368,7 +428,7 @@ function decodeScValResult(resultXdr: string): unknown {
   }
 }
 
-function formatSpecType(typeDef: any): string {
+function formatSpecType(typeDef: xdr.ScSpecTypeDef): string {
   const raw: string = typeDef.switch().name // e.g. "scSpecTypeU128", "scSpecTypeBytesN"
   const name = raw.replace('scSpecType', '').toLowerCase()
   if (name === 'udt') return typeDef.udt().name().toString()
@@ -378,7 +438,7 @@ function formatSpecType(typeDef: any): string {
   if (name === 'map')
     return `Map<${formatSpecType(typeDef.map().keyType())}, ${formatSpecType(typeDef.map().valueType())}>`
   if (name === 'tuple')
-    return `Tuple<${(typeDef.tuple().valueTypes() as any[]).map(formatSpecType).join(', ')}>`
+    return `Tuple<${typeDef.tuple().valueTypes().map(formatSpecType).join(', ')}>`
   return name
 }
 
@@ -424,6 +484,22 @@ function friendlyPrivateError(err: unknown, asset: string): string {
     return "This amount can't be split into the available privacy denominations. Try a rounder amount."
   }
   return 'Private payment service is temporarily unavailable. Try again shortly.'
+}
+
+// Pass through user-safe shielded errors; anything else gets a generic message.
+function friendlyShieldedError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : ''
+  const safe = [
+    'wallet locked',
+    'private mode is testnet only',
+    'private mode needs an HD account',
+    'not enough shielded balance',
+    'consolidate first',
+    'no active account',
+    'trustline',
+  ]
+  if (safe.some((s) => msg.includes(s))) return msg
+  return 'Private mode is temporarily unavailable. Try again shortly.'
 }
 
 // A reveal pays via SAC transfer (cannot fund a new account; wrapped assets need a trustline). Verify
@@ -654,6 +730,122 @@ async function kickPrivateProcessor(): Promise<void> {
   }
 }
 
+const CCTP_ALARM = 'cyphras_cctp_processor'
+
+function setupCctpProcessorAlarm(): void {
+  chrome.alarms.get(CCTP_ALARM, (existing: chrome.alarms.Alarm | undefined) => {
+    if (!existing) {
+      chrome.alarms.create(CCTP_ALARM, { periodInMinutes: 1 })
+    }
+  })
+}
+
+// Shared by CCTP_QUOTE (form preview) and CCTP_START (the quote a job is created with).
+async function fetchCctpFeeQuote(
+  networkId: string,
+  direction: 'stellar-to-evm' | 'evm-to-stellar',
+  amount: string,
+  speed: 'standard' | 'fast'
+): Promise<string> {
+  const srcDomain = direction === 'stellar-to-evm' ? 27 : 0
+  const dstDomain = direction === 'stellar-to-evm' ? 0 : 27
+  const feesRes = await fetch(
+    `${cctpProxyBase(networkId as 'mainnet' | 'testnet')}/fees/${srcDomain}/${dstDomain}`
+  )
+  // The proxy fronts Circle's API through a CDN that answers outages with an
+  // HTML page, so a parse failure is the upstream being down, not our bug.
+  const fees = (await feesRes.json().catch(() => null)) as
+    | { finalityThreshold: number; minimumFee: number }[]
+    | null
+  if (!feesRes.ok || !Array.isArray(fees))
+    throw new Error('Circle fee service is unavailable right now, try again shortly')
+  const wantThreshold = speed === 'fast' ? CCTP_FINALITY_FAST : CCTP_FINALITY_STANDARD
+  const tier = fees.find((f) => f.finalityThreshold === wantThreshold)
+  if (!tier) throw new Error(`no ${speed}-transfer fee quote available`)
+  const bps = BigInt(tier.minimumFee)
+  if (bps < 0n || bps > CCTP_MAX_FEE_BPS_CEILING) {
+    throw new Error('quoted fee is outside the safety ceiling')
+  }
+  const amountBase = decimalToBaseUnits(amount, 6)
+  return baseUnitsToDecimal((amountBase * bps) / 10000n, 6)
+}
+
+// Keys for the job's own account, not the active one. Null means it cannot sign right now
+// (locked, unsupported network, or that wallet's mnemonic not in session), not an error.
+async function buildCctpSigningEnv(networkId: string, stellarPk: string): Promise<CctpEnv | null> {
+  const anchors = cctpAnchorsForEnv(networkId)
+  if (!anchors) return null
+  const networks = await getNetworks()
+  const net = networks.find((n) => n.id === networkId)
+  if (!net) return null
+
+  const store = await getAccountsStore()
+  const account = store.accounts.find((a) => a.publicKey === stellarPk)
+  if (!account || account.index < 0) return null
+  const mnemonic =
+    account.walletId === 'primary'
+      ? await getSessionMnemonic()
+      : (await getSessionExtraHDMnemonics())[account.walletId]
+  if (!mnemonic) return null
+
+  return {
+    networkId,
+    horizonUrl: net.horizonUrl,
+    sorobanRpcUrl: net.sorobanRpcUrl,
+    passphrase: net.passphrase,
+    txTimeout: net.txTimeout ?? 90,
+    evmRpcUrl: cctpEvmRpcUrl(anchors),
+    evmChainId: anchors.evm.chainId,
+    anchors,
+    stellarSecret: (await deriveKeypairRaw(mnemonic, account.index)).secret,
+    evmPrivateKey: deriveEvmPrivateKey(mnemonic, account.index),
+  }
+}
+
+let cctpRunning = false
+let cctpRerun = false
+
+// Each pass scans every account and network's jobs, not just the active scope, so funds in
+// flight never stall after an account or network switch.
+async function kickCctpProcessor(): Promise<void> {
+  if (cctpRunning) {
+    cctpRerun = true
+    return
+  }
+  cctpRunning = true
+  try {
+    do {
+      cctpRerun = false
+      const networks = await getNetworks()
+      const networkConfigs = new Map(
+        networks.map((n) => [
+          n.id,
+          {
+            horizonUrl: n.horizonUrl,
+            sorobanRpcUrl: n.sorobanRpcUrl,
+            passphrase: n.passphrase,
+            txTimeout: n.txTimeout ?? 90,
+          },
+        ])
+      )
+      await runCctpProcessorPass(
+        {
+          isUnlocked: async () => {
+            const s = await chrome.storage.session?.get(SESSION_KEY)
+            return !!s?.[SESSION_KEY]
+          },
+          buildSigningEnv: buildCctpSigningEnv,
+        },
+        networkConfigs
+      )
+    } while (cctpRerun)
+  } catch (err) {
+    console.error('cctp processor failed', err)
+  } finally {
+    cctpRunning = false
+  }
+}
+
 // Best-effort: rebuild any note this account committed on-chain that is missing locally (cleared
 // storage, reinstall, new device), then process them. Never throws.
 let privateRecovering = false
@@ -688,11 +880,15 @@ async function kickPrivateRecovery(force = false): Promise<void> {
   void kickPrivateProcessor()
 }
 
+// The badge does not survive a browser restart.
+void refreshCctpBadge()
+
 chrome.runtime.onInstalled.addListener(async (details) => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false })
   chrome.sidePanel.setOptions({ path: 'wallet.html?ctx=sidepanel', enabled: true })
   setupAnalyticsAlarm()
   setupPrivateProcessorAlarm()
+  setupCctpProcessorAlarm()
   if (details.reason === 'install') trackInstall()
 
   const walletExists = await hasWallet()
@@ -706,11 +902,13 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === DAILY_ALARM) trackDailyPing()
   if (alarm.name === PRIVATE_ALARM) void kickPrivateProcessor()
+  if (alarm.name === CCTP_ALARM) void kickCctpProcessor()
 })
 
 // Re-register alarms on service-worker restart (MV3 workers can be killed)
 setupAnalyticsAlarm()
 setupPrivateProcessorAlarm()
+setupCctpProcessorAlarm()
 
 // Resume processing on unlock or account switch: SESSION_KEY appearing means the key needed for
 // commit/reveal is back.
@@ -720,9 +918,19 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 })
 
+// The UI shows the newly active network's bridges right away, so advance them now rather than
+// on the next one-minute alarm.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[ACTIVE_NETWORK_KEY]) {
+    void kickCctpProcessor()
+  }
+})
+
 // Resume on worker startup, picking up any note left mid-flight by a killed worker (session storage
 // and the note store survive the restart). No-op while locked.
 void kickPrivateProcessor()
+// Resume any CCTP bridge left mid-flight by a killed worker; keyless steps run even while locked.
+void kickCctpProcessor()
 
 // Restore sidebar-by-default behavior on service-worker restart
 chrome.storage.local.get('cyphras_sidebar_by_default', (result) => {
@@ -775,17 +983,32 @@ chrome.runtime.onConnect.addListener((port) => {
   })
 })
 
-chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
+// Runtime messages are untyped at the chrome boundary; the router only reads
+// `type` and hands each message to a handler that knows its real shape.
+interface RuntimeMessage {
+  type?: string
+  [key: string]: unknown
+}
+
+// type aliases, not interfaces: only aliases get the implicit index
+// signature that makes the cast from RuntimeMessage compile
+type ApprovalResponseMessage = {
+  id: string
+  approved: boolean
+}
+
+chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
   if (message.type === 'EXTERNAL_REQUEST') {
-    handleExternalRequest(message, sender, sendResponse)
+    handleExternalRequest(message as ExternalRequestMessage, sender, sendResponse)
     return true
   }
 
   if (message.type === 'APPROVAL_RESPONSE') {
-    const resolver = pendingRequests.get(message.id)
+    const { id, approved } = message as ApprovalResponseMessage
+    const resolver = pendingRequests.get(id)
     if (resolver) {
-      pendingRequests.delete(message.id)
-      resolver(message.approved)
+      pendingRequests.delete(id)
+      resolver(approved)
     }
     sendResponse({ ok: true })
     return true
@@ -796,7 +1019,10 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
     return true
   }
 
-  if ('type' in message && Object.values(SERVICE_TYPES).includes(message.type as any)) {
+  if (
+    typeof message.type === 'string' &&
+    (Object.values(SERVICE_TYPES) as string[]).includes(message.type)
+  ) {
     handleService(message as ServicePayload, sendResponse)
     return true
   }
@@ -882,6 +1108,46 @@ function notifyTabsWalletChanged() {
   })
 }
 
+// Converts a wei-style integer amount to a trimmed decimal string without
+// float precision loss.
+function weiToDecimal(value: bigint, decimals: number): string {
+  const base = 10n ** BigInt(decimals)
+  const whole = value / base
+  const frac = (value % base).toString().padStart(decimals, '0').replace(/0+$/, '')
+  return frac === '' ? whole.toString() : `${whole}.${frac}`
+}
+
+// Inverse of weiToDecimal; throws on malformed or over-precise input.
+function decimalToWei(value: string, decimals: number): bigint {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(value.trim())
+  if (!match) throw new Error('Invalid amount')
+  const [, whole, frac = ''] = match
+  if (frac.length > decimals) throw new Error('Too many decimal places')
+  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, '0') || '0')
+}
+
+// Fills addresses.evm for every HD account from the session mnemonics.
+// Runs after unlock and after account creation; imported-secret accounts
+// (index -1) have no mnemonic and stay Stellar-only.
+async function backfillEvmAddresses(): Promise<void> {
+  try {
+    const store = await getAccountsStore()
+    const primary = await getSessionMnemonic()
+    const extras = await getSessionExtraHDMnemonics()
+    let changed = false
+    for (const account of store.accounts) {
+      if (account.index < 0 || account.addresses?.evm) continue
+      const mnemonic = account.walletId === 'primary' ? primary : extras[account.walletId]
+      if (!mnemonic) continue
+      account.addresses = { ...account.addresses, evm: deriveEvmAddress(mnemonic, account.index) }
+      changed = true
+    }
+    if (changed) await saveAccountsStore(store)
+  } catch {
+    // Best-effort: a failed backfill retries on the next unlock.
+  }
+}
+
 // Resolves immediately with null if the user closes the window.
 async function openAndWaitForUnlock(timeoutMs = 2 * 60 * 1000): Promise<string | null> {
   return new Promise((resolve) => {
@@ -911,7 +1177,7 @@ async function openAndWaitForUnlock(timeoutMs = 2 * 60 * 1000): Promise<string |
       if (area !== 'session') return
       if (!('cyphras_session_pubkey' in changes)) return
       const newValue = changes['cyphras_session_pubkey']?.newValue
-      if (!newValue) return
+      if (!isNonEmptyString(newValue)) return
       finish(newValue)
     }
 
@@ -933,8 +1199,15 @@ async function openAndWaitForUnlock(timeoutMs = 2 * 60 * 1000): Promise<string |
   })
 }
 
+type ExternalRequestMessage = {
+  id: string
+  requestType: string
+  origin: string
+  payload?: Record<string, unknown>
+}
+
 async function handleExternalRequest(
-  message: any,
+  message: ExternalRequestMessage,
   _sender: chrome.runtime.MessageSender,
   sendResponse: (r: Record<string, unknown>) => void
 ) {
@@ -942,7 +1215,7 @@ async function handleExternalRequest(
     const { id, requestType, origin, payload } = message
 
     const session = await chrome.storage.session?.get(SESSION_KEY)
-    const pubkey: string | null = session?.[SESSION_KEY] ?? null
+    const pubkey = (session?.[SESSION_KEY] as string | undefined) ?? null
 
     switch (requestType) {
       case EXTERNAL_SERVICE_TYPES.IS_CONNECTED: {
@@ -1169,12 +1442,10 @@ async function handleExternalRequest(
         }
 
         try {
-          const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase)
-          const keypair = Keypair.fromSecret(sessionSecret)
-          tx.sign(keypair)
+          const signedTxXdr = signTransactionXdr(xdr, networkPassphrase, sessionSecret)
           trackSign('transaction')
           sendResponse({
-            result: { signedTxXdr: tx.toEnvelope().toXDR('base64'), signerAddress: txPubkey },
+            result: { signedTxXdr, signerAddress: txPubkey },
           })
         } catch {
           trackError('SIGN_FAILED')
@@ -1216,10 +1487,7 @@ async function handleExternalRequest(
         }
 
         try {
-          const keypair = Keypair.fromSecret(sessionSecret)
-          const msgBytes = new TextEncoder().encode(msg)
-          const signature = keypair.sign(msgBytes)
-          const signatureBase64 = btoa(String.fromCharCode(...signature))
+          const signatureBase64 = signMessageBytes(msg, sessionSecret)
           trackSign('message')
           sendResponse({ result: { signature: signatureBase64, signerAddress: msgPubkey } })
         } catch {
@@ -1498,47 +1766,18 @@ async function handleExternalRequest(
         }
 
         try {
-          const { xdr: stellarXdr } = await import('@stellar/stellar-sdk')
           const keypair = Keypair.fromSecret(saeSecret)
-
-          const entry = stellarXdr.SorobanAuthorizationEntry.fromXDR(entryXdr, 'base64')
-          const preimage = stellarXdr.HashIdPreimage.fromXDR(
-            stellarXdr.HashIdPreimage.envelopeTypeSorobanAuthorization(
-              new stellarXdr.HashIdPreimageSorobanAuthorization({
-                networkId: Buffer.from(
-                  new TextEncoder().encode(saePassphrase).slice(0, 32)
-                ).subarray(0, 32),
-                invocation: entry.credentials().address().invocation(),
-                nonce: entry.credentials().address().nonce(),
-                signatureExpirationLedger: entry
-                  .credentials()
-                  .address()
-                  .signatureExpirationLedger(),
-              })
-            ).toXDR()
+          const entry = xdr.SorobanAuthorizationEntry.fromXDR(entryXdr, 'base64')
+          // the entry's own expiration is passed back so the SDK signs it unchanged
+          const signed = await authorizeEntry(
+            entry,
+            keypair,
+            entry.credentials().address().signatureExpirationLedger(),
+            saePassphrase
           )
-
-          const hash = Buffer.from(await crypto.subtle.digest('SHA-256', preimage.toXDR()))
-          const signature = keypair.sign(hash)
-
-          entry
-            .credentials()
-            .address()
-            .signature(
-              stellarXdr.ScVal.scvMap([
-                new stellarXdr.ScMapEntry({
-                  key: stellarXdr.ScVal.scvSymbol('public_key'),
-                  val: stellarXdr.ScVal.scvBytes(Buffer.from(keypair.rawPublicKey())),
-                }),
-                new stellarXdr.ScMapEntry({
-                  key: stellarXdr.ScVal.scvSymbol('signature'),
-                  val: stellarXdr.ScVal.scvBytes(Buffer.from(signature)),
-                }),
-              ])
-            )
-
-          const signedEntryXdr = entry.toXDR('base64')
-          sendResponse({ result: { signedAuthEntry: signedEntryXdr, signerAddress: saePubkey } })
+          sendResponse({
+            result: { signedAuthEntry: signed.toXDR('base64'), signerAddress: saePubkey },
+          })
         } catch {
           sendResponse({
             error: {
@@ -2415,7 +2654,7 @@ async function handleExternalRequest(
               fee: scTotalFee,
               minResourceFee: scSim?.minResourceFee,
               error: scSim?.error,
-              requiresAuth: (scSim?.auth ?? []).length > 0,
+              requiresAuth: (scSim?.results?.[0]?.auth ?? []).length > 0,
               stateChanging: scStateChanging,
             },
           })
@@ -2624,15 +2863,15 @@ async function handleExternalRequest(
 
           const spec = StellarContract.Spec.fromWasm(wasmBytes)
 
-          const functions = spec.funcs().map((f: any) => ({
+          const functions = spec.funcs().map((f) => ({
             name: f.name().toString(),
             doc: f.doc().toString().trim() || undefined,
-            inputs: f.inputs().map((i: any) => ({
+            inputs: f.inputs().map((i) => ({
               name: i.name().toString(),
               type: formatSpecType(i.type()),
               doc: i.doc().toString().trim() || undefined,
             })),
-            outputs: (f.outputs() as any[]).map(formatSpecType),
+            outputs: f.outputs().map(formatSpecType),
           }))
 
           const structKind = xdr.ScSpecEntryKind.scSpecEntryUdtStructV0().value
@@ -2640,14 +2879,14 @@ async function handleExternalRequest(
           const unionKind = xdr.ScSpecEntryKind.scSpecEntryUdtUnionV0().value
           const voidCaseKind = xdr.ScSpecUdtUnionCaseV0Kind.scSpecUdtUnionCaseVoidV0().value
 
-          const structs = (spec.entries as any[])
-            .filter((e: any) => e.switch().value === structKind)
-            .map((e: any) => {
+          const structs = spec.entries
+            .filter((e) => e.switch().value === structKind)
+            .map((e) => {
               const s = e.udtStructV0()
               return {
                 name: s.name().toString(),
                 doc: s.doc()?.toString().trim() || undefined,
-                fields: (s.fields() as any[]).map((field: any) => ({
+                fields: s.fields().map((field) => ({
                   name: field.name().toString(),
                   type: formatSpecType(field.type()),
                   doc: field.doc()?.toString().trim() || undefined,
@@ -2655,32 +2894,32 @@ async function handleExternalRequest(
               }
             })
 
-          const enums = (spec.entries as any[])
-            .filter((e: any) => e.switch().value === enumKind)
-            .map((e: any) => {
+          const enums = spec.entries
+            .filter((e) => e.switch().value === enumKind)
+            .map((e) => {
               const en = e.udtEnumV0()
               return {
                 name: en.name().toString(),
                 doc: en.doc()?.toString().trim() || undefined,
-                cases: (en.cases() as any[]).map((c: any) => ({
+                cases: en.cases().map((c) => ({
                   name: c.name().toString(),
-                  value: c.value() as number,
+                  value: c.value(),
                 })),
               }
             })
 
-          const unions = (spec.entries as any[])
-            .filter((e: any) => e.switch().value === unionKind)
-            .map((e: any) => {
+          const unions = spec.entries
+            .filter((e) => e.switch().value === unionKind)
+            .map((e) => {
               const u = e.udtUnionV0()
               return {
                 name: u.name().toString(),
                 doc: u.doc()?.toString().trim() || undefined,
-                cases: (u.cases() as any[]).map((c: any) => {
+                cases: u.cases().map((c) => {
                   const isVoid = c.switch().value === voidCaseKind
                   const name = c.value().name().toString()
                   if (isVoid) return { name, types: [] as string[] }
-                  const types = (c.tupleCase().type() as any[]).map(formatSpecType)
+                  const types = c.tupleCase().type().map(formatSpecType)
                   return { name, types }
                 }),
               }
@@ -2705,12 +2944,12 @@ async function handleExternalRequest(
 
 async function getFailedAttempts(): Promise<number> {
   const result = await chrome.storage.local.get(FAILED_ATTEMPTS_KEY)
-  return result[FAILED_ATTEMPTS_KEY] ?? 0
+  return (result[FAILED_ATTEMPTS_KEY] as number | undefined) ?? 0
 }
 
 async function getLockedUntil(): Promise<number> {
   const result = await chrome.storage.local.get(LOCKED_UNTIL_KEY)
-  return result[LOCKED_UNTIL_KEY] ?? 0
+  return (result[LOCKED_UNTIL_KEY] as number | undefined) ?? 0
 }
 
 async function incrementFailedAttempts(): Promise<number> {
@@ -2790,7 +3029,7 @@ async function invokeSignedContract(
     xdr.SorobanAuthorizationEntry.fromXDR(a, 'base64')
   )
   builder.clearOperations()
-  const baseOp = baseTx.operations[0] as ReturnType<typeof Operation.invokeHostFunction>
+  const baseOp = baseTx.operations[0] as Operation.InvokeHostFunction
   builder.addOperation(Operation.invokeHostFunction({ ...baseOp, auth }))
   const assembled = builder.build()
   assembled.sign(Keypair.fromSecret(secret))
@@ -2866,7 +3105,15 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       const publicKey = keypair.publicKey()
       await encryptAndStoreMnemonic(mnemonic, message.password)
       await saveAccountsStore({
-        accounts: [{ index: 0, publicKey, label: 'Account 1', walletId: 'primary' }],
+        accounts: [
+          {
+            index: 0,
+            publicKey,
+            label: 'Account 1',
+            walletId: 'primary',
+            addresses: { stellar: publicKey, evm: deriveEvmAddress(mnemonic, 0) },
+          },
+        ],
         activeIndex: 0,
         activePublicKey: publicKey,
       })
@@ -2888,7 +3135,15 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       const publicKey = keypair.publicKey()
       await encryptAndStoreMnemonic(message.mnemonic, message.password)
       await saveAccountsStore({
-        accounts: [{ index: 0, publicKey, label: 'Account 1', walletId: 'primary' }],
+        accounts: [
+          {
+            index: 0,
+            publicKey,
+            label: 'Account 1',
+            walletId: 'primary',
+            addresses: { stellar: publicKey, evm: deriveEvmAddress(message.mnemonic, 0) },
+          },
+        ],
         activeIndex: 0,
         activePublicKey: publicKey,
       })
@@ -2922,8 +3177,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         // Migration: add walletId='primary' to accounts that predate multi-wallet
         let needsSave = false
         for (const account of store.accounts) {
-          if (!(account as any).walletId) {
-            ;(account as any).walletId = 'primary'
+          if (!account.walletId) {
+            account.walletId = 'primary'
             needsSave = true
           }
         }
@@ -3017,6 +3272,9 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         await storeSessionMnemonic(mnemonic)
         await resetFailedAttempts()
         sendResponse({ publicKey: activePublicKey, isUnlocked: true })
+        // Fire-and-forget: EVM addresses backfill from the session mnemonics
+        // without delaying the unlock response.
+        void backfillEvmAddresses()
         break
       }
 
@@ -3097,7 +3355,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       const walletExists = await hasWallet()
       const legacy = await isLegacyWallet()
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY] ?? null
+      const pubkey = (session?.[SESSION_KEY] as string | undefined) ?? null
       const failedAttempts = await getFailedAttempts()
       const lockedUntil = await getLockedUntil()
       sendResponse({
@@ -3208,7 +3466,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
 
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY]
+      const pubkey = session?.[SESSION_KEY] as string | undefined
       if (!pubkey) {
         sendResponse({ error: 'Wallet locked' })
         return
@@ -3258,7 +3516,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
 
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY]
+      const pubkey = session?.[SESSION_KEY] as string | undefined
       if (!pubkey) {
         sendResponse({ error: 'Wallet locked' })
         return
@@ -3534,6 +3792,186 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       break
     }
 
+    case SERVICE_TYPES.SHIELDED_RECEIVE_ADDRESS: {
+      // poolId is optional here: the cy1 address is pool-independent.
+      const m = message as unknown as { poolId?: string }
+      const poolId = isNonEmptyString(m.poolId) ? m.poolId : undefined
+      try {
+        const net = await getActiveNetwork()
+        const { address } = await shieldedReceiveAddress(net, poolId)
+        sendResponse({ shieldedAddress: address })
+      } catch (err) {
+        sendResponse({ error: friendlyShieldedError(err) })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_QUOTE: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      const poolId = m.poolId
+      try {
+        const net = await getActiveNetwork()
+        const q = await shieldedQuote(net, poolId)
+        sendResponse({
+          shieldedQuote: {
+            fee: q.fee.toString(),
+            netCost: q.netCost.toString(),
+            margin: q.margin.toString(),
+            marginBps: q.marginBps.toString(),
+            calibrated: q.calibrated,
+          },
+        })
+      } catch (err) {
+        sendResponse({ error: friendlyShieldedError(err) })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_GET_BALANCE: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      const poolId = m.poolId
+      try {
+        const net = await getActiveNetwork()
+        const { balance, maxSpendable, noteCount } = await shieldedGetBalance(net, poolId)
+        sendResponse({
+          shieldedBalance: balance,
+          shieldedMaxSpendable: maxSpendable,
+          shieldedNoteCount: noteCount,
+        })
+      } catch (err) {
+        sendResponse({ error: friendlyShieldedError(err) })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_SCAN: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      const poolId = m.poolId
+      try {
+        const net = await getActiveNetwork()
+        const res = await shieldedScan(net, poolId)
+        sendResponse({ shieldedScan: res })
+      } catch (err) {
+        sendResponse({ error: friendlyShieldedError(err) })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_SHIELD: {
+      const m = message as unknown as { poolId?: string; amount?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      if (!m.amount || !/^[0-9]+$/.test(m.amount)) {
+        sendResponse({ error: 'amount must be a positive integer in stroops' })
+        return
+      }
+      const poolId = m.poolId
+      try {
+        const net = await getActiveNetwork()
+        const res = await shieldedShield(net, poolId, BigInt(m.amount))
+        sendResponse({ shieldedSend: res })
+      } catch (err) {
+        sendResponse({ error: friendlyShieldedError(err) })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_SEND: {
+      const m = message as unknown as { poolId?: string; recipient?: string; amount?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      if (!m.recipient || typeof m.recipient !== 'string') {
+        sendResponse({ error: 'recipient is required' })
+        return
+      }
+      if (!m.amount || !/^[0-9]+$/.test(m.amount)) {
+        sendResponse({ error: 'amount must be a positive integer in stroops' })
+        return
+      }
+      const poolId = m.poolId
+      try {
+        const net = await getActiveNetwork()
+        const res = await shieldedSend(net, poolId, m.recipient, BigInt(m.amount))
+        sendResponse({ shieldedSend: res })
+      } catch (err) {
+        sendResponse({ error: friendlyShieldedError(err) })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_UNSHIELD: {
+      const m = message as unknown as { poolId?: string; amount?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      if (!m.amount || !/^[0-9]+$/.test(m.amount)) {
+        sendResponse({ error: 'amount must be a positive integer in stroops' })
+        return
+      }
+      const poolId = m.poolId
+      try {
+        const net = await getActiveNetwork()
+        const res = await shieldedUnshield(net, poolId, BigInt(m.amount))
+        sendResponse({ shieldedSend: res })
+      } catch (err) {
+        sendResponse({ error: friendlyShieldedError(err) })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_SPEND_CHUNK: {
+      const m = message as unknown as {
+        poolId?: string
+        action?: string
+        recipient?: string
+        remaining?: string
+      }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      if (m.action !== 'send' && m.action !== 'unshield') {
+        sendResponse({ error: "action must be 'send' or 'unshield'" })
+        return
+      }
+      if (m.action === 'send' && !isNonEmptyString(m.recipient)) {
+        sendResponse({ error: 'recipient is required' })
+        return
+      }
+      if (!m.remaining || !/^[0-9]+$/.test(m.remaining)) {
+        sendResponse({ error: 'remaining must be a positive integer in stroops' })
+        return
+      }
+      const poolId = m.poolId
+      const action = m.action
+      const recipient = action === 'send' ? m.recipient! : null
+      try {
+        const net = await getActiveNetwork()
+        const res = await shieldedSpendChunk(net, poolId, action, recipient, BigInt(m.remaining))
+        sendResponse({ shieldedSpendChunk: res })
+      } catch (err) {
+        sendResponse({ error: friendlyShieldedError(err) })
+      }
+      break
+    }
+
     case SERVICE_TYPES.ADD_TRUSTLINE:
     case SERVICE_TYPES.REMOVE_TRUSTLINE: {
       if (!message.trustline || !message.horizonUrl || !message.networkPassphrase) {
@@ -3548,7 +3986,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
 
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY]
+      const pubkey = session?.[SESSION_KEY] as string | undefined
       if (!pubkey) {
         sendResponse({ error: 'Wallet locked' })
         return
@@ -3612,7 +4050,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
 
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY]
+      const pubkey = session?.[SESSION_KEY] as string | undefined
       if (!pubkey) {
         sendResponse({ error: 'Wallet locked' })
         return
@@ -3715,7 +4153,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
 
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY]
+      const pubkey = session?.[SESSION_KEY] as string | undefined
       if (!pubkey) {
         sendResponse({ error: 'Wallet locked' })
         return
@@ -3864,8 +4302,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       // Migration: add walletId and activePublicKey for pre-multi-wallet data
       let needsSave = false
       for (const account of store.accounts) {
-        if (!(account as any).walletId) {
-          ;(account as any).walletId = 'primary'
+        if (!account.walletId) {
+          account.walletId = 'primary'
           needsSave = true
         }
       }
@@ -3908,13 +4346,10 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         }
       }
 
-      let addMnemonic: string | null = null
-      if (targetWalletId === 'primary') {
-        addMnemonic = await getSessionMnemonic()
-      } else {
-        const extraMnemonics = await getSessionExtraHDMnemonics()
-        addMnemonic = extraMnemonics[targetWalletId] ?? null
-      }
+      const addMnemonic =
+        targetWalletId === 'primary'
+          ? await getSessionMnemonic()
+          : ((await getSessionExtraHDMnemonics())[targetWalletId] ?? null)
 
       if (!addMnemonic) {
         sendResponse({
@@ -3939,6 +4374,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         publicKey,
         label,
         walletId: targetWalletId,
+        addresses: { stellar: publicKey, evm: deriveEvmAddress(addMnemonic, nextIndex) },
       }
       store.accounts.push(newAccount)
       await saveAccountsStore(store)
@@ -3960,7 +4396,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         return
       }
 
-      let switchSecret: string | null = null
+      let switchSecret: string | null
       if (!target.walletId || target.walletId === 'primary') {
         const sessionMnemonic = await getSessionMnemonic()
         if (!sessionMnemonic) {
@@ -4105,6 +4541,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       const { secret: newSecret } = await deriveKeypairRaw(newMnemonic, 0)
       const newPubkey = Keypair.fromSecret(newSecret).publicKey()
+      const store = await getAccountsStore()
       const newAccount: AccountInfo = {
         index: 0,
         publicKey: newPubkey,
@@ -4112,7 +4549,6 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         walletId: newWalletId,
       }
 
-      const store = await getAccountsStore()
       store.accounts.push(newAccount)
       await saveAccountsStore(store)
 
@@ -4122,6 +4558,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       trackWalletCreated('hd_wallet')
       trackAccountAdded('hd_derive')
+      void backfillEvmAddresses()
       sendResponse({ account: newAccount, mnemonic: newMnemonic })
       break
     }
@@ -4172,6 +4609,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       trackWalletCreated('hd_wallet')
       trackAccountAdded('hd_derive')
+      void backfillEvmAddresses()
       sendResponse({ account: importedAccount })
       break
     }
@@ -4417,18 +4855,628 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         () => null
       )
       if (!res || !res.ok) {
-        sendResponse({ unfunded: !res || res.status === 404, rawBalances: null, subentryCount: 0 })
+        sendResponse({ unfunded: !res || res.status === 404, balances: null, subentryCount: 0 })
         return
       }
       const data = (await res.json()) as {
-        balances: Array<{ balance: string; asset_type: string; asset_code?: string }>
+        balances: Array<{
+          balance: string
+          asset_type: string
+          asset_code?: string
+          asset_issuer?: string
+          selling_liabilities?: string
+        }>
         subentry_count?: number
+        num_sponsoring?: number
+        num_sponsored?: number
       }
+      // Stellar minimum balance: (2 + subentries + sponsoring - sponsored) base
+      // reserves of 0.5 XLM. A Max that ignores sponsorships or open offers
+      // fails with op_underfunded, so the locked part travels with each balance.
+      const reserveUnits =
+        2 + (data.subentry_count ?? 0) + (data.num_sponsoring ?? 0) - (data.num_sponsored ?? 0)
+      const stroopsOf = (v: string | undefined) => decimalToBaseUnits(v && v !== '' ? v : '0', 7)
+      // Horizon's wire shape stops here; the app only sees ChainBalance.
+      const chain = LEGACY_NETWORK_TO_CHAIN[network.id] ?? network.id
       sendResponse({
         unfunded: false,
-        rawBalances: data.balances,
+        balances: data.balances.map((b) => ({
+          chain,
+          code: b.asset_type === 'native' ? 'XLM' : (b.asset_code ?? ''),
+          issuer: b.asset_issuer ?? '',
+          amount: b.balance,
+          decimals: 7,
+          isNative: b.asset_type === 'native',
+          locked: baseUnitsToDecimal(
+            (b.asset_type === 'native' ? BigInt(Math.max(reserveUnits, 0)) * 5_000_000n : 0n) +
+              stroopsOf(b.selling_liabilities),
+            7
+          ),
+        })),
         subentryCount: data.subentry_count ?? 0,
       })
+      break
+    }
+
+    case SERVICE_TYPES.FETCH_EVM_ACTIVITY: {
+      if (!message.publicKey) {
+        sendResponse({ error: 'publicKey required' })
+        return
+      }
+      const network = await getActiveNetwork()
+      const store = await getAccountsStore()
+      const evmAddress = store.accounts.find((a) => a.publicKey === message.publicKey)?.addresses
+        ?.evm
+      if (!evmAddress) {
+        sendResponse({ activity: [] })
+        return
+      }
+      const me = evmAddress.toLowerCase()
+      const chains = await getEvmChainsForEnv(network.id)
+      const activity: EvmActivity[] = []
+      // Best-effort per chain: one indexer being down must not blank the others.
+      await Promise.allSettled(
+        chains.map(async (chainEntry) => {
+          const res = await fetch(
+            `${EVM_PROXY_BASE}/${chainEntry.id}/activity?address=${me}&limit=50`,
+            { signal: AbortSignal.timeout(12000) }
+          )
+          if (!res.ok) return
+          const data = (await res.json()) as {
+            items?: Array<{
+              hash: string
+              timestamp: number
+              from: string
+              to: string
+              status: 'success' | 'failed'
+              kind: 'native' | 'erc20' | 'contract'
+              value: string
+              token?: { address: string; symbol: string; decimals: number }
+              fee?: string
+              method?: string
+            }>
+          }
+          const native = chainEntry.nativeCurrency
+          for (const it of data.items ?? []) {
+            const from = it.from.toLowerCase()
+            const to = it.to.toLowerCase()
+            const decimals = it.token?.decimals ?? native.decimals
+            activity.push({
+              chain: chainEntry.id,
+              hash: it.hash,
+              timestamp: new Date(it.timestamp * 1000).toISOString(),
+              from,
+              to,
+              direction: from === me && to === me ? 'self' : from === me ? 'out' : 'in',
+              status: it.status,
+              kind: it.kind,
+              amount: weiToDecimal(BigInt(it.value || '0'), decimals),
+              code: it.token?.symbol || native.symbol,
+              tokenAddress: it.token?.address,
+              fee: it.fee ? weiToDecimal(BigInt(it.fee), native.decimals) : undefined,
+              feeCode: native.symbol,
+              method: it.method || undefined,
+            })
+          }
+        })
+      )
+      // Our own fresh sends fill the gap until the indexer reports them; a
+      // pending one gets its receipt checked here so History settles it too.
+      const indexed = new Set(activity.map((a) => a.hash.toLowerCase()))
+      await dropIndexedEvmTxs(network.id, message.publicKey, indexed)
+      const pending = await getPendingEvmTxs(network.id, message.publicKey)
+      for (const p of pending) {
+        const chainEntry = chains.find((c) => c.id === p.chain)
+        if (!chainEntry) continue
+        let { status, fee } = p
+        const rpcUrl = chainEntry.evm?.rpcUrls[0]
+        if (status === 'pending' && rpcUrl) {
+          const receipt = await fetchEvmReceipt(rpcUrl, p.hash).catch(() => null)
+          if (receipt) {
+            status = receipt.status
+            fee = weiToDecimal(receipt.feeWei, chainEntry.nativeCurrency.decimals)
+            await updatePendingEvmTx(network.id, message.publicKey, p.hash, { status, fee })
+          }
+        }
+        activity.push({
+          chain: p.chain,
+          hash: p.hash,
+          timestamp: new Date(p.submittedAt).toISOString(),
+          from: p.from,
+          to: p.to,
+          direction: p.from === p.to ? 'self' : 'out',
+          status,
+          kind: p.kind,
+          amount: p.amount,
+          code: p.code,
+          tokenAddress: p.tokenAddress,
+          fee,
+          feeCode: p.feeCode,
+        })
+      }
+      activity.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+      sendResponse({ activity })
+      break
+    }
+
+    // The send screen's confirmation poll: one receipt read, also settling
+    // the stored pending entry so History agrees with what the user saw.
+    case SERVICE_TYPES.EVM_TX_STATUS: {
+      const { publicKey, chain, hash } = message as unknown as {
+        publicKey?: string
+        chain?: string
+        hash?: string
+      }
+      if (!publicKey || !chain || !hash) {
+        sendResponse({ error: 'publicKey, chain and hash are required' })
+        return
+      }
+      const chainEntry = (await getRegistryChains()).find(
+        (c) => c.id === chain && c.family === 'evm'
+      )
+      const rpcUrl = chainEntry?.evm?.rpcUrls[0]
+      if (!chainEntry || !rpcUrl) {
+        sendResponse({ error: 'Unknown EVM chain' })
+        return
+      }
+      try {
+        const receipt = await fetchEvmReceipt(rpcUrl, hash)
+        if (!receipt) {
+          sendResponse({ status: 'pending' })
+          return
+        }
+        const fee = weiToDecimal(receipt.feeWei, chainEntry.nativeCurrency.decimals)
+        const network = await getActiveNetwork()
+        await updatePendingEvmTx(network.id, publicKey, hash, { status: receipt.status, fee })
+        sendResponse({ status: receipt.status, fee, feeCode: chainEntry.nativeCurrency.symbol })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Receipt check failed' })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.FETCH_EVM_BALANCES: {
+      if (!message.publicKey) {
+        sendResponse({ error: 'publicKey required' })
+        return
+      }
+      const network = await getActiveNetwork()
+      const store = await getAccountsStore()
+      const account = store.accounts.find((a) => a.publicKey === message.publicKey)
+      const evmAddress = account?.addresses?.evm
+      if (!evmAddress) {
+        // Legacy secret-only accounts, or the post-unlock backfill has not
+        // landed yet; the next balance poll picks it up.
+        sendResponse({ balances: [] })
+        return
+      }
+
+      const [chains, curatedTokens] = await Promise.all([
+        getEvmChainsForEnv(network.id),
+        getCuratedEvmTokens(network.id),
+      ])
+
+      // Watched tokens always surface, even at zero balance, like an added Stellar trustline.
+      const watchKey = `cyphras_evm_watch_${network.id}_${message.publicKey}`
+      const watchStored = await chrome.storage.local.get(watchKey)
+      const watched = (Array.isArray(watchStored[watchKey]) ? watchStored[watchKey] : []) as Array<{
+        chain: string
+        address: string
+        symbol: string
+        decimals: number
+      }>
+      const watchedKeys = new Set(watched.map((t) => `${t.chain}:${t.address.toLowerCase()}`))
+      const allTokens = [
+        ...curatedTokens.filter((t) => !watchedKeys.has(`${t.chain}:${t.address.toLowerCase()}`)),
+        ...watched.map((t) => ({
+          chain: t.chain,
+          symbol: t.symbol,
+          address: t.address,
+          decimals: t.decimals,
+        })),
+      ]
+
+      const balances: ChainBalance[] = []
+      await Promise.allSettled(
+        chains.map(async (chainEntry) => {
+          const rpcUrl = chainEntry.evm?.rpcUrls[0]
+          if (!rpcUrl) return
+
+          const nativeRes = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'eth_getBalance',
+              params: [evmAddress, 'latest'],
+            }),
+            signal: AbortSignal.timeout(8000),
+          })
+          if (nativeRes.ok) {
+            const data = (await nativeRes.json()) as { result?: string }
+            if (data.result) {
+              balances.push({
+                chain: chainEntry.id,
+                code: chainEntry.nativeCurrency.symbol,
+                issuer: '',
+                amount: weiToDecimal(BigInt(data.result), chainEntry.nativeCurrency.decimals),
+                decimals: chainEntry.nativeCurrency.decimals,
+                isNative: true,
+              })
+            }
+          }
+
+          // Batched balanceOf calls; zero balances are skipped unless the token is watched.
+          const tokens = allTokens.filter((t) => t.chain === chainEntry.id)
+          const padded = evmAddress.toLowerCase().replace('0x', '').padStart(64, '0')
+          for (let i = 0; i < tokens.length; i += 20) {
+            const chunk = tokens.slice(i, i + 20)
+            const batch = chunk.map((t, j) => ({
+              jsonrpc: '2.0',
+              id: j,
+              method: 'eth_call',
+              params: [{ to: t.address, data: `0x70a08231${padded}` }, 'latest'],
+            }))
+            const res = await fetch(rpcUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(batch),
+              signal: AbortSignal.timeout(10000),
+            })
+            if (!res.ok) continue
+            const results = (await res.json()) as Array<{ id: number; result?: string }>
+            if (!Array.isArray(results)) continue
+            for (const entry of results) {
+              const token = chunk[entry.id]
+              if (!token || !entry.result || entry.result === '0x') continue
+              const value = BigInt(entry.result)
+              const isWatched = watchedKeys.has(`${token.chain}:${token.address.toLowerCase()}`)
+              if (value === 0n && !isWatched) continue
+              balances.push({
+                chain: chainEntry.id,
+                code: token.symbol,
+                issuer: token.address,
+                amount: weiToDecimal(value, token.decimals),
+                decimals: token.decimals,
+                isNative: false,
+              })
+            }
+          }
+        })
+      )
+      sendResponse({ balances })
+      break
+    }
+
+    case SERVICE_TYPES.SIGN_AND_SUBMIT_EVM_PAYMENT: {
+      const { publicKey, chain, to, amount, token, code } = message as unknown as {
+        publicKey?: string
+        chain?: string
+        to?: string
+        amount?: string
+        token?: { address: string; decimals: number }
+        code?: string
+      }
+      if (!publicKey || !chain || !to || !amount) {
+        sendResponse({ error: 'publicKey, chain, to and amount are required' })
+        return
+      }
+      if (!/^0x[0-9a-fA-F]{40}$/.test(to)) {
+        sendResponse({ error: 'Invalid recipient address' })
+        return
+      }
+
+      const store = await getAccountsStore()
+      const account = store.accounts.find((a) => a.publicKey === publicKey)
+      if (!account || account.index < 0) {
+        sendResponse({ error: 'Account cannot sign EVM transactions' })
+        return
+      }
+      const mnemonic =
+        account.walletId === 'primary'
+          ? await getSessionMnemonic()
+          : (await getSessionExtraHDMnemonics())[account.walletId]
+      if (!mnemonic) {
+        sendResponse({ error: 'Wallet is locked' })
+        return
+      }
+
+      const chains = await getRegistryChains()
+      const chainEntry = chains.find((c) => c.id === chain && c.family === 'evm')
+      const evm = chainEntry?.evm
+      const rpcUrl = evm?.rpcUrls[0]
+      if (!chainEntry || !evm || !rpcUrl) {
+        sendResponse({ error: 'Unknown EVM chain' })
+        return
+      }
+
+      try {
+        const privateKey = deriveEvmPrivateKey(mnemonic, account.index)
+        const from = evmAddressFromPrivateKey(privateKey)
+
+        const rpc = async (method: string, params: unknown[]): Promise<string> => {
+          const res = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+            signal: AbortSignal.timeout(15000),
+          })
+          const data = (await res.json()) as {
+            result?: string
+            error?: { message?: string }
+          }
+          if (data.error || data.result === undefined) {
+            throw new Error(data.error?.message ?? `${method} failed`)
+          }
+          return data.result
+        }
+
+        const decimals = token ? token.decimals : chainEntry.nativeCurrency.decimals
+        const value = decimalToWei(amount, decimals)
+        const txTo = token ? token.address : to
+        const txValue = token ? 0n : value
+        const data = token ? erc20TransferData(to, value) : new Uint8Array(0)
+        const dataHex = token
+          ? `0x${Array.from(data, (b) => b.toString(16).padStart(2, '0')).join('')}`
+          : '0x'
+
+        const [nonceHex, prioHex, gasPriceHex] = await Promise.all([
+          rpc('eth_getTransactionCount', [from, 'pending']),
+          rpc('eth_maxPriorityFeePerGas', []).catch(() => '0x59682f00'),
+          rpc('eth_gasPrice', []),
+        ])
+        const gasLimitHex = await rpc('eth_estimateGas', [
+          { from, to: txTo, value: `0x${txValue.toString(16)}`, data: dataHex },
+        ])
+
+        const maxPriorityFeePerGas = BigInt(prioHex)
+        // Double the current gas price as the ceiling: room for base-fee
+        // spikes while the effective price stays market-driven.
+        const maxFeePerGas = BigInt(gasPriceHex) * 2n + maxPriorityFeePerGas
+        const gasLimit = (BigInt(gasLimitHex) * 12n) / 10n
+
+        const raw = signEip1559(
+          {
+            chainId: BigInt(evm.chainId),
+            nonce: BigInt(nonceHex),
+            maxPriorityFeePerGas,
+            maxFeePerGas,
+            gasLimit,
+            to: txTo,
+            value: txValue,
+            data,
+          },
+          privateKey
+        )
+        const txHash = await rpc('eth_sendRawTransaction', [raw])
+        const network = await getActiveNetwork()
+        await recordPendingEvmTx(network.id, publicKey, {
+          chain,
+          hash: txHash,
+          from: from.toLowerCase(),
+          to: to.toLowerCase(),
+          kind: token ? 'erc20' : 'native',
+          amount,
+          code: code ?? chainEntry.nativeCurrency.symbol,
+          tokenAddress: token?.address,
+          feeCode: chainEntry.nativeCurrency.symbol,
+          submittedAt: Date.now(),
+          status: 'pending',
+        })
+        sendResponse({ txHash })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'EVM send failed' })
+      }
+      break
+    }
+
+    // Form preview only: no job, no signing, just a real fee quote before the user confirms.
+    case SERVICE_TYPES.CCTP_QUOTE: {
+      const {
+        direction,
+        amount,
+        speed,
+        publicKey: quotePk,
+      } = message as unknown as {
+        direction?: 'stellar-to-evm' | 'evm-to-stellar'
+        amount?: string
+        speed?: 'standard' | 'fast'
+        publicKey?: string
+      }
+      if (direction !== 'stellar-to-evm' && direction !== 'evm-to-stellar') {
+        sendResponse({ error: 'Invalid direction' })
+        return
+      }
+      if (speed !== undefined && speed !== 'standard' && speed !== 'fast') {
+        sendResponse({ error: 'Invalid speed' })
+        return
+      }
+      if (
+        !amount ||
+        !/^\d+(\.\d{1,6})?$/.test(amount.trim()) ||
+        decimalToBaseUnits(amount, 6) <= 0n
+      ) {
+        sendResponse({ error: 'Invalid amount' })
+        return
+      }
+      const net = await getActiveNetwork()
+      const quoteAnchors = cctpAnchorsForEnv(net.id)
+      if (!quoteAnchors) {
+        sendResponse({ error: 'CCTP bridging is not available on this network' })
+        return
+      }
+      try {
+        const maxFee = await fetchCctpFeeQuote(net.id, direction, amount, speed ?? 'standard')
+        // The per-chain breakdown is informational: a failure here must never
+        // hide the authoritative Circle quote the form needs to proceed.
+        const quoteAccount = quotePk
+          ? (await getAccountsStore()).accounts.find((a) => a.publicKey === quotePk)
+          : undefined
+        const breakdown = await buildCctpFeeBreakdown(
+          {
+            networkId: net.id,
+            horizonUrl: net.horizonUrl,
+            sorobanRpcUrl: net.sorobanRpcUrl,
+            passphrase: net.passphrase,
+            txTimeout: net.txTimeout ?? 90,
+            evmRpcUrl: cctpEvmRpcUrl(quoteAnchors),
+            evmChainId: quoteAnchors.evm.chainId,
+            anchors: quoteAnchors,
+          },
+          {
+            direction,
+            amount,
+            speed: speed ?? 'standard',
+            circleFee: maxFee,
+            stellarAddress: quoteAccount?.publicKey,
+            evmAddress: quoteAccount?.addresses?.evm,
+          }
+        ).catch(() => undefined)
+        sendResponse({ maxFee, breakdown })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Failed to fetch bridge fee quote' })
+      }
+      break
+    }
+
+    // Self-bridge only: both ends are this account's own paired addresses, never caller-supplied,
+    // so funds cannot be bridged to a wrong destination.
+    case SERVICE_TYPES.CCTP_START: {
+      const { publicKey, direction, amount, speed } = message as unknown as {
+        publicKey?: string
+        direction?: 'stellar-to-evm' | 'evm-to-stellar'
+        amount?: string
+        speed?: 'standard' | 'fast'
+      }
+      if (!publicKey || !direction || !amount) {
+        sendResponse({ error: 'publicKey, direction and amount are required' })
+        return
+      }
+      if (direction !== 'stellar-to-evm' && direction !== 'evm-to-stellar') {
+        sendResponse({ error: 'Invalid direction' })
+        return
+      }
+      if (speed !== undefined && speed !== 'standard' && speed !== 'fast') {
+        sendResponse({ error: 'Invalid speed' })
+        return
+      }
+      if (!/^\d+(\.\d{1,6})?$/.test(amount.trim())) {
+        sendResponse({ error: 'Amount must have at most 6 decimal places' })
+        return
+      }
+      if (decimalToBaseUnits(amount, 6) <= 0n) {
+        sendResponse({ error: 'Amount must be greater than zero' })
+        return
+      }
+
+      const store = await getAccountsStore()
+      const account = store.accounts.find((a) => a.publicKey === publicKey)
+      if (!account || account.index < 0) {
+        sendResponse({ error: 'Account cannot bridge (imported keys have no EVM key)' })
+        return
+      }
+      const evmAddress = account.addresses?.evm
+      if (!evmAddress) {
+        sendResponse({ error: 'No EVM address for this account yet' })
+        return
+      }
+      const mnemonic =
+        account.walletId === 'primary'
+          ? await getSessionMnemonic()
+          : (await getSessionExtraHDMnemonics())[account.walletId]
+      if (!mnemonic) {
+        sendResponse({ error: 'Wallet is locked' })
+        return
+      }
+
+      const net = await getActiveNetwork()
+      const anchors = cctpAnchorsForEnv(net.id)
+      if (!anchors) {
+        sendResponse({ error: 'CCTP bridging is not available on this network' })
+        return
+      }
+
+      let maxFee: string
+      try {
+        maxFee = await fetchCctpFeeQuote(net.id, direction, amount, speed ?? 'standard')
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Failed to fetch bridge fee quote' })
+        return
+      }
+
+      const sourceAddress = direction === 'stellar-to-evm' ? publicKey : evmAddress
+      const destAddress = direction === 'stellar-to-evm' ? evmAddress : publicKey
+
+      try {
+        const evmRpcUrl = cctpEvmRpcUrl(anchors)
+        const env: CctpEnv = {
+          networkId: net.id,
+          horizonUrl: net.horizonUrl,
+          sorobanRpcUrl: net.sorobanRpcUrl,
+          passphrase: net.passphrase,
+          txTimeout: net.txTimeout ?? 90,
+          evmRpcUrl,
+          evmChainId: anchors.evm.chainId,
+          anchors,
+          stellarSecret: (await deriveKeypairRaw(mnemonic, account.index)).secret,
+          evmPrivateKey: deriveEvmPrivateKey(mnemonic, account.index),
+        }
+
+        const job = await withCctpAccountLock(`${net.id}:${publicKey}`, () =>
+          createCctpJob(net.id, publicKey, {
+            id: crypto.randomUUID(),
+            direction,
+            amount,
+            sourceAddress,
+            destAddress,
+            maxFee,
+            speed: speed ?? 'standard',
+            createdAt: Date.now(),
+          })
+        )
+        sendResponse({ jobId: job.id })
+        runCctpBurn(job, env, publicKey).catch((err) => {
+          console.error('cctp: unhandled error from runCctpBurn', err)
+        })
+      } catch (e) {
+        if (e instanceof CctpDuplicateJobError) {
+          sendResponse({ jobId: e.existingJobId })
+          return
+        }
+        sendResponse({ error: e instanceof Error ? e.message : 'Failed to start bridge' })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.CCTP_LIST_JOBS: {
+      const { publicKey } = message as unknown as { publicKey?: string }
+      if (!publicKey) {
+        sendResponse({ error: 'publicKey is required' })
+        return
+      }
+      const net = await getActiveNetwork()
+      const jobs = await listCctpJobs(net.id, publicKey)
+      // The attested message carries the fee Circle actually took, so the
+      // UI can show what arrived instead of the quoted upper bound.
+      sendResponse({
+        jobs: jobs.map((j) => {
+          if (!j.message || !j.attestation) return j
+          try {
+            const fee = decodeCctpMessage(j.message).body.feeExecuted
+            return { ...j, feeExecuted: baseUnitsToDecimal(fee, 6) }
+          } catch {
+            return j
+          }
+        }),
+      })
+      break
+    }
+
+    // Polled by the UI while a bridge is in flight; replies at once and runs the pass detached.
+    case SERVICE_TYPES.CCTP_PROCESS: {
+      sendResponse({ ok: true })
+      void kickCctpProcessor()
       break
     }
 

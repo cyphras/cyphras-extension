@@ -475,6 +475,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- hook lives with its provider
 export function useWallet() {
   const ctx = useContext(WalletContext)
   if (!ctx) throw new Error('useWallet must be used within WalletProvider')

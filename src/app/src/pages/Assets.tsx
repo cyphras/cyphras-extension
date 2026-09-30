@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
+import { VerifiedMark } from '@/components/token/VerifiedMark'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useNavigate } from 'react-router-dom'
 import { useWallet } from '@/context/WalletContext'
 import { useBalances } from '@/hooks/useBalances'
@@ -29,6 +31,8 @@ import { StellarAvatar } from '@/components/StellarAvatar'
 import { usePreferences } from '@/context/PreferencesContext'
 import { useNetwork } from '@/context/NetworkContext'
 import type { AssetBalance } from '@/hooks/useBalances'
+import { NetworkValue } from '@/components/TxDetailParts'
+import { useStellarChain } from '@/hooks/useStellarChain'
 
 function formatBalance(balance: string): string {
   const num = parseFloat(balance)
@@ -83,6 +87,7 @@ export default function Assets() {
   const navigate = useNavigate()
   const { status } = useWallet()
   const { activeNetwork } = useNetwork()
+  const stellarChain = useStellarChain()
   const { balances, loading, refresh: refreshBalances } = useBalances(status.publicKey)
   const { getExplorerTxUrl } = usePreferences()
   const { hiddenAssets, toggleHiddenAsset } = useHiddenAssets(
@@ -171,14 +176,17 @@ export default function Assets() {
     ...customAssets
       .filter((ca) => !balances.find((b) => b.code === ca.code && b.issuer === ca.issuer))
       .map((ca) => ({
+        chain: activeNetwork.id === 'testnet' ? 'stellar:testnet' : 'stellar:pubnet',
         code: ca.code,
         issuer: ca.issuer,
         balance: '0',
+        decimals: 7,
         isNative: false,
         usdPrice: null,
         usdValue: null,
         change24h: null,
         icon: undefined,
+        verified: false,
         isCustomOnly: true,
       })),
   ]
@@ -220,10 +228,10 @@ export default function Assets() {
                   key={i}
                   className="flex w-full items-center gap-3 rounded-xl bg-card px-4 py-3"
                 >
-                  <div className="h-8 w-8 rounded-full bg-muted animate-pulse flex-shrink-0" />
-                  <div className="flex flex-col gap-1.5 flex-1">
-                    <div className="h-3.5 w-16 rounded bg-muted animate-pulse" />
-                    <div className="h-3 w-10 rounded bg-muted animate-pulse" />
+                  <Skeleton className="h-8 w-8 shrink-0 rounded-full" />
+                  <div className="flex flex-1 flex-col gap-1.5">
+                    <Skeleton className="h-3.5 w-16 rounded" />
+                    <Skeleton className="h-3 w-10 rounded" />
                   </div>
                 </div>
               ))}
@@ -243,7 +251,10 @@ export default function Assets() {
                   >
                     <AssetIcon icon={asset.icon} code={asset.code} />
                     <div className="flex flex-col min-w-0">
-                      <p className="text-sm font-medium text-foreground">{asset.code}</p>
+                      <p className="flex items-center gap-1 text-sm font-medium text-foreground">
+                        {asset.code}
+                        <VerifiedMark code={asset.code} issuer={asset.issuer} />
+                      </p>
                       <p className="text-xs text-muted-foreground">
                         {formatBalance(asset.balance)}
                       </p>
@@ -403,7 +414,7 @@ export default function Assets() {
 
           {removeResult ? (
             <>
-              <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4">
+              <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
                 <div className="flex flex-col items-center gap-3 text-center pt-1">
                   <div className="flex h-14 w-14 items-center justify-center rounded-full bg-green-500/15">
                     <CheckCircle2 size={28} className="text-green-500" />
@@ -466,7 +477,9 @@ export default function Assets() {
                     </div>
                     <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3">
                       <p className="text-xs text-muted-foreground">Network</p>
-                      <p className="text-sm text-foreground">{activeNetwork.name}</p>
+                      <p className="text-sm text-foreground">
+                        <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                      </p>
                     </div>
                     <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
                       <p className="text-xs font-medium text-foreground">Operations (1)</p>
@@ -546,7 +559,7 @@ export default function Assets() {
             </>
           ) : (
             <>
-              <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3">
+              <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3 [&>*]:shrink-0">
                 <div className="rounded-xl bg-card p-4 flex items-center gap-3">
                   <AssetIcon
                     icon={lastRemoveRef.current?.icon}
@@ -577,7 +590,9 @@ export default function Assets() {
 
                 <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3">
                   <p className="text-xs text-muted-foreground">Network</p>
-                  <p className="text-sm text-foreground">{activeNetwork.name}</p>
+                  <p className="text-sm text-foreground">
+                    <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                  </p>
                 </div>
 
                 <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3">

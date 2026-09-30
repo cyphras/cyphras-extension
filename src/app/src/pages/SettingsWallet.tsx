@@ -22,9 +22,7 @@ export default function SettingsWallet() {
         </div>
 
         <div className="flex flex-col gap-2">
-          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Session
-          </p>
+          <p className="pixel-label text-[10px] text-muted-foreground">Session</p>
           <Button
             variant="outline"
             className="w-full text-destructive hover:text-destructive"

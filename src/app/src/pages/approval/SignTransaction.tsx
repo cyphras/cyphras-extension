@@ -5,10 +5,13 @@ import { PenLine, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
 import { TransactionBuilder, Transaction } from '@stellar/stellar-sdk'
 import { APPROVAL_PAYLOAD_STORAGE_KEY } from '@constants/external'
 import { ApprovalShell, ActionHeader, InfoCard, InfoRow, TrustNote, AddressChip } from './_shell'
+import { NetworkValue } from '@/components/TxDetailParts'
+import { useStellarChain } from '@/hooks/useStellarChain'
 
 export default function SignTransaction() {
   const { status } = useWallet()
   const { activeNetwork } = useNetwork()
+  const stellarChain = useStellarChain()
   const [origin, setOrigin] = useState('')
   const [requestId, setRequestId] = useState('')
   const [xdr, setXdr] = useState('')
@@ -93,7 +96,9 @@ export default function SignTransaction() {
           </InfoRow>
         )}
         <InfoRow label="Network">
-          <span className="text-sm font-medium text-foreground">{activeNetwork.name}</span>
+          <span className="text-sm font-medium text-foreground">
+            <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+          </span>
         </InfoRow>
         {feeXlm && (
           <InfoRow label="Network fee">

@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { VerifiedMark } from '@/components/token/VerifiedMark'
+import { AssetIcon as TokenAssetIcon } from '@/components/token/AssetIcon'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useWallet } from '@/context/WalletContext'
 import { useNetwork } from '@/context/NetworkContext'
 import { useBalances } from '@/hooks/useBalances'
@@ -8,10 +10,6 @@ import { Button } from '@/components/ui/button'
 import {
   ExternalLink,
   Settings,
-  Copy,
-  Check,
-  ChevronDown,
-  ChevronUp,
   ChevronLeft,
   CheckCircle2,
   X,
@@ -20,12 +18,36 @@ import {
   Info,
 } from 'lucide-react'
 import WalletNavbar from '@/components/WalletNavbar'
+import { SendEvm } from '@/components/SendEvm'
+import { SendRecipientStep, type RecipientSuggestion } from '@/components/SendRecipientStep'
+import { detectRecipientFamily, type RecipientFamily } from '@/lib/address'
+import { getEvmChainsForEnv } from '@bg/chainRegistry'
 import { StellarAvatar } from '@/components/StellarAvatar'
-import { AutoSkeleton } from '@/components/AutoSkeleton'
 import { SERVICE_TYPES } from '@constants/services'
+import { chainById, type ChainEntry } from '@constants/chains'
+import { getChainIcons, getChainNames } from '@/lib/chainInfo'
+import {
+  parseUnits as toStroops,
+  formatUnits,
+  formatBalanceText,
+  fractionUnits,
+  spendableUnits,
+} from '@/lib/amount'
+import { SideCard, AmountInput, QuickFillChips } from '@/components/PairCard'
+import { RecipientRow } from '@/components/RecipientRow'
 import type { PaymentParams, PrivateSendQuote, ServiceResponse } from '@ext-types/index'
-import { fetchPrices } from '@/lib/api'
+import { fetchPrices, priceKey } from '@/lib/api'
 import type { AssetBalance } from '@/hooks/useBalances'
+import { trimZeros } from '@/lib/historyUtils'
+import {
+  AddressValue,
+  AdvancedDetails,
+  CopyValue,
+  DetailRow,
+  NetworkValue,
+  TxResultHero,
+} from '@/components/TxDetailParts'
+import { useStellarChain } from '@/hooks/useStellarChain'
 
 type SendMode = 'public' | 'private'
 type PrivacyLevel = 'fast' | 'standard' | 'maximum'
@@ -47,6 +69,10 @@ const PRIVACY_LEVELS: { value: PrivacyLevel; label: string; eta: string; hint: s
 ]
 
 // Scoped per (networkId, account) so recents do not bleed across accounts or networks.
+function evmRecentsKey(networkId: string, account: string): string {
+  return `cyphras_recent_evm_recipients_${networkId}_${account}`
+}
+
 function recentRecipientsKey(networkId: string, account: string): string {
   return `cyphras_recent_recipients_${networkId}_${account}`
 }
@@ -56,25 +82,6 @@ const ANON_SET_WARN = 10
 
 // XLM reserved per split to cover the Soroban commit tx (~0.011 XLM observed), with safe margin.
 const COMMIT_GAS_HEADROOM_PER_NOTE_STROOPS = 1_000_000n
-
-function toStroops(amount: string, decimals: number): bigint | null {
-  if (!/^\d+(\.\d+)?$/.test(amount)) {
-    return null
-  }
-  const [whole, frac = ''] = amount.split('.')
-  if (frac.length > decimals) {
-    return null
-  }
-  return BigInt(whole + frac.padEnd(decimals, '0'))
-}
-
-function formatUnits(stroops: string, decimals: number): string {
-  const s = BigInt(stroops)
-  const base = 10n ** BigInt(decimals)
-  const whole = s / base
-  const frac = (s % base).toString().padStart(decimals, '0').replace(/0+$/, '')
-  return frac ? `${whole}.${frac}` : whole.toString()
-}
 
 type Step = 'form' | 'privacy' | 'confirm' | 'success'
 type FeeTier = 'low' | 'medium' | 'high' | 'custom'
@@ -233,11 +240,13 @@ function AssetIcon({ icon, code, size = 32 }: { icon?: string; code: string; siz
 function AssetPickerSheet({
   balances,
   selectedKey,
+  chainName,
   onSelect,
   onClose,
 }: {
   balances: AssetBalance[]
   selectedKey: string
+  chainName: (chainId: string) => string
   onSelect: (key: string) => void
   onClose: () => void
 }) {
@@ -277,7 +286,7 @@ function AssetPickerSheet({
             </div>
           </div>
         )}
-        <div className="overflow-y-auto flex-1 px-3 pb-4 flex flex-col gap-1">
+        <div className="overflow-y-auto flex-1 px-3 pb-4 flex flex-col gap-1 [&>*]:shrink-0">
           {filtered.map((b) => {
             const key = `${b.code}:${b.issuer}`
             const isSelected = key === selectedKey
@@ -292,7 +301,11 @@ function AssetPickerSheet({
               >
                 <AssetIcon icon={b.icon} code={b.code} size={36} />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground">{b.code}</p>
+                  <p className="flex items-center gap-1 text-sm font-medium text-foreground">
+                    {b.code}
+                    <VerifiedMark code={b.code} issuer={b.issuer} />
+                  </p>
+                  <p className="text-xs text-muted-foreground">{chainName(b.chain)}</p>
                 </div>
                 <div className="text-right shrink-0">
                   <p className="text-sm text-foreground tabular-nums">
@@ -493,9 +506,26 @@ function SettingsModal({
 
 export default function Send() {
   const navigate = useNavigate()
-  const { status } = useWallet()
+  const { status, accounts } = useWallet()
   const { activeNetwork } = useNetwork()
-  const { balances, subentryCount, refresh: refreshBalances } = useBalances(status.publicKey)
+  const stellarChain = useStellarChain()
+  const { balances, refresh: refreshBalances } = useBalances(status.publicKey)
+
+  // Registry names first: builtins only know Ethereum and Sepolia, so a chain
+  // added in the admin panel would otherwise print its raw CAIP-2 id.
+  const chainIdsKey = [...new Set(balances.map((b) => b.chain))].sort().join(',')
+  const [chainNames, setChainNames] = useState<Map<string, string>>(new Map())
+  useEffect(() => {
+    let cancelled = false
+    getChainNames(chainIdsKey ? chainIdsKey.split(',') : []).then((names) => {
+      if (!cancelled) setChainNames(names)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [chainIdsKey])
+  const chainNameOf = (chainId: string) =>
+    chainNames.get(chainId) ?? chainById(chainId)?.name ?? chainId
   const { getExplorerTxUrl, formatValue } = usePreferences()
 
   const privateAssets = activeNetwork.privateAssets ?? []
@@ -512,8 +542,15 @@ export default function Send() {
   const [step, setStep] = useState<Step>('form')
   const [destination, setDestination] = useState('')
   const [amount, setAmount] = useState('')
+  // Opened from a token's detail sheet: that token, per chain it lives on.
+  const location = useLocation()
+  const wantedAssets = (
+    location.state as { assets?: Array<{ chain: string; code: string; issuer: string }> } | null
+  )?.assets
   // Key = "CODE:ISSUER" (XLM = "XLM:")
-  const [selectedAssetKey, setSelectedAssetKey] = useState('XLM:')
+  const [selectedAssetKey, setSelectedAssetKey] = useState(
+    wantedAssets?.[0] ? `${wantedAssets[0].code}:${wantedAssets[0].issuer}` : 'XLM:'
+  )
   const [memo, setMemo] = useState('')
   const [memoType, setMemoType] = useState<'text' | 'id'>('text')
   const [memoRequired, setMemoRequired] = useState(false)
@@ -536,9 +573,6 @@ export default function Send() {
 
   const [confirmXdrOpen, setConfirmXdrOpen] = useState(false)
   const [successXdrOpen, setSuccessXdrOpen] = useState(false)
-  const [txHashCopied, setTxHashCopied] = useState(false)
-  const [confirmXdrCopied, setConfirmXdrCopied] = useState(false)
-  const [successXdrCopied, setSuccessXdrCopied] = useState(false)
   const [sendTxDetails, setSendTxDetails] = useState<HorizonTxDetails | null>(null)
 
   const [destinationFocused, setDestinationFocused] = useState(false)
@@ -573,19 +607,93 @@ export default function Send() {
   }, [status.publicKey, activeNetwork.id])
 
   const selectedBalance = balances.find((b) => `${b.code}:${b.issuer}` === selectedAssetKey)
+
+  // Recipient first (SendRecipientStep): the address picks the network, and
+  // the asset list after it only offers assets that can reach that network.
+  const [recipientFamily, setRecipientFamily] = useState<RecipientFamily | null>(null)
+  const [evmRecipient, setEvmRecipient] = useState('')
+  const [evmRecents, setEvmRecents] = useState<string[]>([])
+  const [evmChains, setEvmChains] = useState<ChainEntry[]>([])
+  const [familyIcons, setFamilyIcons] = useState<Map<string, string>>(new Map())
+  const stellarChainId = activeNetwork.id === 'testnet' ? 'stellar:testnet' : 'stellar:pubnet'
+  useEffect(() => {
+    let cancelled = false
+    getEvmChainsForEnv(activeNetwork.id).then(async (chains) => {
+      if (cancelled) return
+      setEvmChains(chains)
+      const icons = await getChainIcons([stellarChainId, ...chains.map((c) => c.id)])
+      if (!cancelled) setFamilyIcons(icons)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activeNetwork.id, stellarChainId])
+  useEffect(() => {
+    if (!status.publicKey) return
+    const key = evmRecentsKey(activeNetwork.id, status.publicKey)
+    chrome.storage.local.get(key, (result) => {
+      const stored = result[key]
+      setEvmRecents(
+        Array.isArray(stored)
+          ? stored.filter((d) => typeof d === 'string' && detectRecipientFamily(d) === 'evm')
+          : []
+      )
+    })
+  }, [status.publicKey, activeNetwork.id])
+  function rememberEvmRecipient(dest: string) {
+    if (!status.publicKey || detectRecipientFamily(dest) !== 'evm') return
+    const key = evmRecentsKey(activeNetwork.id, status.publicKey)
+    setEvmRecents((prev) => {
+      const next = [dest, ...prev.filter((d) => d.toLowerCase() !== dest.toLowerCase())].slice(
+        0,
+        MAX_RECENT_RECIPIENTS
+      )
+      chrome.storage.local.set({ [key]: next })
+      return next
+    })
+  }
+  const ownAccountFor = (address: string) =>
+    accounts.find(
+      (a) => a.publicKey === address || a.addresses?.evm?.toLowerCase() === address.toLowerCase()
+    )
+  const ownLabelFor = (address: string) => {
+    const a = ownAccountFor(address)
+    return a ? a.label || `Account ${a.index + 1}` : undefined
+  }
+  const isEvmBalance = (b: AssetBalance) => b.chain.startsWith('eip155')
+  // Keep the chosen asset on the recipient's network, natives first.
+  useEffect(() => {
+    if (!recipientFamily) return
+    const wantEvm = recipientFamily === 'evm'
+    const current = balances.find((b) => `${b.code}:${b.issuer}` === selectedAssetKey)
+    if (current && isEvmBalance(current) === wantEvm) return
+    const sameFamily = balances.filter((b) => isEvmBalance(b) === wantEvm)
+    const wanted = sameFamily.find((b) =>
+      wantedAssets?.some((w) => w.chain === b.chain && w.code === b.code && w.issuer === b.issuer)
+    )
+    const next = wanted ?? sameFamily.find((b) => b.isNative) ?? sameFamily[0]
+    if (next) setSelectedAssetKey(`${next.code}:${next.issuer}`)
+  }, [recipientFamily, balances, selectedAssetKey, wantedAssets])
+  const pickerBalances = recipientFamily
+    ? balances.filter((b) => isEvmBalance(b) === (recipientFamily === 'evm'))
+    : balances
   const selectedAssetObj = {
     code: selectedBalance?.code ?? 'XLM',
     issuer: selectedBalance?.issuer ?? '',
     icon: selectedBalance?.icon,
     isNative: selectedBalance?.isNative ?? true,
   }
+  const selectedPriceAsset = {
+    code: selectedAssetObj.code,
+    issuer: selectedAssetObj.isNative ? undefined : selectedAssetObj.issuer,
+  }
 
   useEffect(() => {
     let cancelled = false
     setSelectedAssetPrice(null)
-    fetchPrices([selectedAssetObj.code]).then(({ prices }) => {
+    fetchPrices([selectedPriceAsset], activeNetwork.id).then(({ prices }) => {
       if (cancelled) return
-      setSelectedAssetPrice(prices[selectedAssetObj.code] ?? null)
+      setSelectedAssetPrice(prices[priceKey(selectedPriceAsset)] ?? null)
     })
     return () => {
       cancelled = true
@@ -594,11 +702,13 @@ export default function Send() {
 
   useEffect(() => {
     const amountNum = parseFloat(amount)
-    if (selectedAssetPrice === null || isNaN(amountNum) || amountNum <= 0) {
+    if (selectedAssetPrice === null) {
       setLiveFiat(null)
       return
     }
-    setLiveFiat(formatValue(amountNum * selectedAssetPrice))
+    setLiveFiat(
+      formatValue(isNaN(amountNum) || amountNum <= 0 ? 0 : amountNum * selectedAssetPrice)
+    )
   }, [amount, selectedAssetPrice, formatValue])
 
   useEffect(() => {
@@ -650,15 +760,20 @@ export default function Send() {
     const code = selectedAssetObj.code
     const gasHeadroom = COMMIT_GAS_HEADROOM_PER_NOTE_STROOPS * BigInt(quote?.totalNotes ?? 1)
     const xlmNeeded = totalFee + gasHeadroom + (code === 'XLM' ? sendStroops : 0n)
-    const xlmBalance = balances.find((b) => b.isNative)
-    const xlmHave = xlmBalance ? toStroops(xlmBalance.balance, xlmDecimals) : 0n
-    if (xlmHave === null || xlmHave < xlmNeeded) {
+    // Stellar XLM only (ETH is native too), and only what sits above the reserve.
+    const xlmBalance = balances.find((b) => b.isNative && !isEvmBalance(b))
+    const xlmHave = xlmBalance
+      ? spendableUnits(xlmBalance.balance, xlmDecimals, xlmBalance.locked)
+      : 0n
+    if (xlmHave < xlmNeeded) {
       return 'Not enough XLM for relayer fees'
     }
     if (code !== 'XLM') {
-      const assetBalance = balances.find((b) => b.code === code)
-      const assetHave = assetBalance ? toStroops(assetBalance.balance, decimals) : 0n
-      if (assetHave === null || assetHave < sendStroops) {
+      const assetBalance = balances.find((b) => b.code === code && !isEvmBalance(b))
+      const assetHave = assetBalance
+        ? spendableUnits(assetBalance.balance, decimals, assetBalance.locked)
+        : 0n
+      if (assetHave < sendStroops) {
         return `Insufficient ${code} balance`
       }
     }
@@ -678,8 +793,8 @@ export default function Send() {
       return
     }
     setLoading(true)
-    const { prices } = await fetchPrices([selectedAssetObj.code, 'XLM'])
-    const assetPrice = prices[selectedAssetObj.code] ?? null
+    const { prices } = await fetchPrices([selectedPriceAsset, { code: 'XLM' }], activeNetwork.id)
+    const assetPrice = prices[priceKey(selectedPriceAsset)] ?? null
     setPrivateAmountUsd(assetPrice !== null ? formatValue(parseFloat(amount) * assetPrice) : null)
     setPrivateXlmPrice(prices['XLM'] ?? null)
     chrome.runtime.sendMessage(
@@ -795,9 +910,9 @@ export default function Send() {
       }
     }
 
-    const { prices } = await fetchPrices(['XLM', selectedAssetObj.code])
+    const { prices } = await fetchPrices([{ code: 'XLM' }, selectedPriceAsset], activeNetwork.id)
     const xlmPrice = prices['XLM'] ?? null
-    const assetPrice = prices[selectedAssetObj.code] ?? null
+    const assetPrice = prices[priceKey(selectedPriceAsset)] ?? null
     const feeUsd = xlmPrice !== null ? formatValue(parseFloat(activeFeeXlm) * xlmPrice) : null
     const amountUsd = assetPrice !== null ? formatValue(amountNum * assetPrice) : null
     const payment: PaymentParams = {
@@ -910,45 +1025,121 @@ export default function Send() {
     setStep('form')
   }
 
-  // For native XLM the fraction is taken from balance minus reserve, subentries, and fee so it never
-  // dips into locked XLM; non-native assets have no reserve.
+  // Every quick fill uses what can actually leave: the reserve, open-offer
+  // liabilities and, for XLM, this send's fee stay behind.
+  function spendableNow(): bigint {
+    if (!selectedBalance) return 0n
+    const fee = selectedAssetObj.isNative ? BigInt(activeFeeStroops) : 0n
+    return spendableUnits(selectedBalance.balance, decimals, selectedBalance.locked, fee)
+  }
+
   function fillAmountFraction(fraction: number) {
     if (!selectedBalance) return
-    if (selectedAssetObj.isNative) {
-      const balanceStroops = toStroops(selectedBalance.balance, 7) ?? 0n
-      const minReserveStroops = (2n + BigInt(subentryCount)) * 5_000_000n
-      const feeStroops = BigInt(activeFeeStroops)
-      const spendable = balanceStroops - minReserveStroops - feeStroops
-      const portion = spendable > 0n ? (spendable * BigInt(Math.round(fraction * 100))) / 100n : 0n
-      setAmount(portion > 0n ? formatUnits(portion.toString(), 7) : '0')
-    } else {
-      const balanceStroops = toStroops(selectedBalance.balance, decimals) ?? 0n
-      const portion = (balanceStroops * BigInt(Math.round(fraction * 100))) / 100n
-      setAmount(formatUnits(portion.toString(), decimals))
-    }
+    const portion = fractionUnits(spendableNow(), fraction)
+    setAmount(portion > 0n ? formatUnits(portion, decimals) : '0')
   }
 
   function fillAmountMax() {
     if (!selectedBalance) return
-    if (selectedAssetObj.isNative) {
-      const balanceStroops = toStroops(selectedBalance.balance, 7) ?? 0n
-      const minReserveStroops = (2n + BigInt(subentryCount)) * 5_000_000n
-      const feeStroops = BigInt(activeFeeStroops)
-      const spendable = balanceStroops - minReserveStroops - feeStroops
-      setAmount(spendable > 0n ? formatUnits(spendable.toString(), 7) : '0')
-    } else {
-      setAmount(selectedBalance.balance)
-    }
+    const all = spendableNow()
+    setAmount(all > 0n ? formatUnits(all, decimals) : '0')
   }
 
-  const amountNum = parseFloat(amount)
+  // Against what can leave, not the raw balance: an XLM send into the reserve
+  // fails on-chain with op_underfunded.
+  const amountUnits = toStroops(amount, decimals)
   const exceedsBalance =
-    !!selectedBalance &&
-    !isNaN(amountNum) &&
-    amountNum > 0 &&
-    amountNum > parseFloat(selectedBalance.balance)
+    !!selectedBalance && amountUnits !== null && amountUnits > 0n && amountUnits > spendableNow()
   const destinationInvalid =
     destinationTouched && destination !== '' && !isValidPublicKey(destination)
+
+  if (!recipientFamily && step === 'form') {
+    const recents: RecipientSuggestion[] = [
+      ...evmRecents.map((address) => ({
+        address,
+        family: 'evm' as const,
+        label: ownLabelFor(address),
+      })),
+      ...recentRecipients.map((address) => ({
+        address,
+        family: 'stellar' as const,
+        label: ownLabelFor(address),
+      })),
+    ]
+    const ownAccounts: RecipientSuggestion[] = accounts
+      .filter((a) => a.publicKey !== status.publicKey)
+      .flatMap((a) => {
+        const label = a.label || `Account ${a.index + 1}`
+        const rows: RecipientSuggestion[] = [{ address: a.publicKey, family: 'stellar', label }]
+        if (a.addresses?.evm) rows.push({ address: a.addresses.evm, family: 'evm', label })
+        return rows
+      })
+    return (
+      <div className="flex-1 flex flex-col overflow-hidden bg-background">
+        <div className="px-5 pt-5 pb-3 shrink-0 border-b border-border/40">
+          <WalletNavbar />
+        </div>
+        <SendRecipientStep
+          recents={recents}
+          ownAccounts={ownAccounts}
+          evmEnabled={evmChains.length > 0}
+          evmName={evmChains.map((c) => c.name).join(', ') || 'Ethereum'}
+          stellarIcon={familyIcons.get(stellarChainId)}
+          evmIcon={evmChains[0] ? familyIcons.get(evmChains[0].id) : undefined}
+          onBack={() => navigate(-1)}
+          onContinue={(address, family) => {
+            setRecipientFamily(family)
+            if (family === 'stellar') {
+              setDestination(address)
+              setDestinationTouched(true)
+            } else {
+              setEvmRecipient(address)
+            }
+          }}
+        />
+      </div>
+    )
+  }
+
+  // EVM assets get their own send engine (0x validation, gas fees, no memo or
+  // trustline concepts) behind the same page shell and asset picker.
+  if (selectedBalance?.chain.startsWith('eip155')) {
+    return (
+      <>
+        <div className="flex-1 flex flex-col overflow-hidden bg-background">
+          <div className="px-5 pt-5 pb-3 shrink-0 border-b border-border/40">
+            <WalletNavbar />
+          </div>
+          <SendEvm
+            asset={selectedBalance}
+            chainName={chainNameOf(selectedBalance.chain)}
+            chainIcon={familyIcons.get(selectedBalance.chain)}
+            onPickAsset={() => setShowAssetPicker(true)}
+            initialDestination={evmRecipient}
+            recipientLabel={ownLabelFor(evmRecipient)}
+            nativeBalance={
+              balances.find((b) => b.chain === selectedBalance.chain && b.isNative)?.balance
+            }
+            nativePrice={
+              balances.find((b) => b.chain === selectedBalance.chain && b.isNative)?.usdPrice ??
+              null
+            }
+            onSent={rememberEvmRecipient}
+            onBack={() => setRecipientFamily(null)}
+          />
+        </div>
+        {showAssetPicker && (
+          <AssetPickerSheet
+            balances={pickerBalances}
+            selectedKey={selectedAssetKey}
+            chainName={chainNameOf}
+            onSelect={setSelectedAssetKey}
+            onClose={() => setShowAssetPicker(false)}
+          />
+        )}
+      </>
+    )
+  }
 
   return (
     <>
@@ -966,7 +1157,7 @@ export default function Send() {
                 onClick={() => {
                   if (loading) return
                   if (step === 'form') {
-                    navigate(-1)
+                    setRecipientFamily(null)
                   } else if (step === 'privacy') {
                     setStep('form')
                     setError('')
@@ -982,72 +1173,18 @@ export default function Send() {
               <h2 className="text-lg font-bold text-foreground">Send</h2>
             </div>
 
-            {/* Amount + asset card */}
-            <div
-              className={`rounded-xl bg-card p-4 flex flex-col gap-3 transition-colors ${exceedsBalance ? 'ring-1 ring-destructive/60' : ''}`}
-            >
-              <button
-                onClick={() => setShowAssetPicker(true)}
-                aria-label="Select asset"
-                className="cursor-pointer self-start flex items-center gap-2 rounded-xl bg-muted px-3 py-2 hover:bg-muted/70 transition-colors"
-              >
-                <AssetIcon icon={selectedAssetObj.icon} code={selectedAssetObj.code} size={22} />
-                <span className="text-sm font-semibold text-foreground">
-                  {selectedAssetObj.code}
-                </span>
-                <ChevronDown size={14} className="text-muted-foreground" />
-              </button>
-
-              <input
-                type="number"
-                inputMode="decimal"
-                placeholder="0.00"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                className="text-4xl font-bold bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground/40 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-              />
-
-              {liveFiat && <p className="text-sm text-muted-foreground -mt-1">{liveFiat}</p>}
-
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs text-muted-foreground min-w-0 truncate">
-                  {selectedBalance
-                    ? `Balance: ${parseFloat(selectedBalance.balance).toLocaleString('en-US', { maximumFractionDigits: 7 })} ${selectedAssetObj.code}`
-                    : 'Balance: -'}
-                </p>
-                {selectedBalance && (
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => fillAmountFraction(0.25)}
-                      aria-label="Set amount to 25 percent of balance"
-                      className="cursor-pointer rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-primary hover:bg-muted/70 transition-colors"
-                    >
-                      25%
-                    </button>
-                    <button
-                      onClick={() => fillAmountFraction(0.5)}
-                      aria-label="Set amount to 50 percent of balance"
-                      className="cursor-pointer rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-primary hover:bg-muted/70 transition-colors"
-                    >
-                      50%
-                    </button>
-                    <button
-                      onClick={fillAmountMax}
-                      aria-label="Set amount to maximum spendable balance"
-                      className="cursor-pointer rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-primary hover:bg-muted/70 transition-colors"
-                    >
-                      Max
-                    </button>
-                  </div>
-                )}
-              </div>
-              {exceedsBalance && <p className="text-xs text-destructive">Exceeds balance</p>}
-            </div>
-
             {/* Destination */}
-            <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-1.5">
-              <p className="text-xs text-muted-foreground">To</p>
-              {isValidPublicKey(destination) && !destinationFocused ? (
+            <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
+              <p className="pixel-label text-[10px] text-muted-foreground">To</p>
+              {isValidPublicKey(destination) && !destinationFocused && recipientFamily ? (
+                <RecipientRow
+                  address={destination}
+                  label={ownLabelFor(destination)}
+                  networkName="Stellar"
+                  chainIcon={familyIcons.get(stellarChainId)}
+                  onChange={() => setRecipientFamily(null)}
+                />
+              ) : isValidPublicKey(destination) && !destinationFocused ? (
                 <div className="flex items-center justify-between">
                   <button
                     type="button"
@@ -1117,6 +1254,43 @@ export default function Send() {
                 </div>
               )}
             </div>
+
+            <SideCard
+              label="You send"
+              corner={
+                selectedBalance
+                  ? formatBalanceText(
+                      selectedBalance.balance,
+                      selectedAssetObj.code,
+                      selectedBalance.decimals
+                    )
+                  : 'Balance: -'
+              }
+              chip={{
+                code: selectedAssetObj.code,
+                issuer: selectedBalance?.issuer,
+                icon: selectedAssetObj.icon,
+                chainIcon: selectedBalance ? familyIcons.get(selectedBalance.chain) : undefined,
+                // "Stellar" like every other chip; the navbar already says which Stellar network.
+                subLabel: selectedBalance
+                  ? isEvmBalance(selectedBalance)
+                    ? chainNameOf(selectedBalance.chain)
+                    : 'Stellar'
+                  : undefined,
+                onPick: () => setShowAssetPicker(true),
+                ariaLabel: 'Select asset',
+              }}
+              value={<AmountInput value={amount} onChange={setAmount} />}
+              footAsset={
+                selectedBalance ? (
+                  <QuickFillChips
+                    onFill={(f) => (f === 1 ? fillAmountMax() : fillAmountFraction(f))}
+                  />
+                ) : null
+              }
+              footAmount={liveFiat ?? ''}
+              error={exceedsBalance ? 'Exceeds balance' : null}
+            />
 
             {/* Memo applies to public sends only; it is ignored by the private flow. */}
             <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
@@ -1238,7 +1412,7 @@ export default function Send() {
           >
             {step === 'privacy' ? (
               <>
-                <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3">
+                <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3 [&>*]:shrink-0">
                   <p className="text-sm text-muted-foreground">
                     Choose who can see that this payment came from you.
                   </p>
@@ -1336,7 +1510,7 @@ export default function Send() {
             ) : mode === 'private' ? (
               step === 'success' ? (
                 <>
-                  <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4">
+                  <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
                     <div className="flex flex-col items-center gap-3 text-center pt-1">
                       <div className="h-14 w-14 rounded-full bg-green-500/15 flex items-center justify-center">
                         <CheckCircle2 size={28} className="text-green-500" />
@@ -1373,7 +1547,9 @@ export default function Send() {
                       )}
                       <div className="flex items-center justify-between px-4 py-3">
                         <p className="text-xs text-muted-foreground">Network</p>
-                        <p className="text-sm text-foreground">{activeNetwork.name}</p>
+                        <p className="text-sm text-foreground">
+                          <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                        </p>
                       </div>
                       <div className="flex items-center justify-between px-4 py-3">
                         <p className="text-xs text-muted-foreground">Max fee</p>
@@ -1407,7 +1583,7 @@ export default function Send() {
                 </>
               ) : (
                 <>
-                  <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3">
+                  <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3 [&>*]:shrink-0">
                     {quote && (
                       <>
                         <div className="rounded-xl bg-card px-4 py-3 flex items-center gap-3">
@@ -1484,7 +1660,9 @@ export default function Send() {
                         <div className="rounded-xl bg-card divide-y divide-border">
                           <div className="flex items-center justify-between px-4 py-3">
                             <p className="text-xs text-muted-foreground">Network</p>
-                            <p className="text-sm text-foreground">{activeNetwork.name}</p>
+                            <p className="text-sm text-foreground">
+                              <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                            </p>
                           </div>
                           <div className="flex items-center justify-between px-4 py-3">
                             <span
@@ -1629,166 +1807,61 @@ export default function Send() {
               )
             ) : step === 'success' ? (
               <>
-                <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4">
-                  <div className="flex flex-col items-center gap-3 text-center pt-1">
-                    <div className="h-14 w-14 rounded-full bg-green-500/15 flex items-center justify-center">
-                      <CheckCircle2 size={28} className="text-green-500" />
-                    </div>
-                    <div>
-                      <p className="text-base font-bold text-foreground">Payment sent</p>
-                      <p className="text-sm text-muted-foreground mt-0.5">
-                        {amount} {selectedAssetObj.code} to {shortDest}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-1.5">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs text-muted-foreground">Transaction hash</p>
-                      <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(txHash)
-                          setTxHashCopied(true)
-                          window.setTimeout(() => setTxHashCopied(false), 2000)
-                        }}
-                        className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        {txHashCopied ? <Check size={12} /> : <Copy size={12} />}
-                      </button>
-                    </div>
-                    <p className="font-mono text-xs text-foreground break-all">{txHash}</p>
-                  </div>
-
-                  <AutoSkeleton loading={!sendTxDetails}>
-                    <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3">
-                      <p className="text-xs text-muted-foreground">Ledger</p>
-                      <p className="text-sm font-mono text-foreground">
-                        #{sendTxDetails?.ledger.toLocaleString()}
-                      </p>
-                    </div>
-                    <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3">
-                      <p className="text-xs text-muted-foreground">Timestamp</p>
-                      <p className="text-sm text-foreground">
-                        {sendTxDetails?.created_at
-                          ? new Date(sendTxDetails.created_at).toLocaleString('en-US', {
-                              month: 'short',
-                              day: 'numeric',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })
-                          : '-'}
-                      </p>
-                    </div>
-                    <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3">
-                      <p className="text-xs text-muted-foreground">Fee charged</p>
-                      <p className="text-sm text-foreground">
+                <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
+                  <TxResultHero
+                    state="success"
+                    amountText={`-${amount}`}
+                    code={selectedAssetObj.code}
+                    issuer={selectedAssetObj.issuer || undefined}
+                    subtitle={`to ${ownLabelFor(lastDestRef.current) ?? shortDest}`}
+                  />
+                  <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
+                    <DetailRow label="Network">
+                      <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                    </DetailRow>
+                    <DetailRow label="To">
+                      <AddressValue address={lastDestRef.current} />
+                    </DetailRow>
+                    <DetailRow label="Network fee">
+                      <span className="tabular-nums">
                         {sendTxDetails?.fee_charged
-                          ? stroopsToXlm(sendTxDetails.fee_charged) + ' XLM'
-                          : '-'}
-                      </p>
-                    </div>
-                    <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3">
-                      <p className="text-xs text-muted-foreground">Network</p>
-                      <p className="text-sm text-foreground">{activeNetwork.name}</p>
-                    </div>
-
-                    <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
-                      <p className="text-xs font-medium text-foreground">Operations (1)</p>
-                      <div className="h-px bg-border" />
-                      <div className="flex justify-between">
-                        <span className="text-xs text-muted-foreground">Type</span>
-                        <span className="text-xs font-mono text-foreground">payment</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-xs text-muted-foreground shrink-0">Asset</span>
-                        <div className="flex items-center gap-1.5">
-                          <AssetIcon
-                            icon={selectedAssetObj.icon}
-                            code={selectedAssetObj.code}
-                            size={14}
-                          />
-                          <span className="text-xs font-mono font-medium text-foreground">
-                            {selectedAssetObj.code}
-                          </span>
-                        </div>
-                      </div>
-                      {selectedAssetObj.issuer && (
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-xs text-muted-foreground shrink-0">Issuer</span>
-                          <div className="flex items-center gap-1.5">
-                            <StellarAvatar publicKey={selectedAssetObj.issuer} size={14} />
-                            <span className="text-xs font-mono text-foreground">
-                              {selectedAssetObj.issuer.slice(0, 4)}...
-                              {selectedAssetObj.issuer.slice(-4)}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-xs text-muted-foreground shrink-0">From</span>
-                        <div className="flex items-center gap-1.5">
-                          {status.publicKey && (
-                            <StellarAvatar publicKey={status.publicKey} size={14} />
-                          )}
-                          <span className="text-xs font-mono text-foreground">
-                            {status.publicKey
-                              ? `${status.publicKey.slice(0, 4)}...${status.publicKey.slice(-4)}`
-                              : '-'}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-xs text-muted-foreground shrink-0">To</span>
-                        <div className="flex items-center gap-1.5">
-                          {lastDestRef.current && (
-                            <StellarAvatar publicKey={lastDestRef.current} size={14} />
-                          )}
-                          <span className="text-xs font-mono text-foreground">{shortDest}</span>
-                        </div>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-xs text-muted-foreground">Amount</span>
-                        <span className="text-xs font-mono font-medium text-foreground">
-                          {parseFloat(amount).toFixed(7)}
-                        </span>
-                      </div>
-                      {memo && (
-                        <div className="flex justify-between gap-4">
-                          <span className="text-xs text-muted-foreground shrink-0">Memo</span>
-                          <span className="text-xs text-foreground text-right">
-                            {memoType.toUpperCase()}: {memo}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-0">
-                      <button
-                        onClick={() => setSuccessXdrOpen((p) => !p)}
-                        className="cursor-pointer flex items-center justify-between text-xs text-muted-foreground hover:text-foreground w-full py-0.5"
-                      >
-                        <span>Envelope XDR</span>
-                        {successXdrOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                      </button>
-                      {successXdrOpen && sendTxDetails?.envelope_xdr && (
-                        <div className="relative rounded-lg bg-muted p-3 mt-2">
-                          <p className="font-mono text-xs text-muted-foreground break-all leading-relaxed pr-6">
-                            {sendTxDetails.envelope_xdr}
-                          </p>
-                          <button
-                            onClick={() => {
-                              navigator.clipboard.writeText(sendTxDetails.envelope_xdr)
-                              setSuccessXdrCopied(true)
-                              window.setTimeout(() => setSuccessXdrCopied(false), 2000)
-                            }}
-                            className="cursor-pointer absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
-                          >
-                            {successXdrCopied ? <Check size={12} /> : <Copy size={12} />}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </AutoSkeleton>
+                          ? `${trimZeros(stroopsToXlm(sendTxDetails.fee_charged))} XLM`
+                          : '...'}
+                      </span>
+                    </DetailRow>
+                    {memo && (
+                      <DetailRow label="Memo">
+                        <span className="break-all">{memo}</span>
+                      </DetailRow>
+                    )}
+                    <DetailRow label="Transaction">
+                      <CopyValue value={txHash} />
+                    </DetailRow>
+                  </div>
+                  <AdvancedDetails
+                    open={successXdrOpen}
+                    onToggle={() => setSuccessXdrOpen((p) => !p)}
+                  >
+                    {sendTxDetails && (
+                      <DetailRow label="Ledger">#{sendTxDetails.ledger.toLocaleString()}</DetailRow>
+                    )}
+                    {sendTxDetails?.created_at && (
+                      <DetailRow label="Confirmed at">
+                        {new Date(sendTxDetails.created_at).toLocaleString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </DetailRow>
+                    )}
+                    {memo && <DetailRow label="Memo type">{memoType}</DetailRow>}
+                    {sendTxDetails?.envelope_xdr && (
+                      <DetailRow label="Envelope XDR">
+                        <CopyValue value={sendTxDetails.envelope_xdr} />
+                      </DetailRow>
+                    )}
+                  </AdvancedDetails>
                 </div>
                 <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
                   <Button variant="outline" className="flex-1" asChild>
@@ -1808,108 +1881,75 @@ export default function Send() {
               </>
             ) : (
               <>
-                <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3">
-                  <div className="rounded-xl bg-card px-4 py-3 flex items-center gap-3">
-                    <AssetIcon
-                      icon={selectedAssetObj.icon}
+                <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3 [&>*]:shrink-0">
+                  <div className="flex items-center gap-3 rounded-xl bg-card px-4 py-4">
+                    <TokenAssetIcon
                       code={selectedAssetObj.code}
-                      size={36}
+                      icon={selectedAssetObj.icon}
+                      chainIcons={[stellarChain.icon]}
                     />
-                    <div className="flex flex-col min-w-0">
-                      <p className="text-2xl font-bold text-foreground tabular-nums">
-                        {amount} {selectedAssetObj.code}
+                    <div className="min-w-0">
+                      <p className="text-2xl font-bold tabular-nums text-foreground">
+                        {amount}{' '}
+                        <span className="text-base font-medium text-muted-foreground">
+                          {selectedAssetObj.code}
+                        </span>
+                        <VerifiedMark
+                          code={selectedAssetObj.code}
+                          issuer={selectedAssetObj.issuer || undefined}
+                          className="ml-1 h-4 w-4"
+                        />
                       </p>
-                      <div className="flex items-center gap-2">
-                        {lastPreviewRef.current?.amountUsd && (
-                          <p className="text-xs text-muted-foreground">
-                            {lastPreviewRef.current.amountUsd}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl bg-card divide-y divide-border">
-                    <div className="flex items-center justify-between px-4 py-3">
-                      <p className="text-xs text-muted-foreground">From</p>
-                      <div
-                        className="flex items-center gap-2"
-                        title={status.publicKey ?? undefined}
-                      >
-                        {status.publicKey && (
-                          <StellarAvatar publicKey={status.publicKey} size={16} />
-                        )}
-                        <p className="text-xs font-mono text-foreground">
-                          {status.publicKey
-                            ? `${status.publicKey.slice(0, 4)}...${status.publicKey.slice(-4)}`
-                            : '-'}
+                      {lastPreviewRef.current?.amountUsd && (
+                        <p className="text-xs text-muted-foreground">
+                          {lastPreviewRef.current.amountUsd}
                         </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between px-4 py-3">
-                      <p className="text-xs text-muted-foreground">To</p>
-                      <div className="flex items-center gap-2 min-w-0" title={destination}>
-                        {destination && <StellarAvatar publicKey={destination} size={16} />}
-                        <p className="text-xs font-mono text-foreground">{shortDest}</p>
-                      </div>
+                      )}
                     </div>
                   </div>
 
-                  <div className="rounded-xl bg-card divide-y divide-border">
+                  <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
+                    <DetailRow label="From">
+                      <AddressValue address={status.publicKey ?? undefined} />
+                    </DetailRow>
+                    <DetailRow label="To">
+                      <span className="inline-flex flex-col items-end">
+                        {ownLabelFor(destination) && (
+                          <span className="font-medium">{ownLabelFor(destination)}</span>
+                        )}
+                        <AddressValue address={destination} />
+                      </span>
+                    </DetailRow>
                     {memo && (
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <p className="text-xs text-muted-foreground">Memo</p>
-                        <p className="text-sm text-foreground">
-                          {memoType.toUpperCase()}: {memo}
-                        </p>
-                      </div>
+                      <DetailRow label="Memo">
+                        <span className="break-all">{memo}</span>
+                      </DetailRow>
                     )}
-                    <div className="flex items-center justify-between px-4 py-3">
-                      <p className="text-xs text-muted-foreground">Network</p>
-                      <p className="text-sm text-foreground">{activeNetwork.name}</p>
-                    </div>
-                    <div className="flex items-center justify-between px-4 py-3">
-                      <p className="text-xs text-muted-foreground">Max fee</p>
-                      <div className="text-right">
-                        <p className="text-sm font-medium text-foreground">
-                          {lastPreviewRef.current?.fee ?? activeFeeXlm} XLM
-                        </p>
+                    <DetailRow label="Network">
+                      <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                    </DetailRow>
+                    <DetailRow label="Max fee">
+                      <span className="tabular-nums">
+                        {trimZeros(String(lastPreviewRef.current?.fee ?? activeFeeXlm))} XLM
                         {lastPreviewRef.current?.feeUsd && (
-                          <p className="text-xs text-muted-foreground">
+                          <span className="ml-1 text-muted-foreground">
                             {lastPreviewRef.current.feeUsd}
-                          </p>
+                          </span>
                         )}
-                      </div>
-                    </div>
+                      </span>
+                    </DetailRow>
                   </div>
 
                   {lastPreviewRef.current?.xdr && (
-                    <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-0">
-                      <button
-                        onClick={() => setConfirmXdrOpen((p) => !p)}
-                        className="cursor-pointer flex items-center justify-between text-xs text-muted-foreground hover:text-foreground w-full py-0.5"
-                      >
-                        <span>Unsigned XDR</span>
-                        {confirmXdrOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                      </button>
-                      {confirmXdrOpen && (
-                        <div className="relative rounded-lg bg-muted p-3 mt-2">
-                          <p className="font-mono text-xs text-muted-foreground break-all leading-relaxed pr-6">
-                            {lastPreviewRef.current.xdr}
-                          </p>
-                          <button
-                            onClick={() => {
-                              navigator.clipboard.writeText(lastPreviewRef.current!.xdr)
-                              setConfirmXdrCopied(true)
-                              window.setTimeout(() => setConfirmXdrCopied(false), 2000)
-                            }}
-                            className="cursor-pointer absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
-                          >
-                            {confirmXdrCopied ? <Check size={12} /> : <Copy size={12} />}
-                          </button>
-                        </div>
-                      )}
-                    </div>
+                    <AdvancedDetails
+                      open={confirmXdrOpen}
+                      onToggle={() => setConfirmXdrOpen((p) => !p)}
+                    >
+                      {memo && <DetailRow label="Memo type">{memoType}</DetailRow>}
+                      <DetailRow label="Unsigned XDR">
+                        <CopyValue value={lastPreviewRef.current.xdr} />
+                      </DetailRow>
+                    </AdvancedDetails>
                   )}
 
                   {error && (
@@ -1942,8 +1982,9 @@ export default function Send() {
 
       {showAssetPicker && (
         <AssetPickerSheet
-          balances={balances}
+          balances={pickerBalances}
           selectedKey={selectedAssetKey}
+          chainName={chainNameOf}
           onSelect={setSelectedAssetKey}
           onClose={() => setShowAssetPicker(false)}
         />
