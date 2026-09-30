@@ -25,7 +25,7 @@ import {
   evmTxHash,
   stellarContractIdToBytes32,
 } from './encoding'
-import { patchCctpJob, withCctpAccountLock, type CctpJob } from './store'
+import { listCctpJobs, patchCctpJob, withCctpAccountLock, type CctpJob } from './store'
 import { evmAddressFromPrivateKey, signEip1559 } from '../signers/evm'
 
 export const CCTP_DOMAIN_ETHEREUM = 0
@@ -209,6 +209,16 @@ export async function submitEvmRaw(
   const maxFeePerGas = BigInt(gasPriceHex) * 2n + maxPriorityFeePerGas
   const gasLimit = (BigInt(gasLimitHex) * 12n) / 10n
 
+  // estimateGas does not check the balance. Without this, a node would reject the
+  // broadcast after the hash is persisted, leaving a tx that can never land.
+  const gasCeiling = gasLimit * maxFeePerGas
+  const balance = BigInt(await evmRpcCall(env.evmRpcUrl, 'eth_getBalance', [from, 'pending']))
+  if (balance < gasCeiling) {
+    throw new Error(
+      `Not enough ETH for network fees: this step needs up to ${baseUnitsToDecimal(gasCeiling, 18)} ETH`
+    )
+  }
+
   const raw = signEip1559(
     {
       chainId: BigInt(env.evmChainId),
@@ -273,13 +283,67 @@ async function waitForEvmInclusion(env: CctpEnv, hash: string): Promise<void> {
 
 // The approve-inclusion waits below are setTimeout+fetch loops, which do not
 // keep the service worker alive. If it is torn down mid-wait, the job stays at
-// 'approving' with approveTxHash persisted and the processor reconciles it
-// from chain state, so no funds are at risk.
+// 'approving' with approveTxHash persisted and the processor moves it to
+// 'approved' once the approve confirms, so no funds are at risk.
 
-async function runStellarToEvm(job: CctpJob, env: CctpEnv, stellarPk: string): Promise<void> {
+async function submitStellarBurn(job: CctpJob, env: CctpEnv, stellarPk: string): Promise<void> {
   const amount7 = decimalToBaseUnits(job.amount, 7)
   const maxFee7 = decimalToBaseUnits(job.maxFee, 7)
   const mintRecipient = evmAddressToBytes32(job.destAddress)
+  await submitStellarInvoke(
+    env,
+    env.anchors.stellar.tokenMessengerMinter,
+    'deposit_for_burn',
+    [
+      nativeToScVal(job.sourceAddress, { type: 'address' }),
+      nativeToScVal(amount7, { type: 'i128' }),
+      nativeToScVal(CCTP_DOMAIN_ETHEREUM, { type: 'u32' }),
+      nativeToScVal(Buffer.from(mintRecipient), { type: 'bytes' }),
+      nativeToScVal(env.anchors.stellar.usdcSac, { type: 'address' }),
+      nativeToScVal(Buffer.alloc(32), { type: 'bytes' }), // destination_caller: zero, anyone may complete the mint
+      nativeToScVal(maxFee7, { type: 'i128' }),
+      nativeToScVal(finalityThresholdFor(job), { type: 'u32' }),
+    ],
+    (hash) =>
+      patchCctpJob(env.networkId, stellarPk, job.id, {
+        status: 'burn_submitted',
+        burnTxHash: hash,
+        burnBroadcastAt: Date.now(),
+        lastError: undefined,
+      }).then(() => undefined)
+  )
+}
+
+async function submitEvmBurn(
+  job: CctpJob,
+  env: CctpEnv,
+  stellarPk: string,
+  nonce: number
+): Promise<void> {
+  const forwarderBytes32 = stellarContractIdToBytes32(env.anchors.stellar.cctpForwarder)
+  const burnData = encodeDepositForBurnWithHook({
+    amount: decimalToBaseUnits(job.amount, 6),
+    destinationDomain: CCTP_DOMAIN_STELLAR,
+    mintRecipient: forwarderBytes32,
+    burnToken: env.anchors.evm.usdc,
+    destinationCaller: forwarderBytes32,
+    maxFee: decimalToBaseUnits(job.maxFee, 6),
+    minFinalityThreshold: finalityThresholdFor(job),
+    hookData: encodeHookData(job.destAddress),
+  })
+  await submitEvmRaw(env, env.anchors.evm.tokenMessengerV2, burnData, BigInt(nonce), (hash) =>
+    patchCctpJob(env.networkId, stellarPk, job.id, {
+      status: 'burn_submitted',
+      burnNonce: nonce,
+      burnTxHash: hash,
+      burnBroadcastAt: Date.now(),
+      lastError: undefined,
+    }).then(() => undefined)
+  )
+}
+
+async function runStellarToEvm(job: CctpJob, env: CctpEnv, stellarPk: string): Promise<void> {
+  const amount7 = decimalToBaseUnits(job.amount, 7)
 
   const latest = await sorobanRpcCall<{ sequence: number }>(env.sorobanRpcUrl, 'getLatestLedger')
   const expirationLedger = latest.sequence + APPROVAL_LEDGER_MARGIN
@@ -302,45 +366,17 @@ async function runStellarToEvm(job: CctpJob, env: CctpEnv, stellarPk: string): P
       }).then(() => undefined)
   )
   await waitForStellarConfirmation(env, approveHash)
-
-  await submitStellarInvoke(
-    env,
-    env.anchors.stellar.tokenMessengerMinter,
-    'deposit_for_burn',
-    [
-      nativeToScVal(job.sourceAddress, { type: 'address' }),
-      nativeToScVal(amount7, { type: 'i128' }),
-      nativeToScVal(CCTP_DOMAIN_ETHEREUM, { type: 'u32' }),
-      nativeToScVal(Buffer.from(mintRecipient), { type: 'bytes' }),
-      nativeToScVal(env.anchors.stellar.usdcSac, { type: 'address' }),
-      nativeToScVal(Buffer.alloc(32), { type: 'bytes' }), // destination_caller: zero, anyone may complete the mint
-      nativeToScVal(maxFee7, { type: 'i128' }),
-      nativeToScVal(finalityThresholdFor(job), { type: 'u32' }),
-    ],
-    (hash) =>
-      patchCctpJob(env.networkId, stellarPk, job.id, {
-        status: 'burn_submitted',
-        burnTxHash: hash,
-        burnBroadcastAt: Date.now(),
-      }).then(() => undefined)
-  )
+  await submitStellarBurn(job, env, stellarPk)
 }
 
 async function runEvmToStellar(job: CctpJob, env: CctpEnv, stellarPk: string): Promise<void> {
   const amount6 = decimalToBaseUnits(job.amount, 6)
-  const maxFee6 = decimalToBaseUnits(job.maxFee, 6)
-  const forwarderBytes32 = stellarContractIdToBytes32(env.anchors.stellar.cctpForwarder)
-  const hookData = encodeHookData(job.destAddress)
   const from = evmAddressFromPrivateKey(env.evmPrivateKey)
 
-  const [preBurnNonceHex, preBurnBlockHex] = await Promise.all([
-    evmRpcCall(env.evmRpcUrl, 'eth_getTransactionCount', [from, 'pending']),
-    evmRpcCall(env.evmRpcUrl, 'eth_blockNumber', []),
-  ])
-  const preBurnNonce = Number(BigInt(preBurnNonceHex))
-  const preBurnBlock = Number(BigInt(preBurnBlockHex))
-
-  await patchCctpJob(env.networkId, stellarPk, job.id, { preBurnNonce, preBurnBlock })
+  const preBurnNonce = Number(
+    BigInt(await evmRpcCall(env.evmRpcUrl, 'eth_getTransactionCount', [from, 'pending']))
+  )
+  await patchCctpJob(env.networkId, stellarPk, job.id, { preBurnNonce })
 
   const approveData = encodeErc20Approve(env.anchors.evm.tokenMessengerV2, amount6)
   const approveHash = await submitEvmRaw(
@@ -356,30 +392,7 @@ async function runEvmToStellar(job: CctpJob, env: CctpEnv, stellarPk: string): P
       }).then(() => undefined)
   )
   await waitForEvmInclusion(env, approveHash)
-
-  const burnData = encodeDepositForBurnWithHook({
-    amount: amount6,
-    destinationDomain: CCTP_DOMAIN_STELLAR,
-    mintRecipient: forwarderBytes32,
-    burnToken: env.anchors.evm.usdc,
-    destinationCaller: forwarderBytes32,
-    maxFee: maxFee6,
-    minFinalityThreshold: finalityThresholdFor(job),
-    hookData,
-  })
-  await submitEvmRaw(
-    env,
-    env.anchors.evm.tokenMessengerV2,
-    burnData,
-    BigInt(preBurnNonce + 1),
-    (hash) =>
-      patchCctpJob(env.networkId, stellarPk, job.id, {
-        status: 'burn_submitted',
-        burnNonce: preBurnNonce + 1,
-        burnTxHash: hash,
-        burnBroadcastAt: Date.now(),
-      }).then(() => undefined)
-  )
+  await submitEvmBurn(job, env, stellarPk, preBurnNonce + 1)
 }
 
 // Called unawaited by CCTP_START once the job is persisted. The account lock
@@ -396,14 +409,19 @@ export async function runCctpBurn(job: CctpJob, env: CctpEnv, stellarPk: string)
     const message = e instanceof Error ? e.message : String(e)
     try {
       await withCctpAccountLock(`${env.networkId}:${stellarPk}`, async () => {
-        const current = await patchCctpJob(env.networkId, stellarPk, job.id, { lastError: message })
-        // Gated on approveTxHash, not burnTxHash: a signed approve may have
-        // landed, and "approved, not burned" is resumable, not a failure, so
-        // the processor reconciles it from chain state. Only a job where
-        // nothing was ever signed is safe to fail here.
-        if (!current.approveTxHash) {
-          await patchCctpJob(env.networkId, stellarPk, job.id, { status: 'failed' })
-        }
+        const current = (await listCctpJobs(env.networkId, stellarPk)).find((j) => j.id === job.id)
+        // Once the processor has seen the approve confirm, this error (typically the
+        // approve wait timing out) no longer describes the job.
+        if (!current || current.status === 'approved') return
+        // Gated on approveTxHash, not burnTxHash: a signed approve may have landed,
+        // and the processor turns that into 'approved' for the user to continue.
+        // Only a job where nothing was ever signed is safe to fail here.
+        await patchCctpJob(
+          env.networkId,
+          stellarPk,
+          job.id,
+          current.approveTxHash ? { lastError: message } : { lastError: message, status: 'failed' }
+        )
       })
     } catch (recoveryError) {
       // Fire-and-forget caller, so never reject; the job just keeps its last
@@ -411,4 +429,47 @@ export async function runCctpBurn(job: CctpJob, env: CctpEnv, stellarPk: string)
       console.error('cctp: failed to record burn failure', recoveryError)
     }
   }
+}
+
+/**
+ * Sends the burn for a job whose approve confirmed but whose burn never went out.
+ * User-initiated only, like the first attempt: burnTxHash is persisted before any
+ * broadcast, so its absence proves no burn was ever broadcast and this cannot double-burn.
+ */
+export async function resumeCctpBurn(
+  jobId: string,
+  env: CctpEnv,
+  stellarPk: string
+): Promise<void> {
+  await withCctpAccountLock(`${env.networkId}:${stellarPk}`, async () => {
+    const job = (await listCctpJobs(env.networkId, stellarPk)).find((j) => j.id === jobId)
+    if (!job || job.status !== 'approved' || job.burnTxHash) {
+      throw new Error('This bridge is not waiting to continue')
+    }
+    try {
+      if (job.direction === 'stellar-to-evm') {
+        await submitStellarBurn(job, env, stellarPk)
+        return
+      }
+      // The original burn slot may have been taken by another tx since the approve.
+      const from = evmAddressFromPrivateKey(env.evmPrivateKey)
+      const nonce = Number(
+        BigInt(await evmRpcCall(env.evmRpcUrl, 'eth_getTransactionCount', [from, 'pending']))
+      )
+      await submitEvmBurn(job, env, stellarPk, nonce)
+    } catch (e) {
+      try {
+        const current = (await listCctpJobs(env.networkId, stellarPk)).find((j) => j.id === jobId)
+        // A failure after the hash was persisted is the processor's to reconcile.
+        if (current && !current.burnTxHash) {
+          await patchCctpJob(env.networkId, stellarPk, jobId, {
+            lastError: e instanceof Error ? e.message : String(e),
+          })
+        }
+      } catch {
+        // recording the reason is best-effort; the caller still gets the original error
+      }
+      throw e
+    }
+  })
 }

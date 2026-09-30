@@ -35,9 +35,24 @@ export async function startCctp(
   return sendMessage({ type: SERVICE_TYPES.CCTP_START, publicKey, direction, amount, speed })
 }
 
+export async function resumeCctp(
+  publicKey: string,
+  jobId: string
+): Promise<{ ok?: boolean; error?: string }> {
+  return sendMessage({ type: SERVICE_TYPES.CCTP_RESUME, publicKey, jobId })
+}
+
+export async function cancelCctp(
+  publicKey: string,
+  jobId: string
+): Promise<{ ok?: boolean; error?: string }> {
+  return sendMessage({ type: SERVICE_TYPES.CCTP_CANCEL, publicKey, jobId })
+}
+
 const NON_TERMINAL: CctpJobInfo['status'][] = [
   'created',
   'approving',
+  'approved',
   'burn_submitted',
   'burned',
   'attested',

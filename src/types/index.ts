@@ -52,6 +52,8 @@ export interface TrustlineParams {
 export type CctpJobStatus =
   | 'created'
   | 'approving'
+  // Approve confirmed but no burn was sent; waits for the user to continue or cancel.
+  | 'approved'
   | 'burn_submitted'
   | 'burned'
   | 'attested'

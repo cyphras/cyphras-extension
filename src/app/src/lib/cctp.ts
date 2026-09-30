@@ -25,6 +25,12 @@ export function statusMeta(status: CctpJobInfo['status']): {
       return { label: 'Ready to mint', icon: 'spin' }
     case 'mint_submitted':
       return { label: 'Minting', icon: 'spin' }
+    case 'approved':
+      return {
+        label: 'Paused',
+        icon: 'clock',
+        note: 'Approved, but the burn was not sent. Your USDC is still in your wallet.',
+      }
     case 'blocked_trustline':
       return {
         label: 'Paused',
@@ -66,6 +72,7 @@ export function bridgeSteps(job: CctpJobInfo): { label: string; state: BridgeSte
       case 'created':
       case 'approving':
         return job.direction === 'evm-to-stellar' ? 0 : burnIdx
+      case 'approved':
       case 'burn_submitted':
         return burnIdx
       case 'burned':
@@ -91,7 +98,12 @@ export function bridgeSteps(job: CctpJobInfo): { label: string; state: BridgeSte
     let state: BridgeStepState = i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'todo'
     if (i === activeIdx) {
       if (job.status === 'failed') state = 'error'
-      else if (job.status === 'blocked_trustline' || job.status === 'blocked_gas') state = 'paused'
+      else if (
+        job.status === 'approved' ||
+        job.status === 'blocked_trustline' ||
+        job.status === 'blocked_gas'
+      )
+        state = 'paused'
       else if (job.status === 'burned') state = 'wait'
     }
     return { label, state }

@@ -7,6 +7,8 @@ export type CctpDirection = 'stellar-to-evm' | 'evm-to-stellar'
 export type CctpJobStatus =
   | 'created'
   | 'approving'
+  // Approve confirmed but no burn was sent; waits for the user to continue or cancel.
+  | 'approved'
   | 'burn_submitted'
   | 'burned'
   | 'attested'
@@ -30,13 +32,14 @@ export interface CctpJob {
   // EVM-source jobs only: recorded before the approve is signed, so the
   // processor can tell a dropped approve from a pending one by nonce.
   preBurnNonce?: number
-  preBurnBlock?: number
 
   approveTxHash?: string
   approveBroadcastAt?: number
   burnNonce?: number
   burnTxHash?: string
   burnBroadcastAt?: number
+  // First pass that saw the burn's nonce used with no receipt or Iris record.
+  burnSupersededSince?: number
 
   eventNonce?: string
   message?: string

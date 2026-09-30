@@ -18,6 +18,8 @@ import {
   useCctpJobs,
   quoteCctp,
   startCctp,
+  resumeCctp,
+  cancelCctp,
   type CctpDirection,
   type CctpSpeed,
 } from '@/hooks/useCctpJobs'
@@ -59,6 +61,7 @@ type Step = 'form' | 'confirm' | 'progress'
 const NON_TERMINAL_STATUSES: CctpJobInfo['status'][] = [
   'created',
   'approving',
+  'approved',
   'burn_submitted',
   'burned',
   'attested',
@@ -140,6 +143,19 @@ export default function Bridge() {
     const evmHas = parseFloat(evmUsdc?.balance ?? '0') > 0
     if (!stellarHas && evmHas) setDirection('evm-to-stellar')
   }, [balances.length, stellarUsdc, evmUsdc, location.state])
+
+  // A bridge still in flight in either direction takes precedence, so opening the
+  // page always lands on the one that may need attention.
+  const jobPicked = useRef(false)
+  useEffect(() => {
+    if (jobPicked.current || (location.state as { direction?: CctpDirection } | null)?.direction)
+      return
+    const pending = jobs.find((j) => NON_TERMINAL_STATUSES.includes(j.status))
+    if (!pending) return
+    jobPicked.current = true
+    autoPicked.current = true
+    setDirection(pending.direction)
+  }, [jobs, location.state])
 
   const existingJob = jobs.find(
     (j) => j.direction === direction && NON_TERMINAL_STATUSES.includes(j.status)
@@ -643,6 +659,14 @@ export default function Bridge() {
                 : (stellarChain?.id ?? '')
             }
             onDone={startOver}
+            onResume={async () => {
+              if (!status.publicKey) return 'Wallet is locked'
+              return (await resumeCctp(status.publicKey, activeJob.id)).error ?? null
+            }}
+            onCancel={async () => {
+              if (!status.publicKey) return 'Wallet is locked'
+              return (await cancelCctp(status.publicKey, activeJob.id)).error ?? null
+            }}
           />
         )}
       </div>

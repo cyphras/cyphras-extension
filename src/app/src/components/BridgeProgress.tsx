@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { ExternalLink, CheckCircle2, AlertCircle, Loader2, Clock, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { chainById, explorerUrl, type ChainEntry } from '@constants/chains'
@@ -35,6 +36,8 @@ export function BridgeProgress({
   chains,
   onDone,
   doneLabel,
+  onResume,
+  onCancel,
 }: {
   job: CctpJobInfo
   fromChainId: string
@@ -44,7 +47,18 @@ export function BridgeProgress({
   chains?: ChainEntry[]
   onDone?: () => void
   doneLabel?: string
+  onResume?: () => Promise<string | null>
+  onCancel?: () => Promise<string | null>
 }) {
+  const [busy, setBusy] = useState<'resume' | 'cancel' | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const act = async (kind: 'resume' | 'cancel', run: () => Promise<string | null>) => {
+    setBusy(kind)
+    setActionError(null)
+    const error = await run()
+    setBusy(null)
+    if (error) setActionError(error)
+  }
   const meta = statusMeta(job.status)
   const lookup = (id: string) => chains?.find((c) => c.id === id) ?? chainById(id)
   const fromName = lookup(fromChainId)?.name ?? fromChainId
@@ -72,7 +86,35 @@ export function BridgeProgress({
 
       <BridgeSteps job={job} />
 
-      {isCctpInFlight(job.status) && (
+      {job.status === 'approved' && onResume && onCancel && (
+        <div className="flex flex-col gap-2">
+          {job.lastError && !actionError && (
+            <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+              Last attempt: {job.lastError}
+            </p>
+          )}
+          {actionError && <p className="px-1 text-xs text-destructive">{actionError}</p>}
+          <div className="flex gap-3">
+            <Button
+              variant="outline"
+              className="flex-1"
+              disabled={busy !== null}
+              onClick={() => void act('cancel', onCancel)}
+            >
+              {busy === 'cancel' ? 'Cancelling...' : 'Cancel'}
+            </Button>
+            <Button
+              className="flex-1"
+              disabled={busy !== null}
+              onClick={() => void act('resume', onResume)}
+            >
+              {busy === 'resume' ? 'Sending burn...' : 'Continue bridge'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {isCctpInFlight(job.status) && job.status !== 'approved' && (
         <p className="px-1 text-center text-[11px] leading-relaxed text-muted-foreground">
           Safe to close this window. Cyphras keeps the bridge moving in the background, and picks it
           up again after you unlock if the wallet locks.

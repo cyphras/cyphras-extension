@@ -58,6 +58,8 @@ import { evmAddressFromPrivateKey, signEip1559 } from '../signers/evm'
 const STELLAR_INDEXER_MARGIN_MS = 150_000
 // Long enough for an EVM tx to sit unmined through a base-fee spike.
 const EVM_MINT_REARM_MS = 10 * 60 * 1000
+// How long "nonce used, no receipt, unknown to Iris" must persist before a burn is called dead.
+const BURN_SUPERSEDED_GRACE_MS = 10 * 60 * 1000
 // Under the ~24h attestation expiry; past that a reattest is needed anyway.
 const MINT_WALLCLOCK_CAP_MS = 20 * 60 * 60 * 1000
 const MAX_MINT_ATTEMPTS = 5
@@ -162,6 +164,8 @@ async function processOneJob(
     case 'created':
     case 'approving':
       return processCreatedOrApproving(job, networkId, stellarPk, readEnv)
+    case 'approved':
+      return // the processor never burns; the user continues or cancels it
     case 'burn_submitted':
       return processBurnSubmitted(job, networkId, stellarPk, readEnv)
     case 'burned':
@@ -321,14 +325,28 @@ async function processCreatedOrApproving(
     return
   }
   if (outcome === 'confirmed') {
-    // Approved but not burned: stays at 'approving' so a foreground Retry can
-    // burn with the live allowance, since the processor never burns.
+    await patchCctpJob(networkId, stellarPk, job.id, { status: 'approved', lastError: undefined })
     return
   }
 
   // Pending. EVM: nonce past preBurnNonce with no receipt for this hash means
   // another tx took the slot. Stellar: same expiry rule as burn_submitted.
   if (isStellarSource) {
+    // Soroban RPC keeps a short history; Horizon still knows an approve it has aged out.
+    const horizon = await checkStellarTxViaHorizon(readEnv, job.approveTxHash).catch(
+      () => 'not_found' as const
+    )
+    if (horizon === 'confirmed') {
+      await patchCctpJob(networkId, stellarPk, job.id, { status: 'approved', lastError: undefined })
+      return
+    }
+    if (horizon === 'reverted') {
+      await patchCctpJob(networkId, stellarPk, job.id, {
+        status: 'failed',
+        lastError: 'approve failed on-chain',
+      })
+      return
+    }
     if (stellarTxDefinitivelyExpired(job.approveBroadcastAt, readEnv.txTimeout)) {
       await patchCctpJob(networkId, stellarPk, job.id, {
         status: 'failed',
@@ -341,10 +359,22 @@ async function processCreatedOrApproving(
     job.preBurnNonce != null &&
     (await evmNonceHasPassed(readEnv, job.sourceAddress, job.preBurnNonce))
   ) {
-    await patchCctpJob(networkId, stellarPk, job.id, {
-      status: 'failed',
-      lastError: 'approve tx superseded by a later transaction',
-    })
+    // The approve may have been mined between the receipt read and the nonce read.
+    const recheck = await checkEvmTxByHash(readEnv, job.approveTxHash)
+    await patchCctpJob(
+      networkId,
+      stellarPk,
+      job.id,
+      recheck === 'confirmed'
+        ? { status: 'approved', lastError: undefined }
+        : {
+            status: 'failed',
+            lastError:
+              recheck === 'reverted'
+                ? 'approve failed on-chain'
+                : 'approve tx superseded by a later transaction',
+          }
+    )
     return
   }
   // Nonce unchanged: never broadcast, or still pending (EVM txs do not expire).
@@ -531,6 +561,14 @@ async function processBurnSubmitted(
       await patchCctpJob(networkId, stellarPk, job.id, { status: 'burn_submitted' })
       return
     }
+    // A load-balanced RPC can report the nonce as used before any node it routes to
+    // serves the receipt. Only a verdict that holds for a while is trusted, since a
+    // false one would strand a landed burn.
+    if (job.burnSupersededSince == null) {
+      await patchCctpJob(networkId, stellarPk, job.id, { burnSupersededSince: Date.now() })
+      return
+    }
+    if (Date.now() - job.burnSupersededSince < BURN_SUPERSEDED_GRACE_MS) return
     await patchCctpJob(networkId, stellarPk, job.id, {
       status: 'failed',
       lastError: 'burn tx superseded by a later transaction; funds never left',

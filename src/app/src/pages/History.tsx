@@ -501,7 +501,7 @@ export default function History() {
           icon={iconFor('USDC')}
           price={prices[priceKey({ code: 'USDC' })] ?? null}
           onClose={() => setSelected(null)}
-          onOpenBridge={() => navigate('/bridge')}
+          onOpenBridge={() => navigate('/bridge', { state: { direction: selected.job.direction } })}
         />
       )}
 

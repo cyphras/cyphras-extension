@@ -69,6 +69,8 @@ export const SERVICE_TYPES = {
   CCTP_START: 'CCTP_START',
   CCTP_LIST_JOBS: 'CCTP_LIST_JOBS',
   CCTP_PROCESS: 'CCTP_PROCESS',
+  CCTP_RESUME: 'CCTP_RESUME',
+  CCTP_CANCEL: 'CCTP_CANCEL',
   // EVM account activity (native + ERC-20 transfers) via the Cyphras indexer proxy
   FETCH_EVM_ACTIVITY: 'FETCH_EVM_ACTIVITY',
 } as const

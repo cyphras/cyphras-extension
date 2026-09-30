@@ -206,7 +206,7 @@ export function bridgeView(
       direction: 'in',
       amount: { value: bridgeReceived(job) ?? job.amount, code: 'USDC' },
       status,
-      statusLabel: inFlight ? 'Arriving' : undefined,
+      statusLabel: job.status === 'approved' ? 'Paused' : inFlight ? 'Arriving' : undefined,
       code: 'USDC',
       verified: true,
       counterparty: job.sourceAddress,

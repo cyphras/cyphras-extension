@@ -27,10 +27,17 @@ import {
 import {
   createCctpJob,
   listCctpJobs,
+  patchCctpJob,
   withCctpAccountLock,
   CctpDuplicateJobError,
 } from './cctp/store'
-import { runCctpBurn, decimalToBaseUnits, baseUnitsToDecimal, type CctpEnv } from './cctp/burn'
+import {
+  runCctpBurn,
+  resumeCctpBurn,
+  decimalToBaseUnits,
+  baseUnitsToDecimal,
+  type CctpEnv,
+} from './cctp/burn'
 import { buildCctpFeeBreakdown } from './cctp/quote'
 import { decodeCctpMessage } from './cctp/encoding'
 import {
@@ -5470,6 +5477,56 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           }
         }),
       })
+      break
+    }
+
+    // Sends the burn for a bridge whose approve confirmed but whose burn never went out.
+    case SERVICE_TYPES.CCTP_RESUME: {
+      const { publicKey, jobId } = message as unknown as { publicKey?: string; jobId?: string }
+      if (!publicKey || !jobId) {
+        sendResponse({ error: 'publicKey and jobId are required' })
+        return
+      }
+      try {
+        const net = await getActiveNetwork()
+        const env = await buildCctpSigningEnv(net.id, publicKey)
+        if (!env) {
+          sendResponse({ error: 'Unlock the wallet to continue this bridge' })
+          return
+        }
+        await resumeCctpBurn(jobId, env, publicKey)
+        sendResponse({ ok: true })
+        void kickCctpProcessor()
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Could not continue the bridge' })
+      }
+      break
+    }
+
+    // Releases a bridge stuck after its approve. Nothing was burned, so the USDC never left the
+    // wallet; the leftover allowance is to Circle's TokenMessenger, which only pulls on a burn.
+    case SERVICE_TYPES.CCTP_CANCEL: {
+      const { publicKey, jobId } = message as unknown as { publicKey?: string; jobId?: string }
+      if (!publicKey || !jobId) {
+        sendResponse({ error: 'publicKey and jobId are required' })
+        return
+      }
+      const net = await getActiveNetwork()
+      try {
+        await withCctpAccountLock(`${net.id}:${publicKey}`, async () => {
+          const job = (await listCctpJobs(net.id, publicKey)).find((j) => j.id === jobId)
+          if (!job || job.status !== 'approved' || job.burnTxHash) {
+            throw new Error('Only a bridge waiting to continue can be cancelled')
+          }
+          await patchCctpJob(net.id, publicKey, jobId, {
+            status: 'failed',
+            lastError: 'Cancelled before the burn. Your USDC stayed in your wallet.',
+          })
+        })
+        sendResponse({ ok: true })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Could not cancel the bridge' })
+      }
       break
     }
 

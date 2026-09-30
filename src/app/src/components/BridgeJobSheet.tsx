@@ -95,7 +95,14 @@ export function BridgeJobSheet({
       <AssetIcon code="USDC" icon={icon} chainIcons={[chainIcon]} />
       <div className="min-w-0 flex-1">
         <p className="text-xs text-muted-foreground">
-          {sign === '-' ? 'Sent from' : inFlight ? 'Arriving on' : 'Received on'} {chainName}
+          {sign === '-'
+            ? 'Sent from'
+            : job.status === 'approved'
+              ? 'Not sent yet to'
+              : inFlight
+                ? 'Arriving on'
+                : 'Received on'}{' '}
+          {chainName}
         </p>
         <p
           className={`text-lg font-bold tabular-nums ${sign === '+' && !inFlight ? 'text-green-500' : 'text-foreground'}`}
@@ -148,6 +155,9 @@ export function BridgeJobSheet({
               tone={job.status === 'failed' ? 'bad' : inFlight ? 'warn' : 'ok'}
             />
           </div>
+          {meta.note && (
+            <p className="-mt-2 px-4 pb-4 text-center text-xs text-muted-foreground">{meta.note}</p>
+          )}
         </div>
 
         {job.status === 'failed' && job.lastError && (
@@ -204,7 +214,7 @@ export function BridgeJobSheet({
 
         {inFlight && (
           <Button variant="outline" className="w-full" onClick={onOpenBridge}>
-            Track on Bridge page
+            {job.status === 'approved' ? 'Continue on Bridge page' : 'Track on Bridge page'}
           </Button>
         )}
       </div>
