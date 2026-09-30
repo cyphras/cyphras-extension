@@ -14,7 +14,7 @@ window.addEventListener('message', (event: MessageEvent) => {
   try {
     chrome.runtime.sendMessage(
       { type: 'EXTERNAL_REQUEST', id, requestType, origin, payload },
-      (response: any) => {
+      (response?: { result?: unknown; error?: unknown }) => {
         if (chrome.runtime.lastError) {
           // Service worker restarted - send error so SDK doesn't hang
           window.postMessage(
@@ -57,22 +57,25 @@ window.addEventListener('message', (event: MessageEvent) => {
   }
 })
 
-chrome.runtime.onMessage.addListener((message: any) => {
+chrome.runtime.onMessage.addListener((message: { type?: string }) => {
   if (message.type !== 'WALLET_CHANGED') return
 
   try {
-    chrome.runtime.sendMessage({ type: 'GET_WALLET_STATE_FOR_BROADCAST' }, (response: any) => {
-      if (chrome.runtime.lastError || !response) return
-      window.postMessage(
-        {
-          type: CYPHRAS_WALLET_CHANGED,
-          address: response.address,
-          network: response.network,
-          networkPassphrase: response.networkPassphrase,
-        },
-        '*'
-      )
-    })
+    chrome.runtime.sendMessage(
+      { type: 'GET_WALLET_STATE_FOR_BROADCAST' },
+      (response?: { address: string; network: string; networkPassphrase: string }) => {
+        if (chrome.runtime.lastError || !response) return
+        window.postMessage(
+          {
+            type: CYPHRAS_WALLET_CHANGED,
+            address: response.address,
+            network: response.network,
+            networkPassphrase: response.networkPassphrase,
+          },
+          '*'
+        )
+      }
+    )
   } catch {
     // Extension context invalidated - silently ignore wallet change broadcast
   }

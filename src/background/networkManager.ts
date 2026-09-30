@@ -63,6 +63,8 @@ function migrateNetwork(n: Partial<NetworkConfig> & { id: string }): NetworkConf
     privatePoolFactory: defaults?.privatePoolFactory ?? n.privatePoolFactory,
     relayerUrl: defaults?.relayerUrl ?? n.relayerUrl,
     privateAssets: defaults?.privateAssets ?? n.privateAssets,
+    // Only the shipped defaults can enable private mode; stored values never do
+    shielded: defaults ? defaults.shielded : undefined,
   }
 }
 
@@ -99,9 +101,11 @@ export async function addNetwork(network: NetworkConfig): Promise<NetworkConfig[
     throw new Error('A network with this ID or name already exists')
   }
 
+  // Strip shielded so a user-added network can never carry a private-mode block
+  const { shielded: _addShielded, ...addClean } = network
   const updated = [
     ...networks,
-    { ...network, txTimeout: network.txTimeout ?? 90, isDefault: false },
+    { ...addClean, txTimeout: network.txTimeout ?? 90, isDefault: false },
   ]
   await chrome.storage.local.set({ [NETWORK_STORAGE_KEY]: updated })
   return updated
@@ -115,9 +119,11 @@ export async function editNetwork(network: NetworkConfig): Promise<NetworkConfig
   const existing = networks.find((n) => n.id === network.id)
   if (!existing) throw new Error('Network not found')
 
+  // Strip shielded so an edit cannot inject a private-mode block; defaults re-apply it on read
+  const { shielded: _editShielded, ...editClean } = network
   const updated = networks.map((n) =>
     n.id === network.id
-      ? { ...network, txTimeout: network.txTimeout ?? 90, isDefault: n.isDefault }
+      ? { ...editClean, txTimeout: network.txTimeout ?? 90, isDefault: n.isDefault }
       : n
   )
   await chrome.storage.local.set({ [NETWORK_STORAGE_KEY]: updated })
