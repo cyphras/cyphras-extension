@@ -51,6 +51,7 @@ export default defineConfig({
       '@constants': resolve(SRC_ROOT, 'constants'),
       '@ext-types': resolve(SRC_ROOT, 'types'),
       '@private': resolve(SRC_ROOT, 'private'),
+      '@shielded': resolve(SRC_ROOT, 'shielded'),
     },
   },
   build: {

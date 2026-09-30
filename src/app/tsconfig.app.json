@@ -20,10 +20,12 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
+      "@bg/*": ["../background/*"],
       "@constants/*": ["../constants/*"],
       "@ext-types/*": ["../types/*"],
-      "@private/*": ["../private/*"]
+      "@private/*": ["../private/*"],
+      "@shielded/*": ["../shielded/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "../shielded/vendor.d.ts"]
 }

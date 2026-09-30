@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./.tmp/tsconfig.ext.tsbuildinfo"
+  },
+  "include": [
+    "../background",
+    "../content",
+    "../constants",
+    "../types",
+    "../private",
+    "../shielded"
+  ]
+}
