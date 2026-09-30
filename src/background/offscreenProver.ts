@@ -4,7 +4,7 @@ import { serializeProofInputs } from '../private/proofMessage.js'
 const OFFSCREEN_URL = 'offscreen.html'
 let creating: Promise<void> | null = null
 
-async function ensureOffscreen(): Promise<void> {
+export async function ensureOffscreen(): Promise<void> {
   const has = (await chrome.offscreen.hasDocument?.()) ?? false
   if (has) {
     return

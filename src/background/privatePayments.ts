@@ -128,7 +128,9 @@ async function commitRetryDecision(
       if (status === 'failed') {
         return 'resubmit'
       }
-    } catch {}
+    } catch {
+      // status lookup failed; fall through to the re-arm window below
+    }
   }
   return commitReArmElapsed(note, env) ? 'resubmit' : 'wait'
 }

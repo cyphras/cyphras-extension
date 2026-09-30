@@ -59,11 +59,14 @@ interface LeavesPage {
 export class RelayerError extends Error {}
 
 export class RelayerClient {
+  private readonly baseUrl: string
   // network tags every request so a host serving testnet and mainnet routes to the right backend.
-  constructor(
-    private readonly baseUrl: string,
-    private readonly network: string
-  ) {}
+  private readonly network: string
+
+  constructor(baseUrl: string, network: string) {
+    this.baseUrl = baseUrl
+    this.network = network
+  }
 
   private url(path: string): string {
     return `${this.baseUrl.replace(/\/$/, '')}${path}`
