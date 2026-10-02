@@ -168,39 +168,32 @@ export function TradeLegs({
   )
 }
 
-// Its own row between the two side cards, clear of their content: the flip
-// control plus the going rate, which can be read either way round.
+// Its own row between the two side cards, clear of their content. The whole
+// pill flips the pair; the rate it shows follows the new direction.
 export function RatePill({
   text,
   onFlip,
   flipDisabled = false,
-  onInvert,
 }: {
   text?: string
   onFlip: () => void
   flipDisabled?: boolean
-  onInvert?: () => void
 }) {
   return (
-    <div className="flex max-w-full items-center gap-1.5 self-center rounded-full bg-card p-0.5 shadow-sm">
-      <button
-        onClick={onFlip}
-        disabled={flipDisabled}
-        aria-label="Swap direction"
-        className="shrink-0 cursor-pointer rounded-full bg-muted p-1.5 text-muted-foreground transition-all hover:rotate-180 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:rotate-0"
-      >
+    <button
+      onClick={onFlip}
+      disabled={flipDisabled}
+      aria-label="Swap direction"
+      className="group flex max-w-full cursor-pointer items-center gap-1.5 self-center rounded-full bg-card p-0.5 shadow-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <span className="shrink-0 rounded-full bg-muted p-1.5 text-muted-foreground transition-all group-hover:rotate-180 group-hover:text-foreground group-disabled:rotate-0">
         <ArrowUpDown size={13} />
-      </button>
+      </span>
       {text && (
-        <button
-          onClick={onInvert}
-          disabled={!onInvert}
-          aria-label={onInvert ? 'Invert rate' : undefined}
-          className="min-w-0 truncate pr-2.5 text-[11px] font-medium tabular-nums text-muted-foreground transition-colors enabled:cursor-pointer enabled:hover:text-foreground"
-        >
+        <span className="min-w-0 truncate pr-2.5 text-[11px] font-medium tabular-nums text-muted-foreground transition-colors group-hover:text-foreground">
           {text}
-        </button>
+        </span>
       )}
-    </div>
+    </button>
   )
 }

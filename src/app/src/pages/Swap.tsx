@@ -425,7 +425,6 @@ export default function Swap() {
   const [xdrOpen, setXdrOpen] = useState(false)
   const [showDetails, setShowDetails] = useState(false)
   const [reviewMore, setReviewMore] = useState(false)
-  const [invertRate, setInvertRate] = useState(false)
   // Which loss warning is up: before opening the review, or at signing.
   const [lossSheet, setLossSheet] = useState<'review' | 'sign' | null>(null)
   // Frozen when the review opens: the sheet, the loss checks and the signed
@@ -780,9 +779,7 @@ export default function Swap() {
   const rateValue = rate ?? (spotRate ? parseFloat(spotRate) : null)
   const rateText =
     toObj && rateValue !== null && rateValue > 0
-      ? invertRate
-        ? `1 ${toObj.code} = ${trimAmount((1 / rateValue).toPrecision(6))} ${fromObj.code}`
-        : `1 ${fromObj.code} = ${trimAmount(rateValue.toPrecision(6))} ${toObj.code}`
+      ? `1 ${fromObj.code} = ${trimAmount(rateValue.toPrecision(6))} ${toObj.code}`
       : undefined
 
   // What leaves against what arrives, both in USD at the current prices.
@@ -933,12 +930,7 @@ export default function Swap() {
                 error={amountError && fromKey !== toKey ? amountError : null}
               />
 
-              <RatePill
-                text={rateText}
-                onFlip={handleSwapAssets}
-                flipDisabled={!toKey}
-                onInvert={() => setInvertRate((v) => !v)}
-              />
+              <RatePill text={rateText} onFlip={handleSwapAssets} flipDisabled={!toKey} />
 
               <SideCard
                 label="To"
