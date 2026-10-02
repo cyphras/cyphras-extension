@@ -126,6 +126,13 @@ export default function Receive() {
         ? `Receive on ${btcChain?.name ?? 'Bitcoin'}`
         : `Receive on ${evmTitle}`
 
+  const qrChainIcon =
+    qrFor === 'stellar'
+      ? chainIcons.get(stellarChainId)
+      : qrFor === 'bitcoin'
+        ? btcChain && chainIcons.get(btcChain.id)
+        : evmChains[0] && chainIcons.get(evmChains[0].id)
+
   useEffect(() => {
     setQrDataUrl(null)
     if (!qrAddress) return
@@ -133,7 +140,9 @@ export default function Receive() {
       width: 220,
       margin: 1,
       color: { dark: '#000000', light: '#ffffff' },
-      errorCorrectionLevel: 'M',
+      // Q recovers about a quarter of the code, far more than the chain logo
+      // in the middle covers, so the QR still scans with it.
+      errorCorrectionLevel: 'Q',
     })
       .then(setQrDataUrl)
       .catch(() => {})
@@ -214,7 +223,7 @@ export default function Receive() {
       >
         {qrAddress && (
           <div className="flex flex-col items-center gap-4">
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
+            <div className="relative rounded-2xl bg-white p-3 shadow-sm">
               {qrDataUrl ? (
                 <img
                   src={qrDataUrl}
@@ -225,6 +234,15 @@ export default function Receive() {
                 />
               ) : (
                 <div className="h-[188px] w-[188px] animate-pulse rounded-lg bg-neutral-200" />
+              )}
+              {qrDataUrl && qrChainIcon && (
+                <span className="pop-enter absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white p-1 shadow-sm">
+                  <img
+                    src={qrChainIcon}
+                    alt=""
+                    className="h-full w-full rounded-full object-cover"
+                  />
+                </span>
               )}
             </div>
 
@@ -293,12 +311,21 @@ export default function Receive() {
               </div>
             )}
 
-            <p className="rounded-xl bg-amber-500/10 px-3 py-2.5 text-center text-[11px] leading-relaxed text-foreground">
-              {qrFor === 'stellar'
-                ? 'Only send Stellar assets to this address. Assets from other networks may be lost for good.'
-                : qrFor === 'bitcoin'
-                  ? `Only send BTC on ${btcChain?.name ?? 'Bitcoin'} to this address. Coins from other networks may be lost for good.`
-                  : `Only send assets on ${evmNames.join(', ') || 'EVM networks'} to this address. Assets from other networks may be lost for good.`}
+            <p className="flex items-start gap-2.5 rounded-xl bg-amber-500/10 px-3 py-2.5 text-[11px] leading-relaxed text-foreground">
+              {qrChainIcon && (
+                <img
+                  src={qrChainIcon}
+                  alt=""
+                  className="mt-0.5 h-5 w-5 shrink-0 rounded-full object-cover"
+                />
+              )}
+              <span>
+                {qrFor === 'stellar'
+                  ? 'Only send Stellar assets to this address. Assets from other networks may be lost for good.'
+                  : qrFor === 'bitcoin'
+                    ? `Only send BTC on ${btcChain?.name ?? 'Bitcoin'} to this address. Coins from other networks may be lost for good.`
+                    : `Only send assets on ${evmNames.join(', ') || 'EVM networks'} to this address. Assets from other networks may be lost for good.`}
+              </span>
             </p>
           </div>
         )}
