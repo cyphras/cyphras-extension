@@ -388,7 +388,11 @@ function OnboardingCreate() {
               onClick={handleCopy}
               className="cursor-pointer flex items-center justify-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
-              {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
+              {copied ? (
+                <Check size={14} className="pop-enter text-green-500" />
+              ) : (
+                <Copy size={14} />
+              )}
               {copied ? 'Copied!' : 'Copy to clipboard'}
             </button>
           )}

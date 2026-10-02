@@ -97,7 +97,11 @@ function AssetInfoSheet({
                   }}
                   className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors shrink-0"
                 >
-                  {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+                  {copied ? (
+                    <Check size={12} className="pop-enter text-green-500" />
+                  ) : (
+                    <Copy size={12} />
+                  )}
                 </button>
               </div>
             </div>

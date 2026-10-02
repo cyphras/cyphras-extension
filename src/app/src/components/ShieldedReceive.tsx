@@ -138,7 +138,7 @@ export default function ShieldedReceive({ open, onClose }: ShieldedReceiveProps)
               <Button className="w-full" onClick={handleCopy}>
                 {copied ? (
                   <>
-                    <Check size={14} /> Copied!
+                    <Check size={14} className="pop-enter" /> Copied!
                   </>
                 ) : (
                   <>

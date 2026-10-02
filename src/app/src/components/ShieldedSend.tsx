@@ -1,15 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import {
-  X,
-  ArrowDownToLine,
-  ArrowUpFromLine,
-  Send as SendIcon,
-  CheckCircle2,
-  ChevronDown,
-} from 'lucide-react'
+import { X, ArrowDownToLine, ArrowUpFromLine, Send as SendIcon, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { AddTrustlineSheet, type PendingAsset } from '@/components/AddTrustlineSheet'
 import { Cy1Avatar } from '@/components/Cy1Avatar'
+import { TokenStatusIcon } from '@/components/TxDetailParts'
+import { useStellarChain } from '@/hooks/useStellarChain'
 import { SERVICE_TYPES } from '@constants/services'
 import type { ServiceResponse } from '@ext-types/index'
 
@@ -249,6 +244,7 @@ export default function ShieldedSend({
     }
   }, [open, onClose, trustlineSheetOpen])
 
+  const stellarChain = useStellarChain()
   const chipCode = native ? 'XLM' : (assetCode ?? assetLabel)
 
   // Shield spends the public balance; send/unshield spend the private balance.
@@ -490,9 +486,12 @@ export default function ShieldedSend({
             <div className="overflow-y-auto flex-1 px-5 pb-5 flex flex-col gap-4 [&>*]:shrink-0">
               {doneHash ? (
                 <div className="flex flex-col items-center gap-3 py-6 text-center">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-500/15">
-                    <CheckCircle2 size={24} className="text-green-500" />
-                  </div>
+                  <TokenStatusIcon
+                    state="success"
+                    code={chipCode}
+                    icon={assetIcon}
+                    chainIcon={stellarChain.icon}
+                  />
                   <p className="text-sm font-medium text-foreground">
                     {a === 'send'
                       ? 'Private send submitted'

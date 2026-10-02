@@ -5,8 +5,8 @@ import { usePreferences } from '@/context/PreferencesContext'
 import { Button } from '@/components/ui/button'
 import { AutoSkeleton } from '@/components/AutoSkeleton'
 import { StellarAvatar } from '@/components/StellarAvatar'
-import { CheckCircle2, X, Copy, Check, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react'
-import { NetworkValue } from '@/components/TxDetailParts'
+import { X, Copy, Check, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react'
+import { NetworkValue, TokenStatusIcon } from '@/components/TxDetailParts'
 import { useStellarChain } from '@/hooks/useStellarChain'
 
 export interface PendingAsset {
@@ -124,9 +124,12 @@ export function AddTrustlineSheet({
           <>
             <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
               <div className="flex flex-col items-center gap-3 text-center pt-1">
-                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-green-500/15">
-                  <CheckCircle2 size={28} className="text-green-500" />
-                </div>
+                <TokenStatusIcon
+                  state="success"
+                  code={asset?.code ?? ''}
+                  icon={asset?.icon}
+                  chainIcon={stellarChain.icon}
+                />
                 <div>
                   <p className="text-base font-bold text-foreground">Transaction Sent</p>
                   <p className="text-sm text-muted-foreground">{asset?.code} trustline added</p>
@@ -145,7 +148,7 @@ export function AddTrustlineSheet({
                       }}
                       className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors"
                     >
-                      {hashCopied ? <Check size={12} /> : <Copy size={12} />}
+                      {hashCopied ? <Check size={12} className="pop-enter" /> : <Copy size={12} />}
                     </button>
                   </div>
                   <p className="font-mono text-xs text-foreground break-all leading-relaxed">
@@ -237,7 +240,11 @@ export function AddTrustlineSheet({
                           }}
                           className="cursor-pointer absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
                         >
-                          {xdrCopied ? <Check size={12} /> : <Copy size={12} />}
+                          {xdrCopied ? (
+                            <Check size={12} className="pop-enter" />
+                          ) : (
+                            <Copy size={12} />
+                          )}
                         </button>
                       </div>
                     )}

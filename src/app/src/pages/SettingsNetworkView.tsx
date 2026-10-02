@@ -33,7 +33,7 @@ function ConfigRow({ label, value }: { label: string; value: string }) {
         className="cursor-pointer mt-0.5 flex-shrink-0 text-muted-foreground hover:text-foreground transition-colors"
         title="Copy"
       >
-        {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+        {copied ? <Check size={12} className="pop-enter text-green-500" /> : <Copy size={12} />}
       </button>
     </div>
   )

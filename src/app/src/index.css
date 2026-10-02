@@ -508,10 +508,50 @@ html.private-shifting .bg-background.border-b {
   animation: cyphras-fade 220ms var(--ease-out) both;
 }
 
+/* A settled status lands with a small overshoot; value moving between two
+   legs of a trade flows from one to the other. */
+@keyframes cyphras-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+@keyframes cyphras-flow {
+  0% {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+
+.pop-enter {
+  animation: cyphras-pop 420ms var(--ease-out) both;
+}
+
+.flow-down {
+  animation: cyphras-flow 900ms ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .page-enter,
   .row-enter,
-  .value-enter {
+  .value-enter,
+  .pop-enter,
+  .flow-down {
     animation: none;
   }
 }
