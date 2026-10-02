@@ -1,19 +1,41 @@
 import { WINDOW_MODES, STORAGE_KEYS, MESSAGE_TYPES } from '@constants/windowMode'
 import { SERVICE_TYPES, PASSWORD_RULES } from '@constants/services'
-import { LEGACY_NETWORK_TO_CHAIN } from '@constants/chains'
-import { getEvmChainsForEnv } from './chainRegistry'
+import {
+  BTC_MAINNET_CHAIN,
+  BTC_TESTNET_CHAIN,
+  LEGACY_NETWORK_TO_CHAIN,
+  bitcoinApiUrl,
+} from '@constants/chains'
 import { getCuratedEvmTokens } from './evmAssets'
-import type { ChainBalance, EvmActivity } from '@ext-types/index'
+import type { ChainBalance, ChainActivity } from '@ext-types/index'
 import { EVM_PROXY_BASE } from '@constants/backend'
 import { signTransactionXdr, signMessageBytes } from './signers/stellar'
+import { deriveAccountAddresses } from './signers/addresses'
+import { bitcoinAddressFromPublicKey, deriveBitcoinKeyFromMnemonic } from './signers/bitcoin'
 import {
-  deriveEvmAddress,
+  broadcastBtcTx,
+  btcActivityOf,
+  btcTxKnown,
+  buildBtcPayment,
+  fetchBtcFeeRates,
+  fetchBtcUtxos,
+  forgetSpent,
+  getSpentOutpoints,
+  outpointsOf,
+  recordSpent,
+  spendableSats,
+  verifyBtcInputs,
+  type BtcPayment,
+  type BtcUtxo,
+  type EsploraTx,
+} from './bitcoin'
+import {
   deriveEvmPrivateKey,
   evmAddressFromPrivateKey,
   signEip1559,
   erc20TransferData,
 } from './signers/evm'
-import { getRegistryChains } from './chainRegistry'
+import { getBitcoinChainsForEnv, getEvmChainsForEnv, getRegistryChains } from './chainRegistry'
 import { EXTERNAL_SERVICE_TYPES, APPROVAL_PAYLOAD_STORAGE_KEY } from '@constants/external'
 import { ACTIVE_NETWORK_KEY, type NetworkConfig } from '@constants/networks'
 import {
@@ -1133,20 +1155,50 @@ function decimalToWei(value: string, decimals: number): bigint {
   return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, '0') || '0')
 }
 
-// Fills addresses.evm for every HD account from the session mnemonics.
-// Runs after unlock and after account creation; imported-secret accounts
-// (index -1) have no mnemonic and stay Stellar-only.
-async function backfillEvmAddresses(): Promise<void> {
+// The account's address on an enabled Bitcoin chain of the active environment. Rejecting
+// other chain ids keeps a mainnet request from ever running while testnet is active.
+async function resolveBtcContext(publicKey: string, chainId: string) {
+  const network = await getActiveNetwork()
+  const chain = (await getBitcoinChainsForEnv(network.id)).find((c) => c.id === chainId)
+  // Only the two shipped chain ids; the network (and so key path and address format) comes
+  // from the id itself, never from a registry flag.
+  if (!chain || (chainId !== BTC_MAINNET_CHAIN && chainId !== BTC_TESTNET_CHAIN)) {
+    throw new Error('Bitcoin is not available on this network')
+  }
+  const testnet = chainId === BTC_TESTNET_CHAIN
+  const account = (await getAccountsStore()).accounts.find((a) => a.publicKey === publicKey)
+  const from = testnet ? account?.addresses?.bitcoinTestnet : account?.addresses?.bitcoin
+  if (!account || !from) throw new Error('No Bitcoin address for this account yet')
+  return { networkId: network.id, account, from, apiUrl: bitcoinApiUrl(chainId), testnet }
+}
+
+function btcQuoteOf(payment: BtcPayment, utxos: BtcUtxo[]) {
+  const { confirmed, pending } = spendableSats(utxos)
+  return {
+    feeSats: payment.feeSats.toString(),
+    sendSats: payment.sendSats.toString(),
+    vsize: payment.vsize,
+    spendableSats: confirmed.toString(),
+    pendingSats: pending.toString(),
+  }
+}
+
+// An account made before an address type existed lacks it, and deriving one needs the
+// mnemonic, which only the unlocked session holds; so this runs after unlock and after
+// account creation. Imported-secret accounts (index -1) have no mnemonic and stay
+// Stellar-only.
+async function backfillDerivedAddresses(): Promise<void> {
   try {
     const store = await getAccountsStore()
     const primary = await getSessionMnemonic()
     const extras = await getSessionExtraHDMnemonics()
     let changed = false
     for (const account of store.accounts) {
-      if (account.index < 0 || account.addresses?.evm) continue
+      const known = account.addresses
+      if (account.index < 0 || (known?.evm && known.bitcoin && known.bitcoinTestnet)) continue
       const mnemonic = account.walletId === 'primary' ? primary : extras[account.walletId]
       if (!mnemonic) continue
-      account.addresses = { ...account.addresses, evm: deriveEvmAddress(mnemonic, account.index) }
+      account.addresses = { ...known, ...deriveAccountAddresses(mnemonic, account.index) }
       changed = true
     }
     if (changed) await saveAccountsStore(store)
@@ -3118,7 +3170,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
             publicKey,
             label: 'Account 1',
             walletId: 'primary',
-            addresses: { stellar: publicKey, evm: deriveEvmAddress(mnemonic, 0) },
+            addresses: { stellar: publicKey, ...deriveAccountAddresses(mnemonic, 0) },
           },
         ],
         activeIndex: 0,
@@ -3148,7 +3200,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
             publicKey,
             label: 'Account 1',
             walletId: 'primary',
-            addresses: { stellar: publicKey, evm: deriveEvmAddress(message.mnemonic, 0) },
+            addresses: { stellar: publicKey, ...deriveAccountAddresses(message.mnemonic, 0) },
           },
         ],
         activeIndex: 0,
@@ -3281,7 +3333,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         sendResponse({ publicKey: activePublicKey, isUnlocked: true })
         // Fire-and-forget: EVM addresses backfill from the session mnemonics
         // without delaying the unlock response.
-        void backfillEvmAddresses()
+        void backfillDerivedAddresses()
         break
       }
 
@@ -3351,7 +3403,9 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         'cyphras_allowlist',
       ])
       const allLocal = await chrome.storage.local.get(null)
-      const assetKeys = Object.keys(allLocal).filter((k) => k.startsWith('cyphras_custom_assets_'))
+      const assetKeys = Object.keys(allLocal).filter(
+        (k) => k.startsWith('cyphras_custom_assets_') || k.startsWith('cyphras_balance_snapshot_')
+      )
       if (assetKeys.length > 0) await chrome.storage.local.remove(assetKeys)
       notifyTabsWalletChanged()
       sendResponse({ ok: true })
@@ -4173,40 +4227,32 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           toAssetCode,
           toAssetIssuer,
           amount,
-          slippage,
           fee,
           timeout,
+          destMin,
+          path,
         } = message.swap
+
+        // Sign exactly what the user reviewed. Re-quoting here would apply the
+        // slippage to a fresh price, so a market that moved meanwhile could fill
+        // far below the minimum shown; with the reviewed floor it fails instead.
+        if (
+          !destMin ||
+          !/^\d+(\.\d{1,7})?$/.test(destMin) ||
+          !(parseFloat(destMin) > 0) ||
+          !Array.isArray(path) ||
+          path.length > 5
+        ) {
+          sendResponse({ error: 'Review the swap again before signing' })
+          return
+        }
 
         const fromAsset =
           fromAssetCode === 'XLM' ? Asset.native() : new Asset(fromAssetCode, fromAssetIssuer)
         const toAsset =
           toAssetCode === 'XLM' ? Asset.native() : new Asset(toAssetCode, toAssetIssuer)
-
-        const pathsRes = await fetch(
-          `${message.horizonUrl}/paths/strict-send?source_asset_type=${fromAssetCode === 'XLM' ? 'native' : 'credit_alphanum12'}&source_asset_code=${fromAssetCode === 'XLM' ? '' : fromAssetCode}&source_asset_issuer=${fromAssetIssuer}&source_amount=${amount}&destination_assets=${toAssetCode === 'XLM' ? 'native' : `${toAssetCode}:${toAssetIssuer}`}`
-        )
-
-        if (!pathsRes.ok) throw new Error('No swap path found')
-
-        const pathsData = (await pathsRes.json()) as {
-          _embedded: {
-            records: Array<{
-              destination_amount: string
-              path: Array<{ asset_type: string; asset_code?: string; asset_issuer?: string }>
-            }>
-          }
-        }
-
-        const records = pathsData._embedded?.records ?? []
-        if (records.length === 0) throw new Error('No swap path found')
-
-        const bestPath = records[0]
-        const destinationAmount = bestPath.destination_amount
-        const slippageNum = parseFloat(slippage) / 100
-        const destMin = (parseFloat(destinationAmount) * (1 - slippageNum)).toFixed(7)
-        const pathAssets = bestPath.path.map((p) =>
-          p.asset_type === 'native' ? Asset.native() : new Asset(p.asset_code!, p.asset_issuer!)
+        const pathAssets = path.map((p) =>
+          p.assetIssuer ? new Asset(p.assetCode, p.assetIssuer) : Asset.native()
         )
 
         const res = await fetch(`${message.horizonUrl}/accounts/${pubkey}`)
@@ -4242,12 +4288,14 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
         const submitData = (await submitRes.json()) as {
           hash?: string
-          extras?: { result_codes?: { transaction?: string } }
+          extras?: { result_codes?: { transaction?: string; operations?: string[] } }
         }
 
         if (!submitRes.ok) {
-          const errMsg = submitData?.extras?.result_codes?.transaction ?? 'Swap failed'
-          sendResponse({ error: errMsg })
+          // tx_failed alone says nothing; the operation code names the cause.
+          const codes = submitData?.extras?.result_codes
+          const opCode = codes?.operations?.find((c) => c !== 'op_success')
+          sendResponse({ error: opCode ?? codes?.transaction ?? 'Swap failed' })
           return
         }
 
@@ -4381,7 +4429,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         publicKey,
         label,
         walletId: targetWalletId,
-        addresses: { stellar: publicKey, evm: deriveEvmAddress(addMnemonic, nextIndex) },
+        addresses: { stellar: publicKey, ...deriveAccountAddresses(addMnemonic, nextIndex) },
       }
       store.accounts.push(newAccount)
       await saveAccountsStore(store)
@@ -4565,7 +4613,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       trackWalletCreated('hd_wallet')
       trackAccountAdded('hd_derive')
-      void backfillEvmAddresses()
+      void backfillDerivedAddresses()
       sendResponse({ account: newAccount, mnemonic: newMnemonic })
       break
     }
@@ -4616,7 +4664,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       trackWalletCreated('hd_wallet')
       trackAccountAdded('hd_derive')
-      void backfillEvmAddresses()
+      void backfillDerivedAddresses()
       sendResponse({ account: importedAccount })
       break
     }
@@ -4920,7 +4968,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       const me = evmAddress.toLowerCase()
       const chains = await getEvmChainsForEnv(network.id)
-      const activity: EvmActivity[] = []
+      const activity: ChainActivity[] = []
       // Best-effort per chain: one indexer being down must not blank the others.
       await Promise.allSettled(
         chains.map(async (chainEntry) => {
@@ -5039,6 +5087,216 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       } catch (e) {
         sendResponse({ error: e instanceof Error ? e.message : 'Receipt check failed' })
       }
+      break
+    }
+
+    case SERVICE_TYPES.FETCH_BTC_FEES: {
+      const { publicKey, chain } = message as unknown as { publicKey?: string; chain?: string }
+      try {
+        const ctx = await resolveBtcContext(publicKey ?? '', chain ?? '')
+        sendResponse({ btcFees: await fetchBtcFeeRates(ctx.apiUrl) })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Could not load Bitcoin fees' })
+      }
+      break
+    }
+
+    // Builds (never signs) the payment the send would make, so the form shows the real fee.
+    case SERVICE_TYPES.BTC_QUOTE: {
+      const { publicKey, chain, to, amount, feeRate } = message as unknown as {
+        publicKey?: string
+        chain?: string
+        to?: string
+        amount?: string
+        feeRate?: number
+      }
+      try {
+        const ctx = await resolveBtcContext(publicKey ?? '', chain ?? '')
+        const utxos = await fetchBtcUtxos(ctx.apiUrl, ctx.from)
+        const payment = buildBtcPayment({
+          utxos,
+          from: ctx.from,
+          to: to ?? '',
+          amount: amount === 'max' ? 'max' : decimalToWei(amount ?? '', 8),
+          feeRate: feeRate ?? 0,
+          testnet: ctx.testnet,
+          exclude: await getSpentOutpoints(ctx.networkId, publicKey ?? ''),
+        })
+        sendResponse({ btcQuote: btcQuoteOf(payment, utxos) })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Could not prepare this payment' })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SIGN_AND_SUBMIT_BTC_PAYMENT: {
+      const { publicKey, chain, to, amount, feeRate, maxFeeSats, sendSats } =
+        message as unknown as {
+          publicKey?: string
+          chain?: string
+          to?: string
+          amount?: string
+          feeRate?: number
+          maxFeeSats?: string
+          sendSats?: string
+        }
+      try {
+        if (!publicKey || !maxFeeSats || !sendSats) {
+          throw new Error('publicKey, maxFeeSats and sendSats are required')
+        }
+        const ctx = await resolveBtcContext(publicKey, chain ?? '')
+        if (ctx.account.index < 0) throw new Error('This account cannot sign Bitcoin transactions')
+        const mnemonic =
+          ctx.account.walletId === 'primary'
+            ? await getSessionMnemonic()
+            : (await getSessionExtraHDMnemonics())[ctx.account.walletId]
+        if (!mnemonic) throw new Error('Wallet is locked')
+        const key = deriveBitcoinKeyFromMnemonic(mnemonic, ctx.account.index, ctx.testnet)
+        if (bitcoinAddressFromPublicKey(key.publicKey, ctx.testnet) !== ctx.from) {
+          throw new Error('Stored Bitcoin address does not match this account')
+        }
+
+        // Rebuilt from fresh UTXOs, so it can differ from the reviewed quote; a higher fee than
+        // the user approved aborts instead of being paid silently.
+        const utxos = await fetchBtcUtxos(ctx.apiUrl, ctx.from)
+        const payment = buildBtcPayment({
+          utxos,
+          from: ctx.from,
+          to: to ?? '',
+          amount: amount === 'max' ? 'max' : decimalToWei(amount ?? '', 8),
+          feeRate: feeRate ?? 0,
+          testnet: ctx.testnet,
+          exclude: await getSpentOutpoints(ctx.networkId, publicKey),
+        })
+        if (payment.feeSats > BigInt(maxFeeSats)) {
+          throw new Error('The network fee went up since you reviewed it. Review the send again.')
+        }
+        if (payment.sendSats !== BigInt(sendSats)) {
+          throw new Error('Your balance changed since you reviewed this send. Review it again.')
+        }
+        await verifyBtcInputs(ctx.apiUrl, payment.tx)
+        payment.tx.sign(key.privateKey)
+        payment.tx.finalize()
+        const txid = payment.tx.id
+        // Recorded before the broadcast, so a retry after an ambiguous failure cannot spend
+        // the same coins into a second payment.
+        await recordSpent(ctx.networkId, publicKey, txid, outpointsOf(payment.tx))
+        let broadcastId: string
+        try {
+          broadcastId = await broadcastBtcTx(ctx.apiUrl, payment.tx.hex)
+        } catch (e) {
+          // A timeout or dropped reply may still have delivered it; ask before reporting failure.
+          const known = await btcTxKnown(ctx.apiUrl, txid).catch(() => null)
+          if (known === null) {
+            throw new Error(
+              'Could not confirm whether the payment went out. Check History before sending again.',
+              { cause: e }
+            )
+          }
+          if (!known) {
+            await forgetSpent(ctx.networkId, publicKey, txid)
+            throw e
+          }
+          broadcastId = txid
+        }
+        if (broadcastId.toLowerCase() !== txid) {
+          throw new Error('The Bitcoin node returned an unexpected transaction id')
+        }
+        sendResponse({ txHash: txid, btcQuote: btcQuoteOf(payment, utxos) })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Bitcoin send failed' })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.BTC_TX_STATUS: {
+      const { publicKey, chain, hash } = message as unknown as {
+        publicKey?: string
+        chain?: string
+        hash?: string
+      }
+      try {
+        const ctx = await resolveBtcContext(publicKey ?? '', chain ?? '')
+        if (!/^[0-9a-f]{64}$/.test(hash ?? '')) throw new Error('Invalid transaction id')
+        const res = await fetch(`${ctx.apiUrl}/tx/${hash}/status`, {
+          signal: AbortSignal.timeout(30000),
+        })
+        // Not yet seen by the upstream reads as pending, never as failed.
+        const data = res.ok ? ((await res.json()) as { confirmed?: boolean }) : {}
+        sendResponse({ status: data.confirmed ? 'success' : 'pending' })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Status check failed' })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.FETCH_BTC_ACTIVITY: {
+      if (!message.publicKey) {
+        sendResponse({ error: 'publicKey required' })
+        return
+      }
+      const network = await getActiveNetwork()
+      const addresses = (await getAccountsStore()).accounts.find(
+        (a) => a.publicKey === message.publicKey
+      )?.addresses
+      const chains = await getBitcoinChainsForEnv(network.id)
+      const activity: ChainActivity[] = []
+      await Promise.allSettled(
+        chains.map(async (chainEntry) => {
+          const address = chainEntry.isTestnet ? addresses?.bitcoinTestnet : addresses?.bitcoin
+          if (!address) return
+          const res = await fetch(`${bitcoinApiUrl(chainEntry.id)}/address/${address}/txs`, {
+            signal: AbortSignal.timeout(30000),
+          })
+          if (!res.ok) return
+          const txs = (await res.json()) as EsploraTx[]
+          for (const tx of txs) activity.push(btcActivityOf(tx, address, chainEntry.id))
+        })
+      )
+      activity.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+      sendResponse({ activity })
+      break
+    }
+
+    case SERVICE_TYPES.FETCH_BTC_BALANCES: {
+      if (!message.publicKey) {
+        sendResponse({ error: 'publicKey required' })
+        return
+      }
+      const network = await getActiveNetwork()
+      const store = await getAccountsStore()
+      const addresses = store.accounts.find((a) => a.publicKey === message.publicKey)?.addresses
+      const chains = await getBitcoinChainsForEnv(network.id)
+      const balances: ChainBalance[] = []
+      await Promise.allSettled(
+        chains.map(async (chainEntry) => {
+          const address = chainEntry.isTestnet ? addresses?.bitcoinTestnet : addresses?.bitcoin
+          if (!address) return
+          const res = await fetch(`${bitcoinApiUrl(chainEntry.id)}/address/${address}`, {
+            signal: AbortSignal.timeout(30000),
+          })
+          if (!res.ok) return
+          const data = (await res.json()) as {
+            chain_stats: { funded_txo_sum: number; spent_txo_sum: number }
+            mempool_stats: { funded_txo_sum: number; spent_txo_sum: number }
+          }
+          // Unconfirmed coins count toward the balance; Send spends confirmed ones only and says so.
+          const sats =
+            BigInt(data.chain_stats.funded_txo_sum) -
+            BigInt(data.chain_stats.spent_txo_sum) +
+            BigInt(data.mempool_stats.funded_txo_sum) -
+            BigInt(data.mempool_stats.spent_txo_sum)
+          balances.push({
+            chain: chainEntry.id,
+            code: chainEntry.nativeCurrency.symbol,
+            issuer: '',
+            amount: weiToDecimal(sats > 0n ? sats : 0n, chainEntry.nativeCurrency.decimals),
+            decimals: chainEntry.nativeCurrency.decimals,
+            isNative: true,
+          })
+        })
+      )
+      sendResponse({ balances })
       break
     }
 

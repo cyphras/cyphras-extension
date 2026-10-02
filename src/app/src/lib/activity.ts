@@ -1,5 +1,5 @@
 import type { Operation } from '@/hooks/useHistory'
-import type { CctpJobInfo, EvmActivity } from '@ext-types/index'
+import type { CctpJobInfo, ChainActivity } from '@ext-types/index'
 import { getAmountDisplay, getDirection, getOpLabel, formatDateLabel } from '@/lib/historyUtils'
 import { statusMeta, isCctpInFlight } from '@/lib/cctp'
 
@@ -7,7 +7,7 @@ import { statusMeta, isCctpInFlight } from '@/lib/cctp'
 // detail sheet, wrapped in the shared timestamp/chain envelope the list sorts on.
 export type HistoryRow =
   | { kind: 'stellar'; id: string; timestamp: string; chain: string; op: Operation }
-  | { kind: 'evm'; id: string; timestamp: string; chain: string; tx: EvmActivity }
+  | { kind: 'evm'; id: string; timestamp: string; chain: string; tx: ChainActivity }
   | {
       kind: 'bridge'
       id: string
@@ -46,7 +46,7 @@ export function stellarRows(ops: Operation[], chainId: string): HistoryRow[] {
   }))
 }
 
-export function evmRows(activity: EvmActivity[]): HistoryRow[] {
+export function chainTxRows(activity: ChainActivity[]): HistoryRow[] {
   return activity.map((tx, i) => ({
     kind: 'evm',
     id: `${tx.chain}:${tx.hash}:${i}`,
@@ -90,6 +90,22 @@ export function bridgeRows(
   })
 }
 
+// What Circle took, once the attested message says; before that, its cap.
+export function circleFeeText(job: CctpJobInfo): string {
+  if (job.feeExecuted !== undefined)
+    return parseFloat(job.feeExecuted) === 0 ? 'Free' : `${formatAmount(job.feeExecuted)} USDC`
+  return parseFloat(job.maxFee) === 0 ? 'Free' : `Up to ${formatAmount(job.maxFee)} USDC`
+}
+
+// USDC moves in 6 decimals; integer units keep the subtraction exact.
+export function usdcMinus(amount: string, fee: string): string {
+  const units = (v: string) => BigInt(Math.round(parseFloat(v) * 1e6))
+  const net = units(amount) - units(fee)
+  const whole = net / 1_000_000n
+  const frac = (net % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '')
+  return frac ? `${whole}.${frac}` : whole.toString()
+}
+
 /**
  * What reached the destination: the burned amount minus the fee Circle
  * executed, once the attestation says what that fee was.
@@ -98,11 +114,7 @@ export function bridgeReceived(job: CctpJobInfo): string | null {
   // A zero max fee caps Circle's cut at nothing, so the amount is exact already.
   const fee = job.feeExecuted ?? (parseFloat(job.maxFee) === 0 ? '0' : undefined)
   if (fee === undefined) return null
-  const units = (v: string) => BigInt(Math.round(parseFloat(v) * 1e6))
-  const net = units(job.amount) - units(fee)
-  const whole = net / 1_000_000n
-  const frac = (net % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '')
-  return frac ? `${whole}.${frac}` : whole.toString()
+  return usdcMinus(job.amount, fee)
 }
 
 // A bridge is one action to the user, so its approve/burn/mint transactions
@@ -144,7 +156,8 @@ export function formatAmount(value: string): string {
   if (!Number.isFinite(n)) return value
   if (n === 0) return '0'
   if (n >= 0.001) return n.toLocaleString('en-US', { maximumFractionDigits: 4 })
-  return n.toLocaleString('en-US', { maximumFractionDigits: 6 })
+  // Dust (a 1-stroop payment is 0.0000001) keeps its digits instead of reading as 0.
+  return n.toLocaleString('en-US', { maximumSignificantDigits: 3 })
 }
 
 export function shortAddress(addr: string): string {
@@ -164,7 +177,7 @@ function titleCase(s: string): string {
   return s.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-export function evmView(tx: EvmActivity): RowView {
+export function chainTxView(tx: ChainActivity): RowView {
   const failed = tx.status === 'failed'
   const pending = tx.status === 'pending'
   const hasValue = parseFloat(tx.amount) > 0

@@ -4,7 +4,7 @@
 // chains, these shipped builtins, then the backend registry (display/config
 // refresh only - the registry must never supply relayer/shielded/private
 // fields, those stay shipped-only as the trust anchor).
-export type ChainFamily = 'stellar' | 'evm'
+export type ChainFamily = 'stellar' | 'evm' | 'bip122'
 
 export interface ChainExplorer {
   tx: string
@@ -114,6 +114,43 @@ export const BUILTIN_CHAINS: ChainEntry[] = [
     evm: { chainId: 11155111, rpcUrls: ['https://api.cyphras.com/evm/eip155:11155111/rpc'] },
   },
 ]
+
+export const BTC_MAINNET_CHAIN = 'bip122:000000000019d6689c085ae165831e93'
+// Testnet4 (BIP94): the id is the first 32 hex chars of its genesis block hash.
+export const BTC_TESTNET_CHAIN = 'bip122:00000000da84f2bafbbc53dee25a72ae'
+
+BUILTIN_CHAINS.push(
+  {
+    id: BTC_MAINNET_CHAIN,
+    family: 'bip122',
+    name: 'Bitcoin',
+    isTestnet: false,
+    enabled: true,
+    explorer: {
+      tx: 'https://mempool.space/tx/{hash}',
+      account: 'https://mempool.space/address/{address}',
+    },
+    nativeCurrency: { symbol: 'BTC', decimals: 8 },
+  },
+  {
+    id: BTC_TESTNET_CHAIN,
+    family: 'bip122',
+    name: 'Bitcoin Testnet4',
+    isTestnet: true,
+    enabled: true,
+    explorer: {
+      tx: 'https://mempool.space/testnet4/tx/{hash}',
+      account: 'https://mempool.space/testnet4/address/{address}',
+    },
+    nativeCurrency: { symbol: 'BTC', decimals: 8 },
+  }
+)
+
+// Pinned rather than read from the registry, so a compromised registry cannot
+// point balance, UTXO or broadcast traffic at a hostile server.
+export function bitcoinApiUrl(chainId: string): string {
+  return `https://api.cyphras.com/btc/${chainId}`
+}
 
 export function chainById(id: string): ChainEntry | undefined {
   return BUILTIN_CHAINS.find((c) => c.id === id)

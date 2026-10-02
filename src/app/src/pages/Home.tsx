@@ -197,8 +197,11 @@ export default function Home() {
   // Only the list narrows; the total balance card always shows the whole portfolio.
   const [tokenFilter, setTokenFilter] = useState<string>(ALL_NETWORKS)
   const [filterOpen, setFilterOpen] = useState(false)
+  // Same order as the token list: Stellar, then Bitcoin, then EVM chains.
+  const familyRank = (id: string) =>
+    id === stellarChainId ? 0 : id.startsWith('bip122') ? 1 : id.startsWith('eip155') ? 2 : 3
   const networkOptions: NetworkFilterOption[] = (chainIdsKey ? chainIdsKey.split(',') : [])
-    .sort((a, b) => (a === stellarChainId ? -1 : b === stellarChainId ? 1 : a.localeCompare(b)))
+    .sort((a, b) => familyRank(a) - familyRank(b) || a.localeCompare(b))
     .map((id) => ({
       id,
       name:
@@ -1091,7 +1094,7 @@ export default function Home() {
                     className="cursor-pointer flex flex-1 items-center gap-3 text-left min-w-0"
                   >
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-green-500/15">
-                      <Check size={18} className="text-green-500" />
+                      <Check size={18} className="pop-enter text-green-500" />
                     </div>
                     <div className="flex flex-col min-w-0">
                       <p className="text-sm font-medium text-foreground">Private send complete</p>
@@ -1243,6 +1246,8 @@ export default function Home() {
 
       <TokenDetailSheet
         asset={selectedToken}
+        balances={balances}
+        isFunded={isFunded}
         chainIcons={chainIcons}
         chainNames={chainNames}
         horizonUrl={activeNetwork.horizonUrl}

@@ -14,7 +14,7 @@ import { BUILTIN_CHAINS, explorerUrl, type ChainEntry } from '@constants/chains'
 import { getRegistryChains } from '@bg/chainRegistry'
 import { getChainIcons } from '@/lib/chainInfo'
 
-type ReceiveChain = 'stellar' | 'evm'
+type ReceiveChain = 'stellar' | 'evm' | 'bitcoin'
 
 function shortAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-6)}`
@@ -55,7 +55,7 @@ export default function Receive() {
   const location = useLocation()
   const { status, accounts } = useWallet()
   const { activeNetwork } = useNetwork()
-  const { getExplorerAccountUrl, getExplorerName } = usePreferences()
+  const { getExplorerAccountUrl, getExplorerName, chainExplorer } = usePreferences()
   // Arriving with a chain (e.g. Bridge's "Receive ETH") goes straight to its code.
   const [qrFor, setQrFor] = useState<ReceiveChain | null>(
     (location.state as { chain?: ReceiveChain } | null)?.chain ?? null
@@ -77,6 +77,15 @@ export default function Receive() {
     return chains.filter((c) => c.family === 'evm' && c.enabled && c.isTestnet === isTestnet)
   }, [chains, activeNetwork.id])
 
+  const btcChain = useMemo(() => {
+    if (activeNetwork.id !== 'mainnet' && activeNetwork.id !== 'testnet') return undefined
+    const isTestnet = activeNetwork.id === 'testnet'
+    return chains.find((c) => c.family === 'bip122' && c.enabled && c.isTestnet === isTestnet)
+  }, [chains, activeNetwork.id])
+  const btcAddress = btcChain?.isTestnet
+    ? account?.addresses?.bitcoinTestnet
+    : account?.addresses?.bitcoin
+
   useEffect(() => {
     let cancelled = false
     getRegistryChains().then((c) => {
@@ -91,17 +100,31 @@ export default function Receive() {
 
   useEffect(() => {
     let cancelled = false
-    getChainIcons([stellarChainId, ...evmChains.map((c) => c.id)]).then((icons) => {
+    const ids = [stellarChainId, ...evmChains.map((c) => c.id), ...(btcChain ? [btcChain.id] : [])]
+    getChainIcons(ids).then((icons) => {
       if (!cancelled) setChainIcons(icons)
     })
     return () => {
       cancelled = true
     }
-  }, [evmChains, stellarChainId])
+  }, [evmChains, btcChain, stellarChainId])
 
   const evmNames = evmChains.map((c) => c.name)
   const evmTitle = evmChains.length === 1 ? evmChains[0].name : 'EVM networks'
-  const qrAddress = qrFor === 'stellar' ? stellarAddress : qrFor === 'evm' ? evmAddress : undefined
+  const qrAddress =
+    qrFor === 'stellar'
+      ? stellarAddress
+      : qrFor === 'evm'
+        ? evmAddress
+        : qrFor === 'bitcoin'
+          ? btcAddress
+          : undefined
+  const qrTitle =
+    qrFor === 'stellar'
+      ? 'Receive on Stellar'
+      : qrFor === 'bitcoin'
+        ? `Receive on ${btcChain?.name ?? 'Bitcoin'}`
+        : `Receive on ${evmTitle}`
 
   useEffect(() => {
     setQrDataUrl(null)
@@ -116,7 +139,7 @@ export default function Receive() {
       .catch(() => {})
   }, [qrAddress])
 
-  const evmUnavailable =
+  const derivedUnavailable =
     account && account.index < 0
       ? 'Secret-key accounts are Stellar-only'
       : 'Unlock to derive this address'
@@ -156,11 +179,21 @@ export default function Receive() {
             onCopy={stellarAddress ? () => copy('stellar', stellarAddress) : undefined}
             onQr={stellarAddress ? () => setQrFor('stellar') : undefined}
           />
+          {btcChain && (
+            <AddressRow
+              icon={<ChainStack icons={[chainIcons.get(btcChain.id)]} />}
+              title={btcChain.name}
+              subtitle={btcAddress ? shortAddress(btcAddress) : derivedUnavailable}
+              copied={copied === 'bitcoin'}
+              onCopy={btcAddress ? () => copy('bitcoin', btcAddress) : undefined}
+              onQr={btcAddress ? () => setQrFor('bitcoin') : undefined}
+            />
+          )}
           {evmChains.length > 0 && (
             <AddressRow
               icon={<ChainStack icons={evmChains.map((c) => chainIcons.get(c.id))} />}
               title={evmTitle}
-              subtitle={evmAddress ? shortAddress(evmAddress) : evmUnavailable}
+              subtitle={evmAddress ? shortAddress(evmAddress) : derivedUnavailable}
               caption={evmChains.length > 1 ? evmNames.join(', ') : undefined}
               copied={copied === 'evm'}
               onCopy={evmAddress ? () => copy('evm', evmAddress) : undefined}
@@ -176,7 +209,7 @@ export default function Receive() {
 
       <BottomSheet
         open={qrFor !== null && !!qrAddress}
-        title={qrFor === 'stellar' ? 'Receive on Stellar' : `Receive on ${evmTitle}`}
+        title={qrTitle}
         onClose={() => setQrFor(null)}
       >
         {qrAddress && (
@@ -199,7 +232,11 @@ export default function Receive() {
 
             <div className="grid w-full grid-cols-2 gap-2">
               <Button className="w-full" onClick={() => copy(`sheet-${qrFor}`, qrAddress)}>
-                {copied === `sheet-${qrFor}` ? <Check size={14} /> : <Copy size={14} />}
+                {copied === `sheet-${qrFor}` ? (
+                  <Check size={14} className="pop-enter" />
+                ) : (
+                  <Copy size={14} />
+                )}
                 {copied === `sheet-${qrFor}` ? 'Copied' : 'Copy'}
               </Button>
               {qrFor === 'stellar' ? (
@@ -217,9 +254,11 @@ export default function Receive() {
                 <Button variant="outline" className="w-full" asChild>
                   <a
                     href={
-                      evmChains[0]
-                        ? explorerUrl(evmChains[0].explorer.account, qrAddress)
-                        : undefined
+                      qrFor === 'bitcoin' && btcChain
+                        ? explorerUrl(chainExplorer(btcChain).account, qrAddress)
+                        : evmChains[0]
+                          ? explorerUrl(chainExplorer(evmChains[0]).account, qrAddress)
+                          : undefined
                     }
                     target="_blank"
                     rel="noopener noreferrer"
@@ -236,7 +275,7 @@ export default function Receive() {
                 {evmChains.map((c) => (
                   <a
                     key={c.id}
-                    href={explorerUrl(c.explorer.account, qrAddress)}
+                    href={explorerUrl(chainExplorer(c).account, qrAddress)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center gap-1.5 rounded-full bg-card px-2.5 py-1 text-[11px] text-foreground transition-colors hover:bg-muted"
@@ -257,7 +296,9 @@ export default function Receive() {
             <p className="rounded-xl bg-amber-500/10 px-3 py-2.5 text-center text-[11px] leading-relaxed text-foreground">
               {qrFor === 'stellar'
                 ? 'Only send Stellar assets to this address. Assets from other networks may be lost for good.'
-                : `Only send assets on ${evmNames.join(', ') || 'EVM networks'} to this address. Assets from other networks may be lost for good.`}
+                : qrFor === 'bitcoin'
+                  ? `Only send BTC on ${btcChain?.name ?? 'Bitcoin'} to this address. Coins from other networks may be lost for good.`
+                  : `Only send assets on ${evmNames.join(', ') || 'EVM networks'} to this address. Assets from other networks may be lost for good.`}
             </p>
           </div>
         )}
@@ -343,7 +384,7 @@ function AddressRow({
                 : 'bg-muted text-foreground hover:bg-muted/70'
             }`}
           >
-            {copied ? <Check size={16} /> : <Copy size={16} />}
+            {copied ? <Check size={16} className="pop-enter" /> : <Copy size={16} />}
           </button>
         </div>
       )}
