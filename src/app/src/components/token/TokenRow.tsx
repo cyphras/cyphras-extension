@@ -1,6 +1,7 @@
 import { AssetIcon } from '@/components/token/AssetIcon'
 import { PixelMask } from '@/components/Pixel'
 import { VerifiedBadge } from '@/components/token/VerifiedBadge'
+import { cn } from '@/lib/utils'
 
 export interface TokenRowProps {
   code: string
@@ -14,6 +15,7 @@ export interface TokenRowProps {
   changePct?: number | null
   // Replaces the balance line, e.g. "Not activated".
   note?: string
+  className?: string
   onClick: () => void
 }
 
@@ -28,11 +30,15 @@ export function TokenRow({
   priceText,
   changePct = null,
   note,
+  className,
   onClick,
 }: TokenRowProps) {
   return (
     <button
-      className="group cursor-pointer flex w-full items-center justify-between rounded-xl bg-card px-4 py-3 hover:bg-muted/60 transition-colors text-left"
+      className={cn(
+        'group cursor-pointer flex w-full items-center justify-between rounded-xl bg-card px-4 py-3 hover:bg-muted/60 transition-colors text-left',
+        className
+      )}
       onClick={onClick}
     >
       <div className="flex min-w-0 items-center gap-3">
