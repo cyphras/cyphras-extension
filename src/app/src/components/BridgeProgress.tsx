@@ -4,14 +4,22 @@ import { Button } from '@/components/ui/button'
 import { chainById, explorerUrl, type ChainEntry } from '@constants/chains'
 import type { CctpJobInfo } from '@ext-types/index'
 import { PixelProgress } from '@/components/Pixel'
+import { usePreferences } from '@/context/PreferencesContext'
 import {
   statusMeta,
   shortAddr,
   isCctpInFlight,
   bridgeSteps,
+  bridgeEta,
+  formatDuration,
+  formatWhen,
   type CctpStatusIcon,
   type BridgeStepState,
 } from '@/lib/cctp'
+import { bridgeReceived, circleFeeText, usdcMinus } from '@/lib/activity'
+import { CctpCredit } from '@/components/BrandMarks'
+import { TradeLegs } from '@/components/TradeParts'
+import { AddressValue, CopyValue, DetailRow, NetworkValue } from '@/components/TxDetailParts'
 
 export function CctpStatusIconView({ icon, size = 16 }: { icon: CctpStatusIcon; size?: number }) {
   if (icon === 'spin') return <Loader2 size={size} className="animate-spin text-primary" />
@@ -34,6 +42,10 @@ export function BridgeProgress({
   fromChainId,
   toChainId,
   chains,
+  usdcIcon,
+  fromIcon,
+  toIcon,
+  price,
   onDone,
   doneLabel,
   onResume,
@@ -45,6 +57,10 @@ export function BridgeProgress({
   // Registry-first chain lookup so panel-added chains still get names and
   // explorer links; falls back to the shipped builtins.
   chains?: ChainEntry[]
+  usdcIcon?: string
+  fromIcon?: string
+  toIcon?: string
+  price: number | null
   onDone?: () => void
   doneLabel?: string
   onResume?: () => Promise<string | null>
@@ -63,28 +79,73 @@ export function BridgeProgress({
   const lookup = (id: string) => chains?.find((c) => c.id === id) ?? chainById(id)
   const fromName = lookup(fromChainId)?.name ?? fromChainId
   const toName = lookup(toChainId)?.name ?? toChainId
+  const inFlight = isCctpInFlight(job.status)
+  const received = bridgeReceived(job)
+  // Until Circle's actual fee is known, the floor is the amount minus its cap.
+  const receiveAmount = received ?? usdcMinus(job.amount, job.maxFee)
+  const usd = (v: string) => (price !== null ? parseFloat(v) * price : null)
+
+  const headline =
+    job.status === 'done'
+      ? { text: 'Completed', tone: 'text-green-500' }
+      : job.status === 'failed'
+        ? { text: 'Failed', tone: 'text-destructive' }
+        : meta.label === 'Paused'
+          ? { text: 'Paused', tone: 'text-amber-600 dark:text-amber-400' }
+          : { text: 'In progress', tone: 'text-primary' }
+  const timing =
+    headline.text === 'In progress'
+      ? `Est. time: ${bridgeEta(job.direction, job.speed)}`
+      : job.status === 'done' && job.mintBroadcastAt
+        ? `Took ${formatDuration(job.mintBroadcastAt - job.createdAt)}`
+        : null
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-col items-center gap-3 rounded-xl bg-card p-6 text-center">
-        <CctpStatusIconView icon={meta.icon} />
-        <p className="text-sm font-semibold text-foreground">{meta.label}</p>
+      <div className="flex flex-col gap-3 rounded-xl bg-card px-4 py-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className={`text-lg font-bold ${headline.tone}`}>{headline.text}</p>
+            <p className="text-xs text-muted-foreground">
+              {inFlight && headline.text === 'In progress' ? `${meta.label}. ` : ''}
+              {timing}
+            </p>
+          </div>
+          <CctpStatusIconView icon={meta.icon} size={20} />
+        </div>
         <PixelProgress steps={bridgeSteps(job).map((st) => st.state)} />
-        <p className="text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1">
-            {job.amount} USDC {fromName}
-            <ArrowRight size={12} />
-            {toName}
-          </span>
-          {job.speed === 'fast' && ' - Fast'}
-        </p>
         {meta.note && <p className="text-xs text-muted-foreground">{meta.note}</p>}
         {job.status === 'failed' && job.lastError && (
           <p className="text-xs text-destructive">{job.lastError}</p>
         )}
       </div>
 
-      <BridgeSteps job={job} />
+      <TradeLegs
+        pay={{
+          label: `From ${fromName}`,
+          code: 'USDC',
+          icon: usdcIcon,
+          chainIcon: fromIcon,
+          amount: job.amount,
+          usd: usd(job.amount),
+        }}
+        receive={{
+          label:
+            job.status === 'done'
+              ? `Received on ${toName}`
+              : job.status === 'failed'
+                ? `Not delivered to ${toName}`
+                : job.status === 'approved'
+                  ? `Not sent yet to ${toName}`
+                  : `Arriving on ${toName}${received === null ? ', at least' : ''}`,
+          code: 'USDC',
+          icon: usdcIcon,
+          chainIcon: toIcon,
+          amount: receiveAmount,
+          usd: usd(receiveAmount),
+          muted: job.status !== 'done',
+        }}
+      />
 
       {job.status === 'approved' && onResume && onCancel && (
         <div className="flex flex-col gap-2">
@@ -114,18 +175,53 @@ export function BridgeProgress({
         </div>
       )}
 
-      {isCctpInFlight(job.status) && job.status !== 'approved' && (
+      <BridgeSteps job={job} />
+
+      <div className="flex flex-col gap-1.5">
+        <p className="pixel-label px-1 text-[10px] text-muted-foreground">Transaction details</p>
+        <div className="rounded-xl bg-card px-4 divide-y divide-border/60">
+          <DetailRow label="Network">
+            <span className="inline-flex items-center gap-1.5">
+              <NetworkValue name={fromName} icon={fromIcon} />
+              <ArrowRight size={12} className="text-muted-foreground" />
+              <NetworkValue name={toName} icon={toIcon} />
+            </span>
+          </DetailRow>
+          <DetailRow label="Provider">
+            <CctpCredit />
+          </DetailRow>
+          <DetailRow label="Receiving address">
+            <AddressValue address={job.destAddress} />
+          </DetailRow>
+          <DetailRow label="Circle fee">{circleFeeText(job)}</DetailRow>
+          {job.direction === 'evm-to-stellar' && (
+            <DetailRow label="Speed">{job.speed === 'fast' ? 'Fast' : 'Standard'}</DetailRow>
+          )}
+        </div>
+      </div>
+
+      <BridgeTxLinks job={job} fromChainId={fromChainId} toChainId={toChainId} chains={chains} />
+
+      <div className="flex flex-col gap-1.5">
+        <p className="pixel-label px-1 text-[10px] text-muted-foreground">Order details</p>
+        <div className="rounded-xl bg-card px-4 divide-y divide-border/60">
+          <DetailRow label="Created at">{formatWhen(job.createdAt)}</DetailRow>
+          <DetailRow label="Order no.">
+            <CopyValue value={job.id} display={job.id.slice(0, 12)} />
+          </DetailRow>
+        </div>
+      </div>
+
+      {inFlight && job.status !== 'approved' && (
         <p className="px-1 text-center text-[11px] leading-relaxed text-muted-foreground">
           Safe to close this window. Cyphras keeps the bridge moving in the background, and picks it
           up again after you unlock if the wallet locks.
         </p>
       )}
 
-      <BridgeTxLinks job={job} fromChainId={fromChainId} toChainId={toChainId} chains={chains} />
-
       {onDone && (job.status === 'done' || job.status === 'failed') && (
         <Button className="w-full" onClick={onDone}>
-          {doneLabel ?? (job.status === 'done' ? 'Bridge Again' : 'Start Over')}
+          {doneLabel ?? (job.status === 'done' ? 'Bridge again' : 'Start over')}
         </Button>
       )}
     </div>
@@ -174,6 +270,14 @@ export function BridgeTxLinks({
   chains?: ChainEntry[]
 }) {
   const lookup = (id: string) => chains?.find((c) => c.id === id) ?? chainById(id)
+  const { getExplorerTxUrl, chainExplorer } = usePreferences()
+  // Every leg follows the explorer chosen in Settings for its chain.
+  const txUrl = (chainId: string, hash: string) => {
+    if (chainId.startsWith('stellar:'))
+      return getExplorerTxUrl(hash, chainId === 'stellar:pubnet' ? 'mainnet' : 'testnet')
+    const chain = lookup(chainId)
+    return chain ? explorerUrl(chainExplorer(chain).tx, hash) : null
+  }
   const links: { label: string; hash: string; chainId: string }[] = []
   if (job.approveTxHash)
     links.push({ label: 'Approval', hash: job.approveTxHash, chainId: fromChainId })
@@ -184,7 +288,7 @@ export function BridgeTxLinks({
     <div className="rounded-xl bg-card px-4 divide-y divide-border/60">
       {links.map((l) => {
         const chain = lookup(l.chainId)
-        const url = chain ? explorerUrl(chain.explorer.tx, l.hash) : null
+        const url = txUrl(l.chainId, l.hash)
         return (
           <a
             key={l.label}

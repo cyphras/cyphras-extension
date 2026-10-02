@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAssetList } from '@/hooks/useAssetList'
 import { useVerifiedAssets } from '@/hooks/useVerifiedAssets'
-import { VerifiedMark } from '@/components/token/VerifiedMark'
-import { Collapse } from '@/components/Collapse'
+import { Collapse, Reveal } from '@/components/Collapse'
 import { useNavigate } from 'react-router-dom'
 import { useWallet } from '@/context/WalletContext'
 import { useNetwork } from '@/context/NetworkContext'
@@ -14,8 +13,17 @@ import {
   AmountInput,
   AmountValue,
   QuickFillChips,
-  FlipButton,
+  FiatSwitch,
 } from '@/components/PairCard'
+import { useFiatEntry } from '@/hooks/useFiatEntry'
+import {
+  LossSheet,
+  LossWarning,
+  RatePill,
+  TradeLegs,
+  ValueChangeText,
+} from '@/components/TradeParts'
+import { LOSS_CONFIRM_PCT, LOSS_WARN_PCT, formatPct, valueChangePct } from '@/lib/valueChange'
 import { AssetPickerSheet, type PickerItem } from '@/components/AssetPickerSheet'
 import { getChainIcons } from '@/lib/chainInfo'
 import { formatFiat } from '@/lib/activity'
@@ -36,8 +44,6 @@ import {
   ChevronLeft,
   Copy,
   Check,
-  CheckCircle2,
-  ArrowDown,
   X,
   AlertTriangle,
   ArrowLeftRight,
@@ -49,6 +55,7 @@ import { chainById } from '@constants/chains'
 import type { SwapQuote } from '@ext-types/index'
 import { CopyValue, DetailRow, NetworkValue } from '@/components/TxDetailParts'
 import { RoutePath } from '@/components/BrandMarks'
+import { NumberTicker } from '@/components/NumberTicker'
 import { useStellarChain } from '@/hooks/useStellarChain'
 
 type Step = 'form' | 'confirm' | 'success'
@@ -97,6 +104,8 @@ function friendlyError(raw: string): string {
     return 'Order would cross your own offer. Try a different amount.'
   if (r.includes('tx_too_late') || r.includes('too late'))
     return 'Transaction expired. Please try again.'
+  if (r.includes('op_under_dest_min'))
+    return 'The price moved below your minimum before the swap landed. Nothing was swapped; review a fresh quote.'
   if (r.includes('slippage') || r.includes('destmin'))
     return 'Price moved too much. Try increasing slippage tolerance.'
   if (r.includes('timeout') || r.includes('timed out'))
@@ -126,61 +135,6 @@ function FeeBar({ level }: { level: 1 | 2 | 3 }) {
           className={`w-[3px] rounded-[1px] ${i <= level ? 'bg-primary' : 'bg-muted-foreground/25'}`}
         />
       ))}
-    </div>
-  )
-}
-
-function XlmCircle({ size }: { size: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="76 34 238 238"
-      xmlns="http://www.w3.org/2000/svg"
-      className="shrink-0"
-    >
-      <circle cx="195.1" cy="153.1" r="118.9" fill="black" />
-      <path
-        fill="white"
-        d="M164.1,92.3c22.9-11.7,50.4-9.5,71.1,5.6l-1.7,0.9l-11.1,5.7c-17.3-9.7-38.4-9.4-55.5,0.6c-17.1,10-27.6,28.3-27.6,48.2c0,2.4,0.2,4.9,0.5,7.3l93.9-47.8l19.4-9.9l22.8-11.6v13.9l-23,11.7l-11.1,5.7l-99,50.4l-5.5,2.8l-5.6,2.9l-17.3,8.8v-13.9l5.9-3c4.5-2.3,7.1-7,6.7-12c-0.1-1.7-0.2-3.5-0.2-5.2C126.9,127.5,141.3,104,164.1,92.3z"
-      />
-      <path
-        fill="white"
-        d="M275.9,119v13.9l-5.9,3c-4.5,2.3-7.1,7-6.7,12c0.1,1.7,0.2,3.5,0.2,5.2c0,25.7-14.4,49.2-37.3,60.8s-50.4,9.5-71.1-5.6l12.1-6.2l0.7-0.4c17.3,9.7,38.5,9.5,55.6-0.5c17.1-10,27.7-28.4,27.7-48.2c0-2.5-0.2-4.9-0.5-7.3l-94,47.9l-19.4,9.9l-22.7,11.6v-13.9l22.9-11.7l11.1-5.7L275.9,119z"
-      />
-    </svg>
-  )
-}
-
-function AssetIcon({ icon, code, size = 32 }: { icon?: string; code: string; size?: number }) {
-  const [err, setErr] = useState(false)
-  if (code === 'XLM') {
-    return (
-      <div
-        style={{ width: size, height: size }}
-        className="rounded-full overflow-hidden bg-black shrink-0 flex items-center justify-center"
-      >
-        <XlmCircle size={size} />
-      </div>
-    )
-  }
-  if (icon && !err) {
-    return (
-      <img
-        src={icon}
-        alt={code}
-        style={{ width: size, height: size }}
-        className="rounded-full object-cover shrink-0"
-        onError={() => setErr(true)}
-      />
-    )
-  }
-  return (
-    <div
-      style={{ width: size, height: size }}
-      className="rounded-full bg-muted shrink-0 flex items-center justify-center"
-    >
-      <span className="text-xs font-bold text-muted-foreground">{code.slice(0, 2)}</span>
     </div>
   )
 }
@@ -427,8 +381,8 @@ export default function Swap() {
     loading: balancesLoading,
     isFunded,
   } = useBalances(status.publicKey)
-  // The swap engine is Stellar DEX path payments; EVM assets never enter it.
-  const balances = allBalances.filter((b) => !b.chain.startsWith('eip155'))
+  // The swap engine is Stellar DEX path payments; assets on other chains never enter it.
+  const balances = allBalances.filter((b) => b.chain.startsWith('stellar'))
   const { getExplorerTxUrl } = usePreferences()
 
   const [step, setStep] = useState<Step>('form')
@@ -470,6 +424,13 @@ export default function Swap() {
 
   const [xdrOpen, setXdrOpen] = useState(false)
   const [showDetails, setShowDetails] = useState(false)
+  const [reviewMore, setReviewMore] = useState(false)
+  const [invertRate, setInvertRate] = useState(false)
+  // Which loss warning is up: before opening the review, or at signing.
+  const [lossSheet, setLossSheet] = useState<'review' | 'sign' | null>(null)
+  // Frozen when the review opens: the sheet, the loss checks and the signed
+  // transaction all use it, never a quote that refreshed underneath.
+  const [review, setReview] = useState<{ quote: SwapQuote; amount: string } | null>(null)
   const isVerified = useVerifiedAssets()
   const { assets: curated } = useAssetList()
   const [stellarIcon, setStellarIcon] = useState<string | undefined>(undefined)
@@ -501,7 +462,10 @@ export default function Swap() {
   useEffect(() => {
     if (balances.length > 0 && !balances.find((b) => `${b.code}:${b.issuer}` === fromKey)) {
       const xlm = balances.find((b) => b.isNative)
-      if (xlm) setFromKey(`${xlm.code}:${xlm.issuer}`)
+      if (xlm) {
+        setFromKey(`${xlm.code}:${xlm.issuer}`)
+        setAmount('')
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [balances])
@@ -543,7 +507,13 @@ export default function Swap() {
   const xlmBalance = balances.find((b) => b.isNative)
   const xlmFree = xlmBalance ? spendableUnits(xlmBalance.balance, 7, xlmBalance.locked) : 0n
   const amountUnits = fromBalance
-    ? parseUnits(truncateDecimals(amount || '0', fromBalance.decimals), fromBalance.decimals)
+    ? parseUnits(
+        truncateDecimals(
+          amount.startsWith('.') ? `0${amount}` : amount || '0',
+          fromBalance.decimals
+        ),
+        fromBalance.decimals
+      )
     : null
 
   // Quick fills work in base units so the reserve, fee and asset decimals are
@@ -553,6 +523,12 @@ export default function Swap() {
     setQuote(null)
     setError('')
   }
+  const fiatEntry = useFiatEntry({
+    amount,
+    setAmount: setSwapAmount,
+    price: fromBalance?.usdPrice ?? null,
+    decimals: fromBalance?.decimals ?? 7,
+  })
   const fillSwapFraction = (fraction: number) => {
     if (!fromBalance) return
     setSwapAmount(formatUnits(fractionUnits(spendable, fraction), fromBalance.decimals))
@@ -562,6 +538,7 @@ export default function Swap() {
     if (!amount || amountNum <= 0) return null
     if (fromKey === toKey) return 'Cannot swap an asset with itself'
     if (!fromBalance) return null // balances still loading
+    if (amountUnits === null) return 'Enter a valid amount'
     if (amountUnits !== null && amountUnits > spendable) {
       return `You can swap up to ${formatUnits(spendable, fromBalance.decimals)} ${fromObj.code}${
         fromBalance.isNative ? ' (the rest is the account reserve and the fee)' : ''
@@ -658,7 +635,16 @@ export default function Swap() {
         setQuote(response.quote)
       }
     )
-  }, [fromKey, toKey, amount, slippage, activeFeeStroops, txTimeout, activeNetwork])
+  }, [
+    fromKey,
+    toKey,
+    amount,
+    slippage,
+    activeFeeStroops,
+    txTimeout,
+    activeNetwork.horizonUrl,
+    activeNetwork.passphrase,
+  ])
 
   useEffect(() => {
     if (!amount || parseFloat(amount) <= 0 || !toKey || amountError) return
@@ -669,11 +655,11 @@ export default function Swap() {
   }, [amount, fromKey, toKey, slippage, fetchQuote, amountError])
 
   function handleConfirm() {
-    if (!toKey) return
+    if (!toKey || !review) return
     const from = parseKey(fromKey)
     const to = parseKey(toKey)
     setSubmitLoading(true)
-    lastReceivedRef.current = quote?.destinationAmount ?? ''
+    lastReceivedRef.current = review.quote.destinationAmount
     setError('')
     chrome.runtime.sendMessage(
       {
@@ -683,10 +669,12 @@ export default function Swap() {
           fromAssetIssuer: from.issuer,
           toAssetCode: to.code,
           toAssetIssuer: to.issuer,
-          amount,
+          amount: review.amount,
           slippage,
           fee: activeFeeStroops,
           timeout: txTimeout,
+          destMin: review.quote.destMin,
+          path: review.quote.path,
         },
         horizonUrl: activeNetwork.horizonUrl,
         networkPassphrase: activeNetwork.passphrase,
@@ -789,6 +777,58 @@ export default function Swap() {
       ? formatFiat(quote ? parseFloat(quote.destinationAmount) * toBalance.usdPrice : 0)
       : ''
   const rate = quote && amountNum > 0 ? parseFloat(quote.destinationAmount) / amountNum : null
+  const rateValue = rate ?? (spotRate ? parseFloat(spotRate) : null)
+  const rateText =
+    toObj && rateValue !== null && rateValue > 0
+      ? invertRate
+        ? `1 ${toObj.code} = ${trimAmount((1 / rateValue).toPrecision(6))} ${fromObj.code}`
+        : `1 ${fromObj.code} = ${trimAmount(rateValue.toPrecision(6))} ${toObj.code}`
+      : undefined
+
+  // What leaves against what arrives, both in USD at the current prices.
+  const paidUsd =
+    fromBalance?.usdPrice != null && amountNum > 0 ? amountNum * fromBalance.usdPrice : null
+  const receivedUsd =
+    quote && toBalance?.usdPrice != null
+      ? parseFloat(quote.destinationAmount) * toBalance.usdPrice
+      : null
+  const changePct = valueChangePct(paidUsd, receivedUsd)
+  const bigLoss = changePct !== null && changePct <= -LOSS_WARN_PCT
+  const lossShare = changePct !== null ? (-changePct).toFixed(2) : ''
+
+  // While a new quote is on its way (the amount just changed), the last one
+  // stays on screen, dimmed, so the cards below do not collapse and regrow on
+  // every keystroke. Display only: reviewing still waits for the fresh quote.
+  const pairKey = `${fromKey}>${toKey}`
+  const lastShown = useRef<{ pair: string; quote: SwapQuote; loss: boolean } | null>(null)
+  if (quote) lastShown.current = { pair: pairKey, quote, loss: bigLoss }
+  const quotePending = !!toKey && amountNum > 0 && !amountError && !quote && !error
+  const stale = quotePending && lastShown.current?.pair === pairKey ? lastShown.current : null
+  const shownQuote = quote ?? stale?.quote ?? null
+  const shownLoss = quote ? bigLoss : (stale?.loss ?? false)
+
+  const reviewQuote = review?.quote ?? null
+  const usdOf = (value: string, price: number | null | undefined) =>
+    price != null ? parseFloat(value) * price : null
+  const reviewPaidUsd = review ? usdOf(review.amount, fromBalance?.usdPrice) : null
+  const reviewReceivedUsd = reviewQuote
+    ? usdOf(reviewQuote.destinationAmount, toBalance?.usdPrice)
+    : null
+  const reviewWorstUsd = reviewQuote ? usdOf(reviewQuote.destMin, toBalance?.usdPrice) : null
+  const reviewPct = valueChangePct(reviewPaidUsd, reviewReceivedUsd)
+  const worstPct = valueChangePct(reviewPaidUsd, reviewWorstUsd)
+  const reviewBig = reviewPct !== null && reviewPct <= -LOSS_WARN_PCT
+  // The floor is what the transaction allows, not the estimate: a wide
+  // slippage can let a mild-looking quote fill at a severe loss.
+  const reviewSevere = worstPct !== null && worstPct <= -LOSS_CONFIRM_PCT
+  const beginReview = () => {
+    if (!quote) return
+    setReview({ quote, amount })
+    setXdrOpen(false)
+    setReviewMore(false)
+    if (bigLoss) setLossSheet('review')
+    else setStep('confirm')
+  }
 
   // The button says what is missing, in the order a user fixes things.
   const cta: { label: string; enabled: boolean } =
@@ -839,14 +879,14 @@ export default function Swap() {
               </div>
             </div>
 
-            {!balancesLoading && !isFunded && (
+            <Reveal show={!balancesLoading && !isFunded} gap={10}>
               <div className="flex items-start gap-2 rounded-xl bg-amber-500/10 px-3 py-2.5">
                 <AlertTriangle size={14} className="mt-px shrink-0 text-amber-500" />
                 <p className="text-[11px] leading-snug text-foreground">
                   Send at least 1 XLM to this account to activate it before swapping.
                 </p>
               </div>
-            )}
+            </Reveal>
 
             <div className="relative flex flex-col gap-1.5">
               <SideCard
@@ -867,13 +907,38 @@ export default function Swap() {
                   onPick: () => setShowFromPicker(true),
                   ariaLabel: 'Select asset to swap from',
                 }}
-                value={<AmountInput value={amount} onChange={setSwapAmount} />}
-                footAmount={fromFiat}
+                value={
+                  fiatEntry.active ? (
+                    <AmountInput
+                      prefix="$"
+                      value={fiatEntry.usdText}
+                      onChange={fiatEntry.onUsdChange}
+                    />
+                  ) : (
+                    <AmountInput value={amount} onChange={setSwapAmount} />
+                  )
+                }
+                footAmount={
+                  <FiatSwitch
+                    enabled={fiatEntry.available}
+                    onToggle={fiatEntry.toggle}
+                    text={
+                      fiatEntry.active
+                        ? `${amount ? displayAmount(amount) : '0'} ${fromObj.code}`
+                        : fromFiat
+                    }
+                  />
+                }
                 footAsset={fromBalance ? <QuickFillChips onFill={fillSwapFraction} /> : null}
                 error={amountError && fromKey !== toKey ? amountError : null}
               />
 
-              <FlipButton onClick={handleSwapAssets} disabled={!toKey} />
+              <RatePill
+                text={rateText}
+                onFlip={handleSwapAssets}
+                flipDisabled={!toKey}
+                onInvert={() => setInvertRate((v) => !v)}
+              />
 
               <SideCard
                 label="To"
@@ -899,86 +964,92 @@ export default function Swap() {
                     muted={!quote}
                   />
                 }
-                footAmount={toFiat}
+                footAmount={
+                  <>
+                    {toFiat} {quote && <ValueChangeText pct={changePct} />}
+                  </>
+                }
                 footAsset={quote && toObj ? `Min ${trimAmount(quote.destMin)} ${toObj.code}` : ''}
               />
             </div>
 
-            {quote && toObj && !quoteLoading && (
-              <div className="rounded-xl bg-card">
-                <button
-                  onClick={() => setShowDetails((v) => !v)}
-                  aria-expanded={showDetails}
-                  className="cursor-pointer flex w-full items-center justify-between gap-2 px-4 py-2.5 text-left"
-                >
-                  <span className="min-w-0 text-xs">
-                    <span className="block font-medium text-foreground">
-                      1 {fromObj.code} = {rate !== null ? trimAmount(rate.toPrecision(6)) : '-'}{' '}
-                      {toObj.code}
-                    </span>
-                    <span className="block text-[11px] text-muted-foreground">
-                      {slippage}% slippage, fee up to {formatSignificant(activeFeeXlm)} XLM
-                    </span>
-                  </span>
-                  <span className="flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-muted-foreground">
-                    Details
-                    <ChevronDown
-                      size={14}
-                      className={`transition-transform ${showDetails ? 'rotate-180' : ''}`}
-                    />
-                  </span>
-                </button>
-                <Collapse open={showDetails}>
-                  <div className="flex flex-col divide-y divide-border/60 border-t border-border/60 px-4 text-xs">
-                    <div className="flex items-center justify-between py-2.5">
-                      <span className="text-muted-foreground">Minimum received</span>
-                      <span className="font-medium text-foreground">
-                        {trimAmount(quote.destMin)} {toObj.code}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between py-2.5">
-                      <span className="text-muted-foreground">Slippage tolerance</span>
-                      <span className="font-medium text-foreground">{slippage}%</span>
-                    </div>
-                    <div className="flex items-center justify-between py-2.5">
-                      <span className="text-muted-foreground">Network fee (max)</span>
-                      <span className="flex items-center gap-1.5 font-medium text-foreground">
-                        {activeFeeXlm} XLM <FeeBar level={feeLevel(feeTier, customFee, feeStats)} />
-                      </span>
-                    </div>
-                    {quote.path.length > 0 && (
-                      <div className="flex items-center justify-between gap-3 py-2.5">
-                        <span className="text-muted-foreground">Route</span>
-                        <RoutePath
-                          codes={[fromObj.code, ...quote.path.map((p) => p.assetCode), toObj.code]}
-                        />
-                      </div>
-                    )}
-                    <button
-                      onClick={() => setShowSettings(true)}
-                      className="flex cursor-pointer items-center justify-center gap-1.5 py-2.5 font-medium text-primary hover:underline"
-                    >
-                      <Settings size={12} /> Slippage and fee settings
-                    </button>
-                  </div>
-                </Collapse>
-              </div>
-            )}
+            <Reveal show={shownLoss} gap={10}>
+              <LossWarning>
+                You would lose about {lossShare}% of the value. Try a smaller amount or another
+                pair.
+              </LossWarning>
+            </Reveal>
 
-            {!quote && !quoteLoading && (
-              // No amount yet: still show the going rate and terms to judge the pair.
-              <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4 text-xs">
-                {toObj && (
-                  <div className="flex items-center justify-between gap-3 py-2.5">
-                    <span className="text-muted-foreground">Rate</span>
-                    <span className="truncate font-medium text-foreground">
-                      {spotRate === undefined
-                        ? '...'
-                        : spotRate === null
-                          ? 'No route yet'
-                          : `1 ${fromObj.code} = ${trimAmount(Number(spotRate).toPrecision(6))} ${toObj.code}`}
+            <Reveal show={!!shownQuote && !!toObj} gap={10}>
+              {shownQuote && toObj && (
+                <div
+                  className={`rounded-xl bg-card transition-opacity duration-200 ${quote ? '' : 'opacity-60'}`}
+                >
+                  <button
+                    onClick={() => setShowDetails((v) => !v)}
+                    aria-expanded={showDetails}
+                    className="cursor-pointer flex w-full items-center justify-between gap-2 px-4 py-2.5 text-left"
+                  >
+                    <span className="min-w-0 text-xs">
+                      <span className="block font-medium text-foreground">
+                        Min received {trimAmount(shownQuote.destMin)} {toObj.code}
+                      </span>
+                      <span className="block text-[11px] text-muted-foreground">
+                        {slippage}% slippage, fee up to {formatSignificant(activeFeeXlm)} XLM
+                      </span>
                     </span>
-                  </div>
+                    <span className="flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-muted-foreground">
+                      Details
+                      <ChevronDown
+                        size={14}
+                        className={`transition-transform ${showDetails ? 'rotate-180' : ''}`}
+                      />
+                    </span>
+                  </button>
+                  <Collapse open={showDetails}>
+                    <div className="flex flex-col divide-y divide-border/60 border-t border-border/60 px-4 text-xs">
+                      <div className="flex items-center justify-between py-2.5">
+                        <span className="text-muted-foreground">Slippage tolerance</span>
+                        <span className="font-medium text-foreground">{slippage}%</span>
+                      </div>
+                      <div className="flex items-center justify-between py-2.5">
+                        <span className="text-muted-foreground">Network fee (max)</span>
+                        <span className="flex items-center gap-1.5 font-medium text-foreground">
+                          {activeFeeXlm} XLM{' '}
+                          <FeeBar level={feeLevel(feeTier, customFee, feeStats)} />
+                        </span>
+                      </div>
+                      {shownQuote.path.length > 0 && (
+                        <div className="flex items-center justify-between gap-3 py-2.5">
+                          <span className="text-muted-foreground">Route</span>
+                          <RoutePath
+                            codes={[
+                              fromObj.code,
+                              ...shownQuote.path.map((p) => p.assetCode),
+                              toObj.code,
+                            ]}
+                          />
+                        </div>
+                      )}
+                      <button
+                        onClick={() => setShowSettings(true)}
+                        className="flex cursor-pointer items-center justify-center gap-1.5 py-2.5 font-medium text-primary hover:underline"
+                      >
+                        <Settings size={12} /> Slippage and fee settings
+                      </button>
+                    </div>
+                  </Collapse>
+                </div>
+              )}
+            </Reveal>
+
+            <Reveal show={!shownQuote} gap={10}>
+              {/* No amount yet: still show the going rate and terms to judge the pair. */}
+              <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4 text-xs">
+                {toObj && spotRate === null && (
+                  <p className="py-2.5 text-muted-foreground">
+                    No route between these assets on the DEX yet
+                  </p>
                 )}
                 <button
                   onClick={() => setShowSettings(true)}
@@ -1006,25 +1077,49 @@ export default function Swap() {
                   />
                 </button>
               </div>
-            )}
+            </Reveal>
 
-            {error && !quote && <p className="px-1 text-xs text-destructive">{error}</p>}
+            <Reveal show={!!error && !quote} gap={10}>
+              <p className="px-1 text-xs text-destructive">{error}</p>
+            </Reveal>
           </div>
         </div>
 
         <div className="shrink-0 border-t border-border/40 px-5 py-4">
-          <Button
-            className="w-full"
-            disabled={!cta.enabled}
-            onClick={() => {
-              setXdrOpen(false)
-              setStep('confirm')
-            }}
-          >
+          <Button className="w-full" disabled={!cta.enabled} onClick={beginReview}>
             {cta.label}
           </Button>
         </div>
       </div>
+
+      <LossSheet
+        open={lossSheet === 'review' && reviewPaidUsd !== null && reviewReceivedUsd !== null}
+        title="Large value loss"
+        message={`This swap returns about ${formatFiat((reviewPaidUsd ?? 0) - (reviewReceivedUsd ?? 0))} less than you pay (${reviewPct !== null ? formatPct(reviewPct) : ''}). Proceed with caution.`}
+        beforeUsd={reviewPaidUsd ?? 0}
+        afterUsd={reviewReceivedUsd ?? 0}
+        proceedLabel="Review anyway"
+        onProceed={() => {
+          setLossSheet(null)
+          setStep('confirm')
+        }}
+        onCancel={() => setLossSheet(null)}
+      />
+      <LossSheet
+        open={lossSheet === 'sign' && reviewPaidUsd !== null && reviewWorstUsd !== null}
+        title="Confirm again"
+        message={`Within your slippage, this swap can return as little as ${formatFiat(reviewWorstUsd ?? 0)} (${worstPct !== null ? formatPct(worstPct) : ''}). Do you still want to continue?`}
+        beforeUsd={reviewPaidUsd ?? 0}
+        afterUsd={reviewWorstUsd ?? 0}
+        afterLabel="At worst"
+        proceedLabel="Swap anyway"
+        onProceed={() => {
+          setLossSheet(null)
+          handleConfirm()
+        }}
+        onCancel={() => setLossSheet(null)}
+        zIndex="z-[80]"
+      />
 
       {/* Confirm / Success sheet */}
       <div
@@ -1067,33 +1162,47 @@ export default function Swap() {
 
           {step === 'success' ? (
             <>
-              <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
-                <div className="flex flex-col items-center rounded-xl bg-card px-4 py-5 text-center">
-                  <div className="value-enter mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-green-500/15">
-                    <CheckCircle2 size={24} className="text-green-500" />
-                  </div>
-                  {snapshotToObj && (
-                    <p className="text-2xl font-bold tabular-nums text-green-500">
-                      {received
-                        ? `+${displayAmount(received)}`
-                        : lastReceivedRef.current
-                          ? `~${displayAmount(lastReceivedRef.current)}`
-                          : ''}{' '}
-                      <span className="text-base font-medium text-muted-foreground">
-                        {snapshotToObj.code}
-                      </span>
-                      <VerifiedMark
-                        code={snapshotToObj.code}
-                        issuer={snapshotToObj.issuer}
-                        className="ml-1 h-4 w-4"
+              <div className="page-enter flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
+                <TradeLegs
+                  pay={{
+                    label: 'You paid',
+                    code: snapshotFromObj.code,
+                    icon: snapshotFrom?.icon,
+                    chainIcon: stellarChain.icon,
+                    amount: trimAmount(review?.amount ?? lastAmountRef.current),
+                    usd: review ? usdOf(review.amount, snapshotFrom?.usdPrice) : null,
+                  }}
+                  receive={{
+                    label: received ? 'You received' : 'You receive (confirming)',
+                    code: snapshotToObj?.code ?? '',
+                    icon: snapshotTo?.icon,
+                    chainIcon: stellarChain.icon,
+                    amount: received ? (
+                      <NumberTicker
+                        value={parseFloat(received)}
+                        format={(v) => `+${displayAmount(String(v))}`}
                       />
-                    </p>
-                  )}
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    for {lastAmountRef.current} {snapshotFromObj.code}
-                  </p>
-                </div>
+                    ) : lastReceivedRef.current ? (
+                      `~${displayAmount(lastReceivedRef.current)}`
+                    ) : (
+                      '...'
+                    ),
+                    usd: usdOf(received || lastReceivedRef.current || '0', snapshotTo?.usdPrice),
+                    positive: !!received,
+                    muted: !received,
+                    status: received ? 'success' : 'pending',
+                  }}
+                />
                 <div className="rounded-xl bg-card px-4 divide-y divide-border/60">
+                  <DetailRow label="Status">
+                    <span
+                      className="row-enter inline-flex items-center gap-1.5 font-medium text-green-600 dark:text-green-400"
+                      style={{ animationDelay: '250ms' }}
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                      Completed
+                    </span>
+                  </DetailRow>
                   <DetailRow label="Network">
                     <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
                   </DetailRow>
@@ -1125,134 +1234,129 @@ export default function Swap() {
           ) : (
             <>
               <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3 [&>*]:shrink-0">
-                {/* Amount hero */}
-                <div className="rounded-xl bg-card overflow-hidden">
-                  <div className="flex items-center justify-between px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <AssetIcon icon={snapshotFrom?.icon} code={snapshotFromObj.code} size={18} />
-                      <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                        {snapshotFromObj.code}
-                        <VerifiedMark
-                          code={snapshotFromObj.code}
-                          issuer={snapshotFromObj.issuer}
-                          className="h-3 w-3"
-                        />
-                      </p>
-                    </div>
-                    <p className="text-xl font-bold text-foreground tabular-nums">
-                      {lastAmountRef.current}
-                    </p>
-                  </div>
-                  <div className="relative">
-                    <div className="h-px bg-border mx-4" />
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="bg-card px-1.5">
-                        <ArrowDown size={11} className="text-muted-foreground/50" />
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      {snapshotToObj && (
-                        <AssetIcon icon={snapshotTo?.icon} code={snapshotToObj.code} size={18} />
-                      )}
-                      {snapshotToObj && (
-                        <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                          {snapshotToObj.code}
-                          <VerifiedMark
-                            code={snapshotToObj.code}
-                            issuer={snapshotToObj.issuer}
-                            className="h-3 w-3"
-                          />
-                        </p>
-                      )}
-                    </div>
-                    {quote && (
-                      <p className="text-xl font-bold text-green-500 tabular-nums">
-                        ~{parseFloat(quote.destinationAmount).toFixed(4)}
-                      </p>
-                    )}
-                  </div>
-                </div>
+                <TradeLegs
+                  flowing={submitLoading}
+                  pay={{
+                    label: 'You pay',
+                    code: snapshotFromObj.code,
+                    icon: snapshotFrom?.icon,
+                    chainIcon: stellarChain.icon,
+                    amount: trimAmount(review?.amount ?? lastAmountRef.current),
+                    usd: reviewPaidUsd,
+                  }}
+                  receive={{
+                    label: 'You receive (estimated)',
+                    code: snapshotToObj?.code ?? '',
+                    icon: snapshotTo?.icon,
+                    chainIcon: stellarChain.icon,
+                    amount: reviewQuote ? displayAmount(reviewQuote.destinationAmount) : '...',
+                    usd: reviewReceivedUsd,
+                    pct: reviewPct,
+                    status: submitLoading ? 'pending' : undefined,
+                  }}
+                />
+                <Reveal show={submitLoading} gap={12}>
+                  <p className="value-enter text-center text-xs text-muted-foreground">
+                    Swapping on the Stellar DEX...
+                  </p>
+                </Reveal>
 
-                {/* Details */}
-                <div className="rounded-xl bg-card divide-y divide-border">
-                  <div className="flex items-center justify-between px-4 py-3">
-                    <p className="text-xs text-muted-foreground">Slippage</p>
-                    <p className="text-sm text-foreground">{slippage}%</p>
-                  </div>
-                  {quote && (
-                    <div className="flex items-center justify-between px-4 py-3">
-                      <p className="text-xs text-muted-foreground">Min received</p>
-                      <p className="text-sm font-mono text-foreground">
-                        {parseFloat(quote.destMin).toFixed(7)} {snapshotToObj?.code}
-                      </p>
-                    </div>
+                <div className="rounded-xl bg-card px-4 divide-y divide-border/60">
+                  {reviewQuote && (
+                    <DetailRow label="Min amount received">
+                      <span className="font-medium tabular-nums">
+                        {trimAmount(reviewQuote.destMin)} {snapshotToObj?.code}{' '}
+                        <ValueChangeText pct={worstPct} />
+                      </span>
+                    </DetailRow>
                   )}
-                  <div className="flex items-center justify-between px-4 py-3">
-                    <p className="text-xs text-muted-foreground">Max fee</p>
-                    <p className="text-sm font-medium text-foreground">{activeFeeXlm} XLM</p>
-                  </div>
-                  <div className="flex items-center justify-between px-4 py-3">
-                    <p className="text-xs text-muted-foreground">Network</p>
-                    <p className="text-sm text-foreground">
-                      <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
-                    </p>
-                  </div>
+                  <DetailRow label="Network">
+                    <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                  </DetailRow>
+                  <button
+                    onClick={() => setReviewMore((v) => !v)}
+                    aria-expanded={reviewMore}
+                    className="flex w-full cursor-pointer items-center justify-center gap-1 py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    {reviewMore ? 'Show less' : 'Show more'}
+                    <ChevronDown
+                      size={13}
+                      className={`transition-transform ${reviewMore ? 'rotate-180' : ''}`}
+                    />
+                  </button>
                 </div>
 
-                {/* Route */}
-                {quote && quote.path.length > 0 && (
-                  <div className="rounded-xl bg-card px-4 py-3 flex items-center justify-between">
-                    <p className="text-xs text-muted-foreground">Route</p>
-                    <p className="text-xs">
-                      <RoutePath
-                        codes={[
-                          snapshotFromObj.code,
-                          ...quote.path.map((p) => p.assetCode),
-                          snapshotToObj?.code ?? '',
-                        ]}
-                      />
-                    </p>
-                  </div>
-                )}
-
-                {/* XDR */}
-                {quote?.xdr && (
-                  <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-0">
-                    <button
-                      onClick={() => setXdrOpen((p) => !p)}
-                      className="cursor-pointer flex items-center justify-between text-xs text-muted-foreground hover:text-foreground w-full py-0.5"
-                    >
-                      <span>Unsigned XDR</span>
-                      {xdrOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                    </button>
-                    {xdrOpen && (
-                      <div className="relative rounded-lg bg-muted p-3 mt-2">
-                        <p className="font-mono text-xs text-muted-foreground break-all leading-relaxed pr-6">
-                          {quote.xdr}
-                        </p>
+                <Collapse open={reviewMore}>
+                  <div className="flex flex-col gap-3">
+                    <div className="rounded-xl bg-card px-4 divide-y divide-border/60">
+                      <DetailRow label="Slippage tolerance">{slippage}%</DetailRow>
+                      <DetailRow label="Network fee (max)">{activeFeeXlm} XLM</DetailRow>
+                      {reviewQuote && reviewQuote.path.length > 0 && (
+                        <DetailRow label="Route">
+                          <RoutePath
+                            codes={[
+                              snapshotFromObj.code,
+                              ...reviewQuote.path.map((p) => p.assetCode),
+                              snapshotToObj?.code ?? '',
+                            ]}
+                          />
+                        </DetailRow>
+                      )}
+                    </div>
+                    {reviewQuote?.xdr && (
+                      <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-0">
                         <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(quote!.xdr)
-                            setXdrCopied(true)
-                            window.setTimeout(() => setXdrCopied(false), 2000)
-                          }}
-                          className="cursor-pointer absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() => setXdrOpen((p) => !p)}
+                          className="cursor-pointer flex items-center justify-between text-xs text-muted-foreground hover:text-foreground w-full py-0.5"
                         >
-                          {xdrCopied ? <Check size={12} /> : <Copy size={12} />}
+                          <span>Unsigned XDR</span>
+                          {xdrOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                         </button>
+                        {xdrOpen && (
+                          <div className="relative rounded-lg bg-muted p-3 mt-2">
+                            <p className="font-mono text-xs text-muted-foreground break-all leading-relaxed pr-6">
+                              {reviewQuote.xdr}
+                            </p>
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(reviewQuote!.xdr)
+                                setXdrCopied(true)
+                                window.setTimeout(() => setXdrCopied(false), 2000)
+                              }}
+                              className="cursor-pointer absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              {xdrCopied ? (
+                                <Check size={12} className="pop-enter" />
+                              ) : (
+                                <Copy size={12} />
+                              )}
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                )}
+                </Collapse>
 
-                {error && (
+                <Reveal show={reviewBig} gap={12}>
+                  <LossWarning>
+                    You get back {reviewPct !== null ? (-reviewPct).toFixed(2) : ''}% less value
+                    than you pay. Proceed with caution.
+                  </LossWarning>
+                </Reveal>
+                <Reveal show={!!reviewQuote && reviewPct === null} gap={12}>
+                  <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+                    One of these assets has no USD price, so the value you get back cannot be
+                    checked.
+                  </p>
+                </Reveal>
+
+                <Reveal show={!!error} gap={12}>
                   <div className="flex items-start gap-2 rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2.5">
                     <AlertTriangle size={13} className="text-destructive mt-0.5 shrink-0" />
                     <p className="text-xs text-destructive">{error}</p>
                   </div>
-                )}
+                </Reveal>
               </div>
               <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
                 <Button
@@ -1266,7 +1370,11 @@ export default function Swap() {
                 >
                   Cancel
                 </Button>
-                <Button className="flex-1" onClick={handleConfirm} disabled={submitLoading}>
+                <Button
+                  className="flex-1"
+                  onClick={() => (reviewSevere ? setLossSheet('sign') : handleConfirm())}
+                  disabled={submitLoading || !review}
+                >
                   {submitLoading ? 'Swapping...' : `Swap ${snapshotFromObj.code}`}
                 </Button>
               </div>
@@ -1299,7 +1407,10 @@ export default function Swap() {
             return
           }
           if (showToPicker) setToKey(key)
-          else setFromKey(key)
+          else {
+            setFromKey(key)
+            setSwapAmount('')
+          }
           setQuote(null)
           setError('')
           setShowFromPicker(false)
