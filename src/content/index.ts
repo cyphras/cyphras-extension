@@ -29,7 +29,6 @@ window.addEventListener('message', (event: MessageEvent) => {
         type: CYPHRAS_INTERNAL_REQUEST,
         id: event.data.id,
         requestType: event.data.requestType,
-        origin: window.location.origin,
         payload: event.data.payload,
       },
       '*'
