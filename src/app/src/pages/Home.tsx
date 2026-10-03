@@ -710,7 +710,12 @@ export default function Home() {
               <div className="peel-wrap">
                 <div className="peel-under">
                   <div className="flex items-center justify-between">
-                    <p className="text-xs text-muted-foreground">Private balance</p>
+                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      Private balance
+                      <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                        Testnet preview
+                      </span>
+                    </p>
                     <span className="rounded-md p-1 text-muted-foreground">
                       {hideBalance ? <Eye size={14} /> : <EyeOff size={14} />}
                     </span>
@@ -740,12 +745,19 @@ export default function Home() {
                 </div>
                 <div ref={cardRef} className="peel-card rounded-xl bg-card p-4">
                   <div className="flex items-center justify-between">
-                    <p className="text-xs text-muted-foreground">
-                      {showPrivate
-                        ? 'Private balance'
-                        : filteredStats
-                          ? `${filteredStats.name} balance`
-                          : 'Total balance'}
+                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      {showPrivate ? (
+                        <>
+                          Private balance
+                          <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                            Testnet preview
+                          </span>
+                        </>
+                      ) : filteredStats ? (
+                        `${filteredStats.name} balance`
+                      ) : (
+                        'Total balance'
+                      )}
                     </p>
                     <button
                       onClick={() => setHideBalance(!hideBalance)}

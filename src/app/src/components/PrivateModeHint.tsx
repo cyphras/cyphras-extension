@@ -59,6 +59,10 @@ export function PrivateModeHint({
           Drag the balance card from its bottom-right corner to shield, send, and receive
           privately.
         </p>
+        <p className="mt-2 text-xs leading-relaxed text-amber-600 dark:text-amber-400">
+          Testnet preview. The private pool resets when the next version launches, so testnet
+          balances and cy1 addresses will not carry over.
+        </p>
         <Button className="mt-3 w-full" onClick={onDismiss}>
           Got it
         </Button>
