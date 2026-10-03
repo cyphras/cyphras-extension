@@ -987,6 +987,8 @@ chrome.idle.onStateChanged.addListener((state) => {
 })
 
 chrome.runtime.onConnect.addListener((port) => {
+  if (!port.sender || !isExtensionPage(port.sender)) return
+
   if (port.name === 'wallet-popup') {
     port.onDisconnect.addListener(async () => {
       const seconds = await getIdleTimeoutSeconds()
@@ -1026,11 +1028,54 @@ type ApprovalResponseMessage = {
   approved: boolean
 }
 
+const EXTENSION_ORIGIN = new URL(chrome.runtime.getURL('')).origin
+
+// Chrome fills in MessageSender itself, so it is the only trustworthy answer to
+// "who is asking"; every field of the message body can be forged by a page.
+function isExtensionPage(sender: chrome.runtime.MessageSender): boolean {
+  if (sender.id !== chrome.runtime.id) return false
+  return sender.origin === EXTENSION_ORIGIN || !!sender.url?.startsWith(`${EXTENSION_ORIGIN}/`)
+}
+
+// The web origin of a message relayed by our content script, or null when the
+// sender is not a regular http(s) page.
+function webOriginOf(sender: chrome.runtime.MessageSender): string | null {
+  if (sender.id !== chrome.runtime.id || !sender.tab) return null
+  let origin = sender.origin
+  if (!origin && sender.url) {
+    try {
+      origin = new URL(sender.url).origin
+    } catch {
+      return null
+    }
+  }
+  if (!origin || !/^https?:\/\//.test(origin)) return null
+  return origin
+}
+
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
   if (message.type === 'EXTERNAL_REQUEST') {
-    handleExternalRequest(message as ExternalRequestMessage, sender, sendResponse)
+    const origin = webOriginOf(sender)
+    if (!origin) {
+      sendResponse({
+        error: { code: 'NOT_ALLOWED', message: 'Requests must come from a web page' },
+      })
+      return false
+    }
+    handleExternalRequest(message as ExternalRequestMessage, origin, sendResponse)
     return true
   }
+
+  if (message.type === 'GET_WALLET_STATE_FOR_BROADCAST') {
+    const origin = webOriginOf(sender)
+    if (!origin) return false
+    handleGetWalletStateForBroadcast(origin, sendResponse)
+    return true
+  }
+
+  // Everything else drives the wallet itself (approvals, keys, signing), so only
+  // the wallet's own pages, approval windows and offscreen documents may send it.
+  if (!isExtensionPage(sender)) return false
 
   if (message.type === 'APPROVAL_RESPONSE') {
     const { id, approved } = message as ApprovalResponseMessage
@@ -1040,11 +1085,6 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
       resolver(approved)
     }
     sendResponse({ ok: true })
-    return true
-  }
-
-  if (message.type === 'GET_WALLET_STATE_FOR_BROADCAST') {
-    handleGetWalletStateForBroadcast(sendResponse)
     return true
   }
 
@@ -1061,13 +1101,17 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
 })
 
 async function handleGetWalletStateForBroadcast(
+  origin: string,
   sendResponse: (r: Record<string, unknown>) => void
 ) {
   const session = await chrome.storage.session?.get(SESSION_KEY)
-  const pubkey = session?.[SESSION_KEY] ?? null
+  const pubkey = (session?.[SESSION_KEY] as string | undefined) ?? null
   const activeNetwork = await getActiveNetwork()
+  // Every open tab hears that the wallet changed, but only a site connected to
+  // this account on this network learns which account it changed to.
+  const allowed = pubkey ? await isAllowed(origin, pubkey, activeNetwork.id) : false
   sendResponse({
-    address: pubkey,
+    address: allowed ? pubkey : null,
     network: activeNetwork.id,
     networkPassphrase: activeNetwork.passphrase,
   })
@@ -1261,17 +1305,16 @@ async function openAndWaitForUnlock(timeoutMs = 2 * 60 * 1000): Promise<string |
 type ExternalRequestMessage = {
   id: string
   requestType: string
-  origin: string
   payload?: Record<string, unknown>
 }
 
 async function handleExternalRequest(
   message: ExternalRequestMessage,
-  _sender: chrome.runtime.MessageSender,
+  origin: string,
   sendResponse: (r: Record<string, unknown>) => void
 ) {
   try {
-    const { id, requestType, origin, payload } = message
+    const { id, requestType, payload } = message
 
     const session = await chrome.storage.session?.get(SESSION_KEY)
     const pubkey = (session?.[SESSION_KEY] as string | undefined) ?? null

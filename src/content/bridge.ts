@@ -9,11 +9,11 @@ window.addEventListener('message', (event: MessageEvent) => {
   if (event.source !== window) return
   if (event.data?.type !== CYPHRAS_INTERNAL_REQUEST) return
 
-  const { id, requestType, origin, payload } = event.data
+  const { id, requestType, payload } = event.data
 
   try {
     chrome.runtime.sendMessage(
-      { type: 'EXTERNAL_REQUEST', id, requestType, origin, payload },
+      { type: 'EXTERNAL_REQUEST', id, requestType, payload },
       (response?: { result?: unknown; error?: unknown }) => {
         if (chrome.runtime.lastError) {
           // Service worker restarted - send error so SDK doesn't hang
