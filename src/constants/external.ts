@@ -57,20 +57,5 @@ export type ExternalServiceType =
   (typeof EXTERNAL_SERVICE_TYPES)[keyof typeof EXTERNAL_SERVICE_TYPES]
 
 export const ALLOWLIST_STORAGE_KEY = 'cyphras_allowlist'
-export const PENDING_REQUESTS_KEY = 'cyphras_pending_requests'
 // Key in chrome.storage.session where full approval payloads (XDR, etc.) are stored
 export const APPROVAL_PAYLOAD_STORAGE_KEY = 'cyphras_approval_payloads'
-
-export interface ExternalRequest {
-  id: string
-  type: string
-  requestType: string
-  chain?: string // 'stellar' | 'evm' | 'bitcoin' - defaults to 'stellar' when absent
-  origin: string
-  payload?: Record<string, unknown>
-}
-
-export interface PendingRequest extends ExternalRequest {
-  tabId: number
-  createdAt: number
-}
