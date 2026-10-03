@@ -1,9 +1,54 @@
 import type { Operation } from '@/hooks/useHistory'
 
+const STROOPS_PER_UNIT = 10_000_000n
+
+interface ContractTransfer {
+  direction: 'in' | 'out'
+  amount: string
+  code: string
+  issuer?: string
+}
+
 export function parseAsset(assetStr?: string): { code: string; issuer?: string } {
   if (!assetStr || assetStr === 'native') return { code: 'XLM' }
   const [code, issuer] = assetStr.split(':')
   return { code: code ?? 'XLM', issuer }
+}
+
+// Horizon prints SAC amounts with 7 decimals; whole stroops keep the per-asset sums exact.
+function toStroops(amount: string): bigint {
+  const [whole, frac = ''] = amount.split('.')
+  return BigInt(whole) * STROOPS_PER_UNIT + BigInt(frac.padEnd(7, '0'))
+}
+
+function fromStroops(stroops: bigint): string {
+  const frac = (stroops % STROOPS_PER_UNIT).toString().padStart(7, '0')
+  return trimZeros(`${stroops / STROOPS_PER_UNIT}.${frac}`)
+}
+
+// Netted per asset so a refund never reads as a receive; credits win so a swap shows its output.
+function contractTransfer(op: Operation, publicKey: string): ContractTransfer | null {
+  const net = new Map<string, { code: string; issuer?: string; stroops: bigint }>()
+  for (const c of op.asset_balance_changes ?? []) {
+    const moved = toStroops(c.amount)
+    const delta = (c.to === publicKey ? moved : 0n) - (c.from === publicKey ? moved : 0n)
+    if (delta === 0n) continue
+    const code = c.asset_type === 'native' ? 'XLM' : (c.asset_code ?? '')
+    const key = `${code}:${c.asset_issuer ?? ''}`
+    const entry = net.get(key) ?? { code, issuer: c.asset_issuer, stroops: 0n }
+    entry.stroops += delta
+    net.set(key, entry)
+  }
+  const assets = [...net.values()]
+  const pick = assets.find((a) => a.stroops > 0n) ?? assets.find((a) => a.stroops < 0n)
+  if (!pick) return null
+  const inbound = pick.stroops > 0n
+  return {
+    direction: inbound ? 'in' : 'out',
+    amount: fromStroops(inbound ? pick.stroops : -pick.stroops),
+    code: pick.code,
+    issuer: pick.issuer,
+  }
 }
 
 export function getDirection(op: Operation, publicKey: string): 'in' | 'out' | 'neutral' {
@@ -17,6 +62,9 @@ export function getDirection(op: Operation, publicKey: string): 'in' | 'out' | '
   if (op.type === 'create_account') return op.account === publicKey ? 'in' : 'out'
   if (op.type === 'claim_claimable_balance') return 'in'
   if (op.type === 'create_claimable_balance') return 'out'
+  if (op.type === 'invoke_host_function') {
+    return contractTransfer(op, publicKey)?.direction ?? 'neutral'
+  }
   return 'neutral'
 }
 
@@ -47,8 +95,10 @@ export function getOpLabel(op: Operation, publicKey: string): string {
       return 'Balance claimed'
     case 'create_claimable_balance':
       return 'Claimable created'
-    case 'invoke_host_function':
-      return 'Contract call'
+    case 'invoke_host_function': {
+      const dir = getDirection(op, publicKey)
+      return dir === 'in' ? 'Received' : dir === 'out' ? 'Sent' : 'Contract call'
+    }
     default:
       return op.type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
   }
@@ -60,7 +110,11 @@ export function trimZeros(s: string): string {
   return s.replace(/\.?0+$/, '')
 }
 
-export function getAmountDisplay(op: Operation): { amount: string; code: string } | null {
+export function getAmountDisplay(
+  op: Operation,
+  publicKey: string
+): { amount: string; code: string; issuer?: string } | null {
+  if (op.type === 'invoke_host_function') return contractTransfer(op, publicKey)
   if (op.type === 'create_account' && op.starting_balance)
     return { amount: trimZeros(op.starting_balance), code: 'XLM' }
   if (op.type === 'create_claimable_balance' && op.amount) {
