@@ -63,7 +63,7 @@ chrome.runtime.onMessage.addListener((message: { type?: string }) => {
   try {
     chrome.runtime.sendMessage(
       { type: 'GET_WALLET_STATE_FOR_BROADCAST' },
-      (response?: { address: string; network: string; networkPassphrase: string }) => {
+      (response?: { address: string | null; network: string; networkPassphrase: string }) => {
         if (chrome.runtime.lastError || !response) return
         window.postMessage(
           {
