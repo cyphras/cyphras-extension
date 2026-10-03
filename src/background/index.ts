@@ -9,7 +9,7 @@ import {
 import { getCuratedEvmTokens } from './evmAssets'
 import type { ChainBalance, ChainActivity } from '@ext-types/index'
 import { EVM_PROXY_BASE } from '@constants/backend'
-import { signTransactionXdr, signMessageBytes } from './signers/stellar'
+import { signTransactionXdr, signMessageSep53 } from './signers/stellar'
 import { deriveAccountAddresses } from './signers/addresses'
 import { bitcoinAddressFromPublicKey, deriveBitcoinKeyFromMnemonic } from './signers/bitcoin'
 import {
@@ -1250,7 +1250,7 @@ async function handleExternalRequest(
         }
 
         try {
-          const signatureBase64 = signMessageBytes(msg, sessionSecret)
+          const signatureBase64 = signMessageSep53(msg, sessionSecret)
           trackSign('message')
           sendResponse({ result: { signature: signatureBase64, signerAddress: msgPubkey } })
         } catch {
