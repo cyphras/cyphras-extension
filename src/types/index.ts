@@ -34,6 +34,9 @@ export interface SwapParams {
   slippage: string
   fee?: string
   timeout?: number
+  // The reviewed quote's floor and route; signing uses them as they are.
+  destMin?: string
+  path?: Array<{ assetCode: string; assetIssuer: string }>
 }
 
 export interface SwapQuote {
@@ -185,6 +188,15 @@ export interface ServiceResponse {
   status?: 'pending' | 'success' | 'failed'
   fee?: string
   feeCode?: string
+  // Bitcoin: fee tiers in sat/vB, and a built payment's figures (sats as strings, JSON-safe).
+  btcFees?: { slow: number; normal: number; fast: number }
+  btcQuote?: {
+    feeSats: string
+    sendSats: string
+    vsize: number
+    spendableSats: string
+    pendingSats: string
+  }
   xdr?: string
   quote?: SwapQuote
   connectedApps?: string[]
@@ -224,7 +236,7 @@ export interface ServiceResponse {
   jobs?: CctpJobInfo[]
   maxFee?: string
   breakdown?: CctpFeeBreakdown
-  activity?: EvmActivity[]
+  activity?: ChainActivity[]
 }
 
 export interface AccountInfo {
@@ -234,7 +246,7 @@ export interface AccountInfo {
   walletId: string // 'primary' | UUID (extra HD wallets) | 'sk:UUID' (imported keys)
   // Per-family derived addresses; the account identity is (walletId, index).
   // publicKey mirrors addresses.stellar during the multichain migration.
-  addresses?: Partial<Record<'stellar' | 'evm', string>>
+  addresses?: Partial<Record<'stellar' | 'evm' | 'bitcoin' | 'bitcoinTestnet', string>>
 }
 
 // Chain-neutral balance shape crossing the background boundary; raw chain
@@ -253,7 +265,7 @@ export interface ChainBalance {
 
 // One EVM transfer or contract call touching the account, normalized at the
 // background boundary the same way balances are (display units, CAIP-2 chain).
-export interface EvmActivity {
+export interface ChainActivity {
   chain: string
   hash: string
   timestamp: string // ISO

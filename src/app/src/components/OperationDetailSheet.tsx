@@ -620,7 +620,7 @@ export default function OperationDetailSheet({
                     className="cursor-pointer text-muted-foreground transition-colors hover:text-foreground"
                   >
                     {xdrCopied ? (
-                      <Check size={11} className="text-green-500" />
+                      <Check size={11} className="pop-enter text-green-500" />
                     ) : (
                       <Copy size={11} />
                     )}

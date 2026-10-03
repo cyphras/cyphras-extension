@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { usePreferences } from '@/context/PreferencesContext'
+import { Reveal } from '@/components/Collapse'
 import { ChevronLeft, ExternalLink } from 'lucide-react'
 import { SideCard, AmountInput, QuickFillChips } from '@/components/PairCard'
 import { RecipientRow } from '@/components/RecipientRow'
@@ -11,6 +13,7 @@ import {
   DetailRow,
   NetworkValue,
   TxResultHero,
+  TokenStatusIcon,
 } from '@/components/TxDetailParts'
 import { Button } from '@/components/ui/button'
 import {
@@ -196,7 +199,8 @@ export function SendEvm({
     )
   }
 
-  const explorerLink = chain && txHash ? explorerUrl(chain.explorer.tx, txHash) : null
+  const { chainExplorer } = usePreferences()
+  const explorerLink = chain && txHash ? explorerUrl(chainExplorer(chain).tx, txHash) : null
 
   const goBack = () => {
     if (sending) return
@@ -261,9 +265,9 @@ export function SendEvm({
                   onBlur={() => setDestinationTouched(true)}
                   className={`w-full bg-transparent font-mono text-sm text-foreground outline-none placeholder:text-muted-foreground/50 ${destinationInvalid ? 'text-destructive' : ''}`}
                 />
-                {destinationInvalid && (
+                <Reveal show={destinationInvalid} gap={8}>
                   <p className="text-xs text-destructive">Enter a valid 0x address.</p>
-                )}
+                </Reveal>
               </>
             )}
           </div>
@@ -334,6 +338,8 @@ export function SendEvm({
               amountText={`-${amount}`}
               code={asset.code}
               issuer={asset.issuer}
+              icon={asset.icon}
+              chainIcon={chainIcon}
               subtitle={`to ${recipientText}`}
               note={
                 txState === 'failed'
@@ -383,7 +389,18 @@ export function SendEvm({
         ) : (
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-3 rounded-xl bg-card px-4 py-4">
-              <AssetIcon code={asset.code} icon={asset.icon} chainIcons={[chainIcon]} />
+              {sending ? (
+                <TokenStatusIcon
+                  state="pending"
+                  code={asset.code}
+                  icon={asset.icon}
+                  chainIcon={chainIcon}
+                  size="sm"
+                  className="-m-1"
+                />
+              ) : (
+                <AssetIcon code={asset.code} icon={asset.icon} chainIcons={[chainIcon]} />
+              )}
               <div className="min-w-0">
                 <p className="text-2xl font-bold tabular-nums text-foreground">
                   {amount}{' '}
@@ -420,11 +437,16 @@ export function SendEvm({
                 </span>
               </DetailRow>
             </div>
-            {error && (
+            <Reveal show={!!error} gap={16}>
               <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 {error}
               </p>
-            )}
+            </Reveal>
+            <Reveal show={sending} gap={16}>
+              <p className="text-center text-xs text-muted-foreground">
+                Signing and broadcasting to {chainName}...
+              </p>
+            </Reveal>
             <div className="flex gap-3">
               <Button variant="outline" className="flex-1" disabled={sending} onClick={closeSheet}>
                 Cancel

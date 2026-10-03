@@ -4,6 +4,7 @@ import { VerifiedMark } from '@/components/token/VerifiedMark'
 import { ArrowUpDown, ChevronDown } from 'lucide-react'
 import { AssetIcon } from '@/components/token/AssetIcon'
 import { sanitizeAmountInput } from '@/lib/amount'
+import { Reveal } from '@/components/Collapse'
 
 export interface SideCardChip {
   code?: string // absent = nothing picked yet
@@ -86,7 +87,9 @@ export function SideCard({
         <span className="min-w-0 truncate">{footAmount}</span>
         <span className="shrink-0">{footAsset}</span>
       </div>
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      <Reveal show={!!error} gap={8}>
+        <p className="text-xs text-destructive">{error}</p>
+      </Reveal>
     </div>
   )
 }
@@ -102,21 +105,63 @@ function amountSize(text: string): string {
 
 // Text, not number: a number input changes value on mouse wheel and renders
 // the OS locale's comma; digits and one dot are all it takes.
-export function AmountInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function AmountInput({
+  value,
+  onChange,
+  prefix,
+}: {
+  value: string
+  onChange: (v: string) => void
+  prefix?: string
+}) {
+  const size = amountSize(`${prefix ?? ''}${value}`)
   return (
-    <input
-      type="text"
-      inputMode="decimal"
-      autoComplete="off"
-      placeholder="0"
-      aria-label="Amount"
-      value={value}
-      onChange={(e) => {
-        const v = sanitizeAmountInput(e.target.value)
-        if (v !== null) onChange(v)
-      }}
-      className={`w-full border-none bg-transparent text-left ${amountSize(value)} font-bold tabular-nums text-foreground outline-none transition-[font-size] placeholder:text-muted-foreground/40`}
-    />
+    <span className="flex items-baseline">
+      {prefix && (
+        <span
+          className={`${size} font-bold ${value ? 'text-foreground' : 'text-muted-foreground/40'}`}
+        >
+          {prefix}
+        </span>
+      )}
+      <input
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        placeholder="0"
+        aria-label={prefix ? 'Amount in USD' : 'Amount'}
+        value={value}
+        onChange={(e) => {
+          const v = sanitizeAmountInput(e.target.value)
+          if (v !== null) onChange(v)
+        }}
+        className={`w-full min-w-0 border-none bg-transparent text-left ${size} font-bold tabular-nums text-foreground outline-none transition-[font-size] placeholder:text-muted-foreground/40`}
+      />
+    </span>
+  )
+}
+
+// The other unit under the amount; tapping it swaps which one is typed.
+export function FiatSwitch({
+  text,
+  onToggle,
+  enabled,
+}: {
+  text: string
+  onToggle: () => void
+  enabled: boolean
+}) {
+  if (!enabled) return <>{text}</>
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label="Switch between token and USD amount"
+      className="inline-flex cursor-pointer items-center gap-1 transition-colors hover:text-foreground"
+    >
+      {text}
+      <ArrowUpDown size={11} />
+    </button>
   )
 }
 
@@ -151,24 +196,5 @@ export function QuickFillChips({ onFill }: { onFill: (fraction: number) => void 
         </button>
       ))}
     </span>
-  )
-}
-
-export function FlipButton({
-  onClick,
-  disabled = false,
-}: {
-  onClick: () => void
-  disabled?: boolean
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      aria-label="Swap direction"
-      className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-full border-4 border-background bg-card p-1.5 text-muted-foreground shadow-sm transition-all hover:rotate-180 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:rotate-0"
-    >
-      <ArrowUpDown size={15} />
-    </button>
   )
 }

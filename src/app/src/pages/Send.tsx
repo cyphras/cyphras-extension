@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { Reveal } from '@/components/Collapse'
 import { VerifiedMark } from '@/components/token/VerifiedMark'
 import { AssetIcon as TokenAssetIcon } from '@/components/token/AssetIcon'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -7,21 +8,13 @@ import { useNetwork } from '@/context/NetworkContext'
 import { useBalances } from '@/hooks/useBalances'
 import { usePreferences } from '@/context/PreferencesContext'
 import { Button } from '@/components/ui/button'
-import {
-  ExternalLink,
-  Settings,
-  ChevronLeft,
-  CheckCircle2,
-  X,
-  Search,
-  AlertTriangle,
-  Info,
-} from 'lucide-react'
+import { ExternalLink, Settings, ChevronLeft, X, Search, AlertTriangle, Info } from 'lucide-react'
 import WalletNavbar from '@/components/WalletNavbar'
 import { SendEvm } from '@/components/SendEvm'
+import { SendBitcoin } from '@/components/SendBitcoin'
 import { SendRecipientStep, type RecipientSuggestion } from '@/components/SendRecipientStep'
 import { detectRecipientFamily, type RecipientFamily } from '@/lib/address'
-import { getEvmChainsForEnv } from '@bg/chainRegistry'
+import { getBitcoinChainsForEnv, getEvmChainsForEnv } from '@bg/chainRegistry'
 import { StellarAvatar } from '@/components/StellarAvatar'
 import { SERVICE_TYPES } from '@constants/services'
 import { chainById, type ChainEntry } from '@constants/chains'
@@ -45,6 +38,7 @@ import {
   CopyValue,
   DetailRow,
   NetworkValue,
+  TokenStatusIcon,
   TxResultHero,
 } from '@/components/TxDetailParts'
 import { useStellarChain } from '@/hooks/useStellarChain'
@@ -69,8 +63,8 @@ const PRIVACY_LEVELS: { value: PrivacyLevel; label: string; eta: string; hint: s
 ]
 
 // Scoped per (networkId, account) so recents do not bleed across accounts or networks.
-function evmRecentsKey(networkId: string, account: string): string {
-  return `cyphras_recent_evm_recipients_${networkId}_${account}`
+function chainRecentsKey(networkId: string, account: string): string {
+  return `cyphras_recent_chain_recipients_${networkId}_${account}`
 }
 
 function recentRecipientsKey(networkId: string, account: string): string {
@@ -611,17 +605,23 @@ export default function Send() {
   // Recipient first (SendRecipientStep): the address picks the network, and
   // the asset list after it only offers assets that can reach that network.
   const [recipientFamily, setRecipientFamily] = useState<RecipientFamily | null>(null)
-  const [evmRecipient, setEvmRecipient] = useState('')
-  const [evmRecents, setEvmRecents] = useState<string[]>([])
+  // The picked EVM or Bitcoin recipient; Stellar recipients live in `destination`.
+  const [chainRecipient, setChainRecipient] = useState('')
+  const [chainRecents, setChainRecents] = useState<string[]>([])
   const [evmChains, setEvmChains] = useState<ChainEntry[]>([])
+  const [btcChain, setBtcChain] = useState<ChainEntry | undefined>(undefined)
   const [familyIcons, setFamilyIcons] = useState<Map<string, string>>(new Map())
   const stellarChainId = activeNetwork.id === 'testnet' ? 'stellar:testnet' : 'stellar:pubnet'
   useEffect(() => {
     let cancelled = false
-    getEvmChainsForEnv(activeNetwork.id).then(async (chains) => {
+    Promise.all([
+      getEvmChainsForEnv(activeNetwork.id),
+      getBitcoinChainsForEnv(activeNetwork.id),
+    ]).then(async ([chains, btc]) => {
       if (cancelled) return
       setEvmChains(chains)
-      const icons = await getChainIcons([stellarChainId, ...chains.map((c) => c.id)])
+      setBtcChain(btc[0])
+      const icons = await getChainIcons([stellarChainId, ...[...chains, ...btc].map((c) => c.id)])
       if (!cancelled) setFamilyIcons(icons)
     })
     return () => {
@@ -630,20 +630,25 @@ export default function Send() {
   }, [activeNetwork.id, stellarChainId])
   useEffect(() => {
     if (!status.publicKey) return
-    const key = evmRecentsKey(activeNetwork.id, status.publicKey)
+    const key = chainRecentsKey(activeNetwork.id, status.publicKey)
     chrome.storage.local.get(key, (result) => {
       const stored = result[key]
-      setEvmRecents(
+      setChainRecents(
         Array.isArray(stored)
-          ? stored.filter((d) => typeof d === 'string' && detectRecipientFamily(d) === 'evm')
+          ? stored.filter(
+              (d) =>
+                typeof d === 'string' &&
+                (detectRecipientFamily(d) === 'evm' || detectRecipientFamily(d) === 'bitcoin')
+            )
           : []
       )
     })
   }, [status.publicKey, activeNetwork.id])
-  function rememberEvmRecipient(dest: string) {
-    if (!status.publicKey || detectRecipientFamily(dest) !== 'evm') return
-    const key = evmRecentsKey(activeNetwork.id, status.publicKey)
-    setEvmRecents((prev) => {
+  function rememberChainRecipient(dest: string) {
+    const family = detectRecipientFamily(dest)
+    if (!status.publicKey || (family !== 'evm' && family !== 'bitcoin')) return
+    const key = chainRecentsKey(activeNetwork.id, status.publicKey)
+    setChainRecents((prev) => {
       const next = [dest, ...prev.filter((d) => d.toLowerCase() !== dest.toLowerCase())].slice(
         0,
         MAX_RECENT_RECIPIENTS
@@ -654,20 +659,24 @@ export default function Send() {
   }
   const ownAccountFor = (address: string) =>
     accounts.find(
-      (a) => a.publicKey === address || a.addresses?.evm?.toLowerCase() === address.toLowerCase()
+      (a) =>
+        a.publicKey === address ||
+        a.addresses?.evm?.toLowerCase() === address.toLowerCase() ||
+        a.addresses?.bitcoin === address ||
+        a.addresses?.bitcoinTestnet === address
     )
   const ownLabelFor = (address: string) => {
     const a = ownAccountFor(address)
     return a ? a.label || `Account ${a.index + 1}` : undefined
   }
-  const isEvmBalance = (b: AssetBalance) => b.chain.startsWith('eip155')
+  const familyOf = (b: AssetBalance): RecipientFamily =>
+    b.chain.startsWith('eip155') ? 'evm' : b.chain.startsWith('bip122') ? 'bitcoin' : 'stellar'
   // Keep the chosen asset on the recipient's network, natives first.
   useEffect(() => {
     if (!recipientFamily) return
-    const wantEvm = recipientFamily === 'evm'
     const current = balances.find((b) => `${b.code}:${b.issuer}` === selectedAssetKey)
-    if (current && isEvmBalance(current) === wantEvm) return
-    const sameFamily = balances.filter((b) => isEvmBalance(b) === wantEvm)
+    if (current && familyOf(current) === recipientFamily) return
+    const sameFamily = balances.filter((b) => familyOf(b) === recipientFamily)
     const wanted = sameFamily.find((b) =>
       wantedAssets?.some((w) => w.chain === b.chain && w.code === b.code && w.issuer === b.issuer)
     )
@@ -675,7 +684,7 @@ export default function Send() {
     if (next) setSelectedAssetKey(`${next.code}:${next.issuer}`)
   }, [recipientFamily, balances, selectedAssetKey, wantedAssets])
   const pickerBalances = recipientFamily
-    ? balances.filter((b) => isEvmBalance(b) === (recipientFamily === 'evm'))
+    ? balances.filter((b) => familyOf(b) === recipientFamily)
     : balances
   const selectedAssetObj = {
     code: selectedBalance?.code ?? 'XLM',
@@ -761,7 +770,7 @@ export default function Send() {
     const gasHeadroom = COMMIT_GAS_HEADROOM_PER_NOTE_STROOPS * BigInt(quote?.totalNotes ?? 1)
     const xlmNeeded = totalFee + gasHeadroom + (code === 'XLM' ? sendStroops : 0n)
     // Stellar XLM only (ETH is native too), and only what sits above the reserve.
-    const xlmBalance = balances.find((b) => b.isNative && !isEvmBalance(b))
+    const xlmBalance = balances.find((b) => b.isNative && familyOf(b) === 'stellar')
     const xlmHave = xlmBalance
       ? spendableUnits(xlmBalance.balance, xlmDecimals, xlmBalance.locked)
       : 0n
@@ -769,7 +778,7 @@ export default function Send() {
       return 'Not enough XLM for relayer fees'
     }
     if (code !== 'XLM') {
-      const assetBalance = balances.find((b) => b.code === code && !isEvmBalance(b))
+      const assetBalance = balances.find((b) => b.code === code && familyOf(b) === 'stellar')
       const assetHave = assetBalance
         ? spendableUnits(assetBalance.balance, decimals, assetBalance.locked)
         : 0n
@@ -1055,9 +1064,9 @@ export default function Send() {
 
   if (!recipientFamily && step === 'form') {
     const recents: RecipientSuggestion[] = [
-      ...evmRecents.map((address) => ({
+      ...chainRecents.map((address) => ({
         address,
-        family: 'evm' as const,
+        family: detectRecipientFamily(address) ?? ('evm' as const),
         label: ownLabelFor(address),
       })),
       ...recentRecipients.map((address) => ({
@@ -1072,6 +1081,8 @@ export default function Send() {
         const label = a.label || `Account ${a.index + 1}`
         const rows: RecipientSuggestion[] = [{ address: a.publicKey, family: 'stellar', label }]
         if (a.addresses?.evm) rows.push({ address: a.addresses.evm, family: 'evm', label })
+        const btcAddress = btcChain?.isTestnet ? a.addresses?.bitcoinTestnet : a.addresses?.bitcoin
+        if (btcChain && btcAddress) rows.push({ address: btcAddress, family: 'bitcoin', label })
         return rows
       })
     return (
@@ -1086,6 +1097,15 @@ export default function Send() {
           evmName={evmChains.map((c) => c.name).join(', ') || 'Ethereum'}
           stellarIcon={familyIcons.get(stellarChainId)}
           evmIcon={evmChains[0] ? familyIcons.get(evmChains[0].id) : undefined}
+          bitcoin={
+            btcChain
+              ? {
+                  name: btcChain.name,
+                  icon: familyIcons.get(btcChain.id),
+                  testnet: btcChain.isTestnet,
+                }
+              : undefined
+          }
           onBack={() => navigate(-1)}
           onContinue={(address, family) => {
             setRecipientFamily(family)
@@ -1093,11 +1113,45 @@ export default function Send() {
               setDestination(address)
               setDestinationTouched(true)
             } else {
-              setEvmRecipient(address)
+              // Bech32 is case-insensitive; the signer and the node expect lowercase.
+              setChainRecipient(
+                family === 'bitcoin' && /^(bc|tb)1/i.test(address) ? address.toLowerCase() : address
+              )
             }
           }}
         />
       </div>
+    )
+  }
+
+  if (selectedBalance?.chain.startsWith('bip122')) {
+    return (
+      <>
+        <div className="flex-1 flex flex-col overflow-hidden bg-background">
+          <div className="px-5 pt-5 pb-3 shrink-0 border-b border-border/40">
+            <WalletNavbar />
+          </div>
+          <SendBitcoin
+            asset={selectedBalance}
+            chainName={chainNameOf(selectedBalance.chain)}
+            chainIcon={familyIcons.get(selectedBalance.chain)}
+            onPickAsset={() => setShowAssetPicker(true)}
+            initialDestination={chainRecipient}
+            recipientLabel={ownLabelFor(chainRecipient)}
+            onSent={rememberChainRecipient}
+            onBack={() => setRecipientFamily(null)}
+          />
+        </div>
+        {showAssetPicker && (
+          <AssetPickerSheet
+            balances={pickerBalances}
+            selectedKey={selectedAssetKey}
+            chainName={chainNameOf}
+            onSelect={setSelectedAssetKey}
+            onClose={() => setShowAssetPicker(false)}
+          />
+        )}
+      </>
     )
   }
 
@@ -1115,8 +1169,8 @@ export default function Send() {
             chainName={chainNameOf(selectedBalance.chain)}
             chainIcon={familyIcons.get(selectedBalance.chain)}
             onPickAsset={() => setShowAssetPicker(true)}
-            initialDestination={evmRecipient}
-            recipientLabel={ownLabelFor(evmRecipient)}
+            initialDestination={chainRecipient}
+            recipientLabel={ownLabelFor(chainRecipient)}
             nativeBalance={
               balances.find((b) => b.chain === selectedBalance.chain && b.isNative)?.balance
             }
@@ -1124,7 +1178,7 @@ export default function Send() {
               balances.find((b) => b.chain === selectedBalance.chain && b.isNative)?.usdPrice ??
               null
             }
-            onSent={rememberEvmRecipient}
+            onSent={rememberChainRecipient}
             onBack={() => setRecipientFamily(null)}
           />
         </div>
@@ -1223,9 +1277,9 @@ export default function Send() {
                   className="bg-transparent text-sm font-mono text-foreground placeholder:text-muted-foreground outline-none w-full"
                 />
               )}
-              {destinationInvalid && (
+              <Reveal show={destinationInvalid} gap={8}>
                 <p className="text-xs text-destructive">Enter a valid recipient address</p>
-              )}
+              </Reveal>
               {destination === '' && destinationFocused && recentRecipients.length > 0 && (
                 <div className="flex flex-col gap-1.5 pt-1">
                   <p className="text-xs text-muted-foreground">Recent</p>
@@ -1273,9 +1327,9 @@ export default function Send() {
                 chainIcon: selectedBalance ? familyIcons.get(selectedBalance.chain) : undefined,
                 // "Stellar" like every other chip; the navbar already says which Stellar network.
                 subLabel: selectedBalance
-                  ? isEvmBalance(selectedBalance)
-                    ? chainNameOf(selectedBalance.chain)
-                    : 'Stellar'
+                  ? familyOf(selectedBalance) === 'stellar'
+                    ? 'Stellar'
+                    : chainNameOf(selectedBalance.chain)
                   : undefined,
                 onPick: () => setShowAssetPicker(true),
                 ariaLabel: 'Select asset',
@@ -1318,21 +1372,23 @@ export default function Send() {
                 maxLength={memoType === 'text' ? 28 : undefined}
                 className="bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none w-full"
               />
-              {memoType === 'text' && memo && (
+              <Reveal show={memoType === 'text' && !!memo} gap={8}>
                 <p className="text-xs text-muted-foreground text-right">{memo.length}/28</p>
-              )}
-              {mode === 'private' && memo && (
+              </Reveal>
+              <Reveal show={mode === 'private' && !!memo} gap={8}>
                 <p className="text-xs text-muted-foreground">
                   Memos are stripped from private payments to protect your privacy.
                 </p>
-              )}
+              </Reveal>
             </div>
           </div>
         </div>
 
         {/* Fixed footer: error + Continue button */}
         <div className="shrink-0 px-5 pb-5 pt-3 border-t border-border/40">
-          {error && step === 'form' && <p className="text-xs text-destructive mb-3">{error}</p>}
+          <Reveal show={!!error && step === 'form'}>
+            <p className="text-xs text-destructive mb-3">{error}</p>
+          </Reveal>
           <Button className="w-full" onClick={handleFormContinue}>
             Continue
           </Button>
@@ -1477,11 +1533,11 @@ export default function Send() {
                     </span>
                   </button>
 
-                  {error && (
+                  <Reveal show={!!error} gap={12}>
                     <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2.5">
                       <p className="text-xs text-destructive">{error}</p>
                     </div>
-                  )}
+                  </Reveal>
                 </div>
                 <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
                   <Button
@@ -1512,9 +1568,12 @@ export default function Send() {
                 <>
                   <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
                     <div className="flex flex-col items-center gap-3 text-center pt-1">
-                      <div className="h-14 w-14 rounded-full bg-green-500/15 flex items-center justify-center">
-                        <CheckCircle2 size={28} className="text-green-500" />
-                      </div>
+                      <TokenStatusIcon
+                        state="success"
+                        code={selectedAssetObj.code}
+                        icon={selectedAssetObj.icon}
+                        chainIcon={stellarChain.icon}
+                      />
                       <div>
                         <p className="text-base font-bold text-foreground">
                           Payment sent privately
@@ -1777,11 +1836,16 @@ export default function Send() {
                         ) : null}
                       </>
                     )}
-                    {error && (
+                    <Reveal show={!!error} gap={12}>
                       <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2.5">
                         <p className="text-xs text-destructive">{error}</p>
                       </div>
-                    )}
+                    </Reveal>
+                    <Reveal show={loading} gap={12}>
+                      <p className="text-center text-xs text-muted-foreground">
+                        Signing and submitting to {stellarChain.name}...
+                      </p>
+                    </Reveal>
                   </div>
                   <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
                     <Button
@@ -1813,6 +1877,8 @@ export default function Send() {
                     amountText={`-${amount}`}
                     code={selectedAssetObj.code}
                     issuer={selectedAssetObj.issuer || undefined}
+                    icon={selectedAssetObj.icon}
+                    chainIcon={stellarChain.icon}
                     subtitle={`to ${ownLabelFor(lastDestRef.current) ?? shortDest}`}
                   />
                   <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
@@ -1952,11 +2018,16 @@ export default function Send() {
                     </AdvancedDetails>
                   )}
 
-                  {error && (
+                  <Reveal show={!!error} gap={12}>
                     <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2.5">
                       <p className="text-xs text-destructive">{error}</p>
                     </div>
-                  )}
+                  </Reveal>
+                  <Reveal show={loading} gap={12}>
+                    <p className="text-center text-xs text-muted-foreground">
+                      Signing and submitting to {stellarChain.name}...
+                    </p>
+                  </Reveal>
                 </div>
                 <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
                   <Button

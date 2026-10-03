@@ -109,3 +109,30 @@ export function bridgeSteps(job: CctpJobInfo): { label: string; state: BridgeSte
     return { label, state }
   })
 }
+
+export function formatDuration(ms: number): string {
+  const min = Math.round(ms / 60_000)
+  if (min < 1) return 'Under a minute'
+  if (min < 60) return `${min} min`
+  return `${Math.floor(min / 60)} h ${min % 60} min`
+}
+
+export function formatWhen(ts: number): string {
+  return new Date(ts).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+// A Stellar burn finalizes in seconds at either speed; the Ethereum leg is what
+// Standard waits on, roughly 15-20 minutes of block confirmations.
+export function bridgeEta(
+  direction: CctpJobInfo['direction'],
+  speed?: 'standard' | 'fast'
+): string {
+  if (direction === 'stellar-to-evm') return '~1 min'
+  return speed === 'fast' ? '~1-5 min' : '~15-20 min'
+}

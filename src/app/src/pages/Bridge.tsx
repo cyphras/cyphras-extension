@@ -1,19 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { VerifiedBadge } from '@/components/token/VerifiedBadge'
-import { Collapse } from '@/components/Collapse'
+import { Collapse, Reveal } from '@/components/Collapse'
 import { useLocation, useNavigate } from 'react-router-dom'
-import {
-  ChevronLeft,
-  ChevronDown,
-  AlertTriangle,
-  ExternalLink,
-  ArrowLeftRight,
-  ArrowRight,
-} from 'lucide-react'
+import { ChevronLeft, ChevronDown, AlertTriangle, ExternalLink, ArrowLeftRight } from 'lucide-react'
 import { CctpCredit, CircleMark } from '@/components/BrandMarks'
 import { useWallet } from '@/context/WalletContext'
 import { useNetwork } from '@/context/NetworkContext'
-import { useBalances } from '@/hooks/useBalances'
+import { useBalances, getIconMap } from '@/hooks/useBalances'
+import { iconForAsset } from '@/lib/assetList'
 import {
   useCctpJobs,
   quoteCctp,
@@ -33,14 +26,10 @@ import { chainById } from '@constants/chains'
 import { shortAddr } from '@/lib/cctp'
 import { getChainIcons } from '@/lib/chainInfo'
 import { formatFiat } from '@/lib/activity'
-import {
-  SideCard,
-  AmountInput,
-  AmountValue,
-  QuickFillChips,
-  FlipButton,
-} from '@/components/PairCard'
-import { AssetIcon } from '@/components/token/AssetIcon'
+import { SideCard, AmountInput, AmountValue, QuickFillChips } from '@/components/PairCard'
+import { LossSheet, LossWarning, RatePill, TradeLegs } from '@/components/TradeParts'
+import { LOSS_CONFIRM_PCT, LOSS_WARN_PCT, valueChangePct } from '@/lib/valueChange'
+import { bridgeEta } from '@/lib/cctp'
 import {
   formatUnits,
   fractionUnits,
@@ -70,15 +59,6 @@ const NON_TERMINAL_STATUSES: CctpJobInfo['status'][] = [
   'blocked_gas',
 ]
 
-function ChainLabel({ name, icon }: { name: string; icon?: string }) {
-  return (
-    <span className="flex items-center gap-2 text-sm font-semibold text-foreground">
-      {icon && <img src={icon} alt="" className="h-5 w-5 rounded-full object-cover" />}
-      {name}
-    </span>
-  )
-}
-
 export default function Bridge() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -104,12 +84,19 @@ export default function Bridge() {
   const [quoting, setQuoting] = useState(false)
   const [quoteError, setQuoteError] = useState('')
   const [showDetails, setShowDetails] = useState(false)
+  const [reviewMore, setReviewMore] = useState(false)
+  // Which fee warning is up: before opening the review, or at signing.
+  const [lossSheet, setLossSheet] = useState<'review' | 'sign' | null>(null)
   const [picker, setPicker] = useState<'from' | 'to' | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
 
   const { balances } = useBalances(status.publicKey)
+  const [iconMap, setIconMap] = useState<Map<string, string>>(new Map())
+  useEffect(() => {
+    getIconMap(activeNetwork.id).then(setIconMap)
+  }, [activeNetwork.id])
   const { jobs } = useCctpJobs(status.publicKey ?? '')
   const [chainIcons, setChainIcons] = useState<Map<string, string>>(new Map())
   useEffect(() => {
@@ -208,8 +195,7 @@ export default function Bridge() {
   const fillFraction = (fraction: number) =>
     setAmount(formatUnits(fractionUnits(bridgeableUnits, fraction), CCTP_DECIMALS))
 
-  const etaShort =
-    direction === 'stellar-to-evm' ? '~1 min' : speed === 'fast' ? '~1-5 min' : '~15-20 min'
+  const etaShort = bridgeEta(direction, speed)
   const eta =
     direction === 'stellar-to-evm'
       ? '~1 minute'
@@ -325,7 +311,11 @@ export default function Bridge() {
                       }
                     : destGasShort
                       ? { label: `Need ${destGasNeed} ${destGasCode} on ${toName}`, enabled: false }
-                      : { label: 'Review bridge', enabled: true, onClick: () => setStep('confirm') }
+                      : {
+                          label: 'Review bridge',
+                          enabled: true,
+                          onClick: () => (bigLoss ? setLossSheet('review') : openReview()),
+                        }
 
   // Every cost on both chains, so nothing surfaces later as a pause or a short arrival.
   const feeRows = (
@@ -360,34 +350,15 @@ export default function Bridge() {
             : undefined
         }
       />
-      <DetailRow label="Estimated time" value={eta} />
     </>
   )
   const summaryLine = quoting
     ? 'Getting the best quote...'
     : totalFiat !== null
       ? `~${formatFiat(totalFiat)} fees, ${etaShort}`
-      : breakdown
-        ? `Arrives in ${etaShort}`
-        : `Arrives in ${etaShort}`
-  const receiveSummary = (
-    <div className="flex items-center gap-3">
-      <AssetIcon
-        code="USDC"
-        icon={(sourceBalance ?? stellarUsdc ?? evmUsdc)?.icon}
-        chainIcons={[toIcon]}
-      />
-      <div className="min-w-0 flex-1">
-        <p className="text-xs text-muted-foreground">You receive on {toName}</p>
-        <p className="text-lg font-bold tabular-nums text-foreground">
-          {breakdown ? `${breakdown.receiveMin} USDC` : hasAmount ? '...' : '0 USDC'}
-        </p>
-        <p className="text-[11px] leading-snug text-muted-foreground">{summaryLine}</p>
-      </div>
-    </div>
-  )
-
-  const usdcIcon = (stellarUsdc ?? evmUsdc)?.icon
+      : `Arrives in ${etaShort}`
+  // CCTP only moves Circle's USDC, so its listed logo stands in before any balance holds it.
+  const usdcIcon = (stellarUsdc ?? evmUsdc)?.icon ?? iconForAsset(iconMap, 'USDC')
   const destUsdc = direction === 'stellar-to-evm' ? evmUsdc : stellarUsdc
   const destBalanceText = destUsdc
     ? formatBalanceText(destUsdc.balance, 'USDC', CCTP_DECIMALS)
@@ -397,6 +368,29 @@ export default function Bridge() {
   const usdcPrice = (sourceBalance ?? destUsdc)?.usdPrice ?? null
   const receiveFiat =
     breakdown && usdcPrice !== null ? parseFloat(breakdown.receiveMin) * usdcPrice : null
+  // Every fee on both chains against the amount, so a small bridge shows how
+  // much of it the fees eat before anything is signed.
+  const payUsd = hasAmount && usdcPrice !== null ? amountNum * usdcPrice : null
+  const afterUsd = payUsd !== null && totalFiat !== null ? payUsd - totalFiat : null
+  const changePct = valueChangePct(payUsd, afterUsd)
+  const bigLoss = changePct !== null && changePct <= -LOSS_WARN_PCT
+  const severeLoss = changePct !== null && changePct <= -LOSS_CONFIRM_PCT
+  const feeShare = changePct !== null ? `${(-changePct).toFixed(2)}%` : ''
+  const feesExceed = changePct !== null && changePct <= -100
+  const lossText = bigLoss
+    ? `${
+        feesExceed
+          ? `Fees (up to ${formatFiat(totalFiat ?? 0)}) can cost more than the USDC you bridge.`
+          : `Fees can take up to ${feeShare} of this transfer (${formatFiat(totalFiat ?? 0)}).`
+      } Bridging a larger amount spreads them thinner.`
+    : ''
+  const lastLossText = useRef('')
+  if (!quoting) lastLossText.current = lossText
+  const shownLossText = quoting ? lastLossText.current : lossText
+  const openReview = () => {
+    setReviewMore(false)
+    setStep('confirm')
+  }
   const flip = () =>
     setDirection((d) => (d === 'stellar-to-evm' ? 'evm-to-stellar' : 'stellar-to-evm'))
   // One row per place the token can sit; picking a side the other card
@@ -491,7 +485,7 @@ export default function Bridge() {
                 error={amount !== '' && !decimalsOk ? 'At most 6 decimal places' : null}
               />
 
-              <FlipButton onClick={flip} />
+              <RatePill text="Native USDC, 1:1" onFlip={flip} />
 
               <SideCard
                 label="To (you)"
@@ -544,7 +538,7 @@ export default function Bridge() {
                   </div>
                 </div>
               )}
-              {hasAmount ? (
+              <Reveal show={hasAmount}>
                 <>
                   <button
                     onClick={() => setShowDetails((v) => !v)}
@@ -568,6 +562,7 @@ export default function Bridge() {
                   <Collapse open={showDetails}>
                     <div className="flex flex-col divide-y divide-border/60 border-t border-border/60 px-4">
                       {feeRows}
+                      <DetailRow label="Estimated time" value={eta} />
                       {direction === 'evm-to-stellar' && speed === 'fast' && (
                         <p className="py-2.5 text-[11px] leading-relaxed text-amber-500">
                           Circle has not documented Fast Transfer into Stellar yet. If it does not
@@ -576,10 +571,13 @@ export default function Bridge() {
                       )}
                     </div>
                   </Collapse>
-                  {quoteError && <p className="px-4 pb-3 text-xs text-destructive">{quoteError}</p>}
+                  <Reveal show={!!quoteError}>
+                    <p className="px-4 pb-3 text-xs text-destructive">{quoteError}</p>
+                  </Reveal>
                 </>
-              ) : (
-                // No amount yet: still show what the trip costs and takes.
+              </Reveal>
+              {/* No amount yet: still show what the trip costs and takes. */}
+              <Reveal show={!hasAmount}>
                 <>
                   <div className="flex flex-col divide-y divide-border/60 px-4">
                     <DetailRow label="Via Circle CCTP" icon="/brand/circle.svg" value={eta} />
@@ -607,10 +605,14 @@ export default function Bridge() {
                     </div>
                   )}
                 </>
-              )}
+              </Reveal>
             </div>
 
-            {hasAmount && destGasShort && !sourceGasShort && (
+            <Reveal show={!!shownLossText} gap={10}>
+              <LossWarning>{shownLossText}</LossWarning>
+            </Reveal>
+
+            <Reveal show={hasAmount && destGasShort && !sourceGasShort} gap={10}>
               <div className="flex items-start gap-2 rounded-xl bg-amber-500/10 px-3 py-2.5">
                 <AlertTriangle size={14} className="mt-px shrink-0 text-amber-500" />
                 <p className="text-[11px] leading-snug text-foreground">
@@ -641,7 +643,7 @@ export default function Bridge() {
                   )}
                 </p>
               </div>
-            )}
+            </Reveal>
           </div>
         )}
 
@@ -658,6 +660,10 @@ export default function Bridge() {
                 ? (evmChain?.id ?? '')
                 : (stellarChain?.id ?? '')
             }
+            usdcIcon={usdcIcon}
+            fromIcon={activeJob.direction === 'stellar-to-evm' ? stellarIcon : evmIcon}
+            toIcon={activeJob.direction === 'stellar-to-evm' ? evmIcon : stellarIcon}
+            price={usdcPrice}
             onDone={startOver}
             onResume={async () => {
               if (!status.publicKey) return 'Wallet is locked'
@@ -709,53 +715,128 @@ export default function Bridge() {
         onClose={() => setPicker(null)}
       />
 
+      <LossSheet
+        open={lossSheet === 'review' && payUsd !== null && afterUsd !== null}
+        title="High fees for this amount"
+        message={`Fees can cost up to about ${formatFiat(totalFiat ?? 0)}, ${feesExceed ? 'more than the USDC you bridge' : `${feeShare} of what you bridge`}. A larger amount spreads them thinner.`}
+        beforeUsd={payUsd ?? 0}
+        afterUsd={afterUsd ?? 0}
+        beforeLabel="You bridge"
+        afterLabel="Net after fees"
+        proceedLabel="Review anyway"
+        onProceed={() => {
+          setLossSheet(null)
+          openReview()
+        }}
+        onCancel={() => setLossSheet(null)}
+      />
+      <LossSheet
+        open={lossSheet === 'sign' && payUsd !== null && afterUsd !== null}
+        title="Confirm again"
+        message={`Fees can cost up to about ${formatFiat(totalFiat ?? 0)} (${feeShare} of this transfer). Do you still want to bridge?`}
+        beforeUsd={payUsd ?? 0}
+        afterUsd={afterUsd ?? 0}
+        beforeLabel="You bridge"
+        afterLabel="Net after fees"
+        proceedLabel="Bridge anyway"
+        onProceed={() => {
+          setLossSheet(null)
+          handleConfirm()
+        }}
+        onCancel={() => setLossSheet(null)}
+        zIndex="z-[80]"
+      />
+
       {/* review in place: one tap to open, one to confirm, no page change */}
       <BottomSheet open={step === 'confirm'} title="Review bridge" onClose={() => setStep('form')}>
         <div className="flex flex-col gap-4">
-          <div className="rounded-xl bg-card p-5 text-center">
-            <p className="text-3xl font-bold text-foreground">
-              {amount} <span className="text-lg font-medium text-muted-foreground">USDC</span>
-              <VerifiedBadge className="ml-1 inline-block h-5 w-5 align-[-2px]" />
-            </p>
-            <p className="mt-2 flex items-center justify-center gap-2 text-sm text-muted-foreground">
-              <ChainLabel name={fromName} icon={fromIcon} />
-              <ArrowRight size={14} className="text-muted-foreground/70" />
-              <ChainLabel name={toName} icon={toIcon} />
-            </p>
-          </div>
+          <TradeLegs
+            pay={{
+              label: `From ${fromName}`,
+              code: 'USDC',
+              icon: usdcIcon,
+              chainIcon: fromIcon,
+              amount,
+              usd: payUsd,
+            }}
+            receive={{
+              label: `To ${toName}, at least`,
+              code: 'USDC',
+              icon: usdcIcon,
+              chainIcon: toIcon,
+              amount: breakdown ? breakdown.receiveMin : '...',
+              usd: receiveFiat,
+            }}
+          />
 
           <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
-            <div className="py-3">{receiveSummary}</div>
             <DetailRow
               label="Recipient (you)"
               value={destAddress ? shortAddr(destAddress) : ''}
               mono
             />
-            {feeRows}
-            {direction === 'evm-to-stellar' && (
-              <DetailRow
-                label="Speed"
-                value={speed === 'fast' ? 'Fast (experimental)' : 'Standard'}
-              />
+            {totalFiat !== null && (
+              <div className="flex items-center justify-between gap-3 py-2.5 text-xs">
+                <span className="text-muted-foreground">Total fees</span>
+                <span
+                  className={`font-medium tabular-nums ${bigLoss ? 'text-destructive' : 'text-foreground'}`}
+                >
+                  {formatFiat(totalFiat)}
+                  {feeShare && ` (${feeShare})`}
+                </span>
+              </div>
             )}
+            <DetailRow label="Estimated time" value={eta} />
+            <button
+              onClick={() => setReviewMore((v) => !v)}
+              aria-expanded={reviewMore}
+              className="flex w-full cursor-pointer items-center justify-center gap-1 py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {reviewMore ? 'Show less' : 'Show more'}
+              <ChevronDown
+                size={13}
+                className={`transition-transform ${reviewMore ? 'rotate-180' : ''}`}
+              />
+            </button>
           </div>
 
-          <div className="rounded-xl bg-card px-4 py-3">
-            <p className="pixel-label mb-2 text-[10px] text-muted-foreground">What happens</p>
-            <ol className="flex flex-col gap-2 text-xs">
-              <HappensStep
-                n={1}
-                title={`Approve and burn on ${fromName}`}
-                detail="Signed now, from this wallet"
-              />
-              <HappensStep n={2} title="Circle attests the burn" detail={eta} />
-              <HappensStep
-                n={3}
-                title={`Mint on ${toName}`}
-                detail={`Automatic, paid in ${destGasCode} from your account there`}
-              />
-            </ol>
-          </div>
+          <Collapse open={reviewMore}>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
+                {feeRows}
+                {direction === 'evm-to-stellar' && (
+                  <DetailRow
+                    label="Speed"
+                    value={speed === 'fast' ? 'Fast (experimental)' : 'Standard'}
+                  />
+                )}
+              </div>
+              <div className="rounded-xl bg-card px-4 py-3">
+                <p className="pixel-label mb-2 text-[10px] text-muted-foreground">What happens</p>
+                <ol className="flex flex-col gap-2 text-xs">
+                  <HappensStep
+                    n={1}
+                    title={`Approve and burn on ${fromName}`}
+                    detail="Signed now, from this wallet"
+                  />
+                  <HappensStep n={2} title="Circle attests the burn" detail={eta} />
+                  <HappensStep
+                    n={3}
+                    title={`Mint on ${toName}`}
+                    detail={`Automatic, paid in ${destGasCode} from your account there`}
+                  />
+                </ol>
+              </div>
+            </div>
+          </Collapse>
+          <Reveal show={bigLoss} gap={16}>
+            <LossWarning>
+              {feesExceed
+                ? 'Fees can cost more than the USDC you bridge.'
+                : `Fees can take up to ${feeShare} of this transfer.`}{' '}
+              Proceed with caution.
+            </LossWarning>
+          </Reveal>
 
           <p className="flex gap-2 text-[11px] leading-relaxed text-muted-foreground">
             <CircleMark className="mt-px h-3.5 w-3.5" />
@@ -763,8 +844,14 @@ export default function Bridge() {
             Bridging links your Stellar and {evmName} addresses on public chains.
           </p>
 
-          {submitError && <p className="text-xs text-destructive">{submitError}</p>}
-          <Button className="w-full" disabled={submitting || !quote} onClick={handleConfirm}>
+          <Reveal show={!!submitError} gap={16}>
+            <p className="text-xs text-destructive">{submitError}</p>
+          </Reveal>
+          <Button
+            className="w-full"
+            disabled={submitting || !quote}
+            onClick={() => (severeLoss ? setLossSheet('sign') : handleConfirm())}
+          >
             {submitting ? 'Starting...' : `Bridge ${amount} USDC`}
           </Button>
         </div>

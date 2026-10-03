@@ -2,7 +2,13 @@ import { useState, type ReactNode } from 'react'
 import { ChevronLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { AddressAvatar } from '@/components/AddressAvatar'
-import { detectRecipientFamily, shortAddress, type RecipientFamily } from '@/lib/address'
+import { Reveal } from '@/components/Collapse'
+import {
+  detectRecipientFamily,
+  isBitcoinTestnetAddress,
+  shortAddress,
+  type RecipientFamily,
+} from '@/lib/address'
 
 export interface RecipientSuggestion {
   address: string
@@ -19,6 +25,7 @@ export function SendRecipientStep({
   evmName,
   stellarIcon,
   evmIcon,
+  bitcoin,
   onBack,
   onContinue,
 }: {
@@ -28,6 +35,8 @@ export function SendRecipientStep({
   evmName: string
   stellarIcon?: string
   evmIcon?: string
+  // The environment's Bitcoin chain, absent when Bitcoin is not enabled.
+  bitcoin?: { name: string; icon?: string; testnet: boolean }
   onBack: () => void
   onContinue: (address: string, family: RecipientFamily) => void
 }) {
@@ -35,10 +44,21 @@ export function SendRecipientStep({
   const trimmed = value.trim()
   const family = detectRecipientFamily(trimmed)
   const unsupportedEvm = family === 'evm' && !evmEnabled
-  const ready = !!family && !unsupportedEvm
+  const unsupportedBitcoin = family === 'bitcoin' && !bitcoin
+  // A mainnet address on testnet (or the reverse) would send to a chain this wallet is not on.
+  const wrongBitcoinNetwork =
+    family === 'bitcoin' && !!bitcoin && isBitcoinTestnetAddress(trimmed) !== bitcoin.testnet
+  const ready = !!family && !unsupportedEvm && !unsupportedBitcoin && !wrongBitcoinNetwork
 
-  const networkOf = (f: RecipientFamily) => (f === 'stellar' ? 'Stellar' : evmName)
-  const iconOf = (f: RecipientFamily) => (f === 'stellar' ? stellarIcon : evmIcon)
+  const networkOf = (f: RecipientFamily) =>
+    f === 'stellar' ? 'Stellar' : f === 'bitcoin' ? (bitcoin?.name ?? 'Bitcoin') : evmName
+  const iconOf = (f: RecipientFamily) =>
+    f === 'stellar' ? stellarIcon : f === 'bitcoin' ? bitcoin?.icon : evmIcon
+  const available = (r: RecipientSuggestion) =>
+    r.family === 'stellar' || (r.family === 'evm' ? evmEnabled : !!bitcoin)
+  const kinds = ['Stellar', ...(evmEnabled ? ['EVM'] : []), ...(bitcoin ? ['Bitcoin'] : [])]
+  const kindsText =
+    kinds.length > 1 ? `${kinds.slice(0, -1).join(', ')} or ${kinds[kinds.length - 1]}` : kinds[0]
 
   const renderRow = (s: RecipientSuggestion) => (
     <button
@@ -94,34 +114,36 @@ export function SendRecipientStep({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && ready && family) onContinue(trimmed, family)
                 }}
-                placeholder={evmEnabled ? 'Stellar or EVM address' : 'Stellar address (G...)'}
+                placeholder={kinds.length > 1 ? `${kindsText} address` : 'Stellar address (G...)'}
                 spellCheck={false}
                 autoComplete="off"
                 aria-label="Recipient address"
                 className="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:font-sans placeholder:text-sm placeholder:text-muted-foreground"
               />
             </div>
-            {trimmed !== '' && (
+            <Reveal show={trimmed !== ''} gap={8}>
               <p className={`text-[11px] ${ready ? 'text-muted-foreground' : 'text-destructive'}`}>
                 {ready && family
                   ? family === 'stellar'
                     ? 'Stellar address'
-                    : `EVM address, sends on ${evmName}`
+                    : family === 'bitcoin'
+                      ? `Bitcoin address, sends on ${bitcoin?.name}`
+                      : `EVM address, sends on ${evmName}`
                   : unsupportedEvm
                     ? 'EVM sends are not available on this network'
-                    : 'Not a Stellar or EVM address'}
+                    : unsupportedBitcoin
+                      ? 'Bitcoin sends are not available on this network'
+                      : wrongBitcoinNetwork
+                        ? bitcoin?.testnet
+                          ? 'This is a mainnet Bitcoin address; switch to Mainnet to send to it'
+                          : 'This is a testnet Bitcoin address; switch to Testnet to send to it'
+                        : `Not a ${kindsText} address`}
               </p>
-            )}
+            </Reveal>
           </div>
 
-          {section(
-            'Recent',
-            recents.filter((r) => r.family === 'stellar' || evmEnabled)
-          )}
-          {section(
-            'Your accounts',
-            ownAccounts.filter((r) => r.family === 'stellar' || evmEnabled)
-          )}
+          {section('Recent', recents.filter(available))}
+          {section('Your accounts', ownAccounts.filter(available))}
         </div>
       </div>
 

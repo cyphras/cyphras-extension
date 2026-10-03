@@ -151,14 +151,20 @@ async function fetchCreditedEffects(
   return out
 }
 
+// The last result per network and account, so the history page and token
+// sheets paint at once on every visit while the refresh runs.
+const historyCache = new Map<string, Operation[]>()
+
 export function useHistory(publicKey: string | undefined): HistoryState & { refresh: () => void } {
   const { activeNetwork } = useNetwork()
-  const [state, setState] = useState<HistoryState>({
-    operations: [],
-    loading: true,
-    error: null,
+  const cacheKey = publicKey ? `${activeNetwork.horizonUrl}|${publicKey}` : ''
+  const [state, setState] = useState<HistoryState>(() => {
+    const cached = historyCache.get(cacheKey)
+    return cached
+      ? { operations: cached, loading: false, error: null }
+      : { operations: [], loading: true, error: null }
   })
-  const isInitialLoad = useRef(true)
+  const isInitialLoad = useRef(!historyCache.has(cacheKey))
 
   const fetchHistory = useCallback(async () => {
     if (!publicKey) {
@@ -173,9 +179,12 @@ export function useHistory(publicKey: string | undefined): HistoryState & { refr
     }
 
     try {
-      const res = await fetch(
-        `${activeNetwork.horizonUrl}/accounts/${publicKey}/operations?order=desc&limit=100&include_failed=false`
-      )
+      const [res, creditedByOpId] = await Promise.all([
+        fetch(
+          `${activeNetwork.horizonUrl}/accounts/${publicKey}/operations?order=desc&limit=100&include_failed=false`
+        ),
+        fetchCreditedEffects(activeNetwork.horizonUrl, publicKey),
+      ])
 
       if (res.status === 404) {
         isInitialLoad.current = false
@@ -187,12 +196,12 @@ export function useHistory(publicKey: string | undefined): HistoryState & { refr
 
       const data = (await res.json()) as { _embedded: { records: Operation[] } }
       const records = data._embedded.records
-      const creditedByOpId = await fetchCreditedEffects(activeNetwork.horizonUrl, publicKey)
       for (const op of records) {
         const credit = creditedByOpId.get(op.id)
         if (credit) op.credited_effect = credit
       }
       isInitialLoad.current = false
+      historyCache.set(`${activeNetwork.horizonUrl}|${publicKey}`, records)
       setState({ operations: records, loading: false, error: null })
     } catch {
       isInitialLoad.current = false
@@ -201,8 +210,19 @@ export function useHistory(publicKey: string | undefined): HistoryState & { refr
   }, [publicKey, activeNetwork.horizonUrl])
 
   useEffect(() => {
+    // A new account or network shows its own cached rows (or a loading state),
+    // never the previous one's. With no key the hook idles and keeps its rows.
+    if (cacheKey) {
+      const cached = historyCache.get(cacheKey)
+      isInitialLoad.current = !cached
+      setState(
+        cached
+          ? { operations: cached, loading: false, error: null }
+          : { operations: [], loading: true, error: null }
+      )
+    }
     fetchHistory()
-  }, [fetchHistory])
+  }, [fetchHistory, cacheKey])
 
   return { ...state, refresh: fetchHistory }
 }

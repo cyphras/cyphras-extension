@@ -197,8 +197,11 @@ export default function Home() {
   // Only the list narrows; the total balance card always shows the whole portfolio.
   const [tokenFilter, setTokenFilter] = useState<string>(ALL_NETWORKS)
   const [filterOpen, setFilterOpen] = useState(false)
+  // Same order as the token list: Stellar, then Bitcoin, then EVM chains.
+  const familyRank = (id: string) =>
+    id === stellarChainId ? 0 : id.startsWith('bip122') ? 1 : id.startsWith('eip155') ? 2 : 3
   const networkOptions: NetworkFilterOption[] = (chainIdsKey ? chainIdsKey.split(',') : [])
-    .sort((a, b) => (a === stellarChainId ? -1 : b === stellarChainId ? 1 : a.localeCompare(b)))
+    .sort((a, b) => familyRank(a) - familyRank(b) || a.localeCompare(b))
     .map((id) => ({
       id,
       name:
@@ -322,12 +325,17 @@ export default function Home() {
   }
   // One row per logical token: curated multichain tokens (e.g. USDC on
   // Stellar and Ethereum) merge with their per-chain parts kept for the sheet.
-  const groupedBalances = groupBalances(
+  const filteredGroups = groupBalances(
     tokenFilter === ALL_NETWORKS
       ? displayBalances
       : displayBalances.filter((b) => b.chain === tokenFilter)
-    // The unactivated XLM row stays: it carries the activation step, not a balance.
-  ).filter((asset) => !hideZero || asset.inactive || parseFloat(asset.balance) > 0)
+  )
+  // The unactivated XLM row stays: it carries the activation step, not a balance.
+  const groupedBalances = filteredGroups.filter(
+    (asset) => !hideZero || asset.inactive || parseFloat(asset.balance) > 0
+  )
+  const hiddenZeroCount = filteredGroups.length - groupedBalances.length
+  const filterName = networkOptions.find((o) => o.id === tokenFilter)?.name
   const inFlightBridges = cctpJobs.filter((j) => j.status !== 'done' && j.status !== 'failed')
   const [fundingLoading, setFundingLoading] = useState(false)
   const [fundingError, setFundingError] = useState('')
@@ -1091,7 +1099,7 @@ export default function Home() {
                     className="cursor-pointer flex flex-1 items-center gap-3 text-left min-w-0"
                   >
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-green-500/15">
-                      <Check size={18} className="text-green-500" />
+                      <Check size={18} className="pop-enter text-green-500" />
                     </div>
                     <div className="flex flex-col min-w-0">
                       <p className="text-sm font-medium text-foreground">Private send complete</p>
@@ -1158,7 +1166,7 @@ export default function Home() {
                     // zero balances replays the rise; a price refresh does not.
                     <div
                       key={`${tokenFilter}:${hideZero}:${asset.code}:${asset.issuer}`}
-                      className="row-enter"
+                      className={`row-enter ${asset.inactive ? 'overflow-hidden rounded-xl bg-card' : ''}`}
                       style={{ animationDelay: `${Math.min(i, 8) * 35}ms` }}
                     >
                       <TokenRow
@@ -1172,28 +1180,84 @@ export default function Home() {
                         priceText={asset.usdPrice !== null ? formatPrice(asset.usdPrice) : null}
                         changePct={asset.change24h}
                         note={asset.inactive ? 'Not activated' : undefined}
+                        className={asset.inactive ? 'rounded-none' : undefined}
                         onClick={() =>
                           asset.inactive ? navigate('/receive') : setSelectedToken(asset)
                         }
                       />
+                      {/* the activation step lives in the XLM card it belongs to */}
                       {asset.inactive && (
-                        <div className="mt-1 flex items-center justify-between gap-3 px-4 py-1.5">
+                        <div className="flex items-center justify-between gap-3 border-t border-border/60 px-4 py-2.5">
                           <p className="text-[11px] leading-snug text-muted-foreground">
                             Receive at least 1 XLM to activate your Stellar account.
                           </p>
-                          {activeNetwork.friendbotUrl && (
+                          {activeNetwork.friendbotUrl ? (
                             <button
                               onClick={handleFundWithFriendbot}
                               disabled={fundingLoading}
-                              className="shrink-0 cursor-pointer text-[11px] font-medium text-primary hover:underline disabled:cursor-default disabled:opacity-60"
+                              className="shrink-0 cursor-pointer rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-default disabled:opacity-60"
                             >
-                              {fundingLoading ? 'Funding' : 'Use Friendbot'}
+                              {fundingLoading ? 'Funding...' : 'Use Friendbot'}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => navigate('/receive', { state: { chain: 'stellar' } })}
+                              className="shrink-0 cursor-pointer rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+                            >
+                              Receive XLM
                             </button>
                           )}
                         </div>
                       )}
                     </div>
                   ))}
+                  {/* A network with nothing to list still says where to start, so the
+                    space under the filter never reads as broken. */}
+                  {groupedBalances.length === 0 && (
+                    <div className="row-enter flex flex-col items-center gap-3 rounded-xl bg-card px-5 py-6 text-center">
+                      {tokenFilter !== ALL_NETWORKS && chainIcons.get(tokenFilter) && (
+                        <img
+                          src={chainIcons.get(tokenFilter)}
+                          alt=""
+                          className="h-10 w-10 rounded-full object-cover"
+                        />
+                      )}
+                      <div>
+                        <p className="text-sm font-medium text-foreground">
+                          {filterName ? `No ${filterName} assets yet` : 'No assets yet'}
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {filterName
+                            ? `Your ${filterName} address is ready to receive.`
+                            : 'Your addresses are ready to receive.'}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() =>
+                          navigate('/receive', {
+                            state: {
+                              chain: tokenFilter.startsWith('eip155')
+                                ? 'evm'
+                                : tokenFilter.startsWith('bip122')
+                                  ? 'bitcoin'
+                                  : 'stellar',
+                            },
+                          })
+                        }
+                      >
+                        <QrCode size={14} /> Receive
+                      </Button>
+                      {hiddenZeroCount > 0 && (
+                        <button
+                          onClick={toggleHideZero}
+                          className="cursor-pointer text-xs font-medium text-primary hover:underline"
+                        >
+                          Show zero balances
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1243,6 +1307,8 @@ export default function Home() {
 
       <TokenDetailSheet
         asset={selectedToken}
+        balances={balances}
+        isFunded={isFunded}
         chainIcons={chainIcons}
         chainNames={chainNames}
         horizonUrl={activeNetwork.horizonUrl}
@@ -1326,7 +1392,7 @@ export default function Home() {
         onClose={dismissWhatsNew}
         onShowAddress={() => {
           dismissWhatsNew()
-          navigate('/receive', { state: { chain: 'evm' } })
+          navigate('/receive')
         }}
       />
     </>

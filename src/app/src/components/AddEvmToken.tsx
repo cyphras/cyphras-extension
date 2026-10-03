@@ -303,7 +303,7 @@ export function AddEvmToken() {
                     </div>
                     {isWatched(chain.id, item.issuer) || added === item.issuer ? (
                       <span className="flex items-center gap-1 text-xs font-medium text-green-500">
-                        <Check size={14} /> Added
+                        <Check size={14} className="pop-enter" /> Added
                       </span>
                     ) : (
                       <button

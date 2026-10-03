@@ -16,7 +16,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000
 
 interface RegistryPayloadEntry {
   id: string
-  family: 'stellar' | 'evm'
+  family: ChainEntry['family']
   name: string
   icon?: string
   isTestnet: boolean
@@ -75,6 +75,14 @@ export async function getRegistryChains(): Promise<ChainEntry[]> {
   }
 
   return cached ? cached.chains : BUILTIN_CHAINS
+}
+
+export async function getBitcoinChainsForEnv(envId: string): Promise<ChainEntry[]> {
+  if (envId !== 'mainnet' && envId !== 'testnet') return []
+  const chains = await getRegistryChains()
+  return chains.filter(
+    (c) => c.family === 'bip122' && c.enabled && c.isTestnet === (envId === 'testnet')
+  )
 }
 
 export async function getEvmChainsForEnv(envId: string): Promise<ChainEntry[]> {

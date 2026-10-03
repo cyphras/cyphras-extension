@@ -15,25 +15,8 @@ import {
 import { Button } from '@/components/ui/button'
 import type { ChainEntry } from '@constants/chains'
 import type { CctpJobInfo } from '@ext-types/index'
-import { isCctpInFlight, statusMeta } from '@/lib/cctp'
-import { bridgeReceived, formatAmount } from '@/lib/activity'
-
-function formatDuration(ms: number): string {
-  const min = Math.round(ms / 60_000)
-  if (min < 1) return 'Under a minute'
-  if (min < 60) return `${min} min`
-  return `${Math.floor(min / 60)} h ${min % 60} min`
-}
-
-function formatWhen(ts: number): string {
-  return new Date(ts).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
+import { formatDuration, formatWhen, isCctpInFlight, statusMeta } from '@/lib/cctp'
+import { bridgeReceived, circleFeeText, formatAmount } from '@/lib/activity'
 
 export function BridgeJobSheet({
   job,
@@ -75,14 +58,7 @@ export function BridgeJobSheet({
     price !== null
       ? (parseFloat(v) * price).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
       : null
-  const circleFee =
-    job.feeExecuted !== undefined
-      ? parseFloat(job.feeExecuted) === 0
-        ? 'Free'
-        : `${formatAmount(job.feeExecuted)} USDC`
-      : parseFloat(job.maxFee) === 0
-        ? 'Free'
-        : `Up to ${formatAmount(job.maxFee)} USDC`
+  const circleFee = circleFeeText(job)
 
   const sideRow = (
     sign: '-' | '+',

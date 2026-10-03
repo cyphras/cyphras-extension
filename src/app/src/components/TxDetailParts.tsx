@@ -1,5 +1,7 @@
 import { useState, type ReactNode } from 'react'
-import { Check, CheckCircle2, ChevronDown, Copy, Loader2, XCircle } from 'lucide-react'
+import { Check, ChevronDown, Copy, X } from 'lucide-react'
+import { AssetIcon, type AssetIconSize } from '@/components/token/AssetIcon'
+import { NumberTicker } from '@/components/NumberTicker'
 import { VerifiedBadge } from '@/components/token/VerifiedBadge'
 import { VerifiedMark } from '@/components/token/VerifiedMark'
 import { Collapse } from '@/components/Collapse'
@@ -46,7 +48,7 @@ export function CopyValue({
       {avatar && <StellarAvatar publicKey={avatarKey(value)} size={14} />}
       {short}
       {copied ? (
-        <Check size={11} className="text-green-500" />
+        <Check size={11} className="pop-enter text-green-500" />
       ) : (
         <Copy size={11} className="text-muted-foreground" />
       )}
@@ -122,11 +124,73 @@ export function AdvancedDetails({
   )
 }
 
+// The token itself carries a transaction's status: a spinning ring while it is
+// pending, then a small check or cross once the network settles it.
+export function TokenStatusIcon({
+  state,
+  code,
+  icon,
+  chainIcon,
+  size = 'lg',
+  className = '',
+}: {
+  state: 'pending' | 'success' | 'failed'
+  code: string
+  icon?: string
+  chainIcon?: string
+  size?: AssetIconSize
+  className?: string
+}) {
+  return (
+    <div className={`relative p-1 ${state === 'failed' ? 'opacity-60' : ''} ${className}`}>
+      {state === 'pending' && (
+        <span
+          aria-hidden
+          className="absolute inset-0 animate-spin rounded-full border-2 border-amber-500/20 border-t-amber-500"
+        />
+      )}
+      <AssetIcon code={code} icon={icon} chainIcons={[chainIcon]} size={size} />
+      {state !== 'pending' && (
+        <span
+          className={`pop-enter absolute -right-0.5 -top-0.5 flex h-5 w-5 items-center justify-center rounded-full border-2 border-card text-white ${
+            state === 'success' ? 'bg-green-500' : 'bg-destructive'
+          }`}
+        >
+          {state === 'success' ? (
+            <Check size={11} strokeWidth={3} />
+          ) : (
+            <X size={11} strokeWidth={3} />
+          )}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// A plain signed figure rolls into place like the balances on Home; anything
+// else (an estimate, a range) is shown as given.
+function RollingAmount({ text }: { text: string }) {
+  const m = /^([+-]?)(\d[\d,]*)(?:\.(\d+))?$/.exec(text)
+  if (!m) return <>{text}</>
+  const [, sign, whole, frac = ''] = m
+  const value = parseFloat(`${whole.replace(/,/g, '')}${frac ? `.${frac}` : ''}`)
+  const format = (v: number) =>
+    sign +
+    v.toLocaleString('en-US', {
+      minimumFractionDigits: frac.length,
+      maximumFractionDigits: frac.length,
+      useGrouping: whole.includes(','),
+    })
+  return <NumberTicker value={value} format={format} />
+}
+
 export function TxResultHero({
   state,
   amountText,
   code,
   issuer,
+  icon,
+  chainIcon,
   verified,
   positive = false,
   subtitle,
@@ -136,6 +200,8 @@ export function TxResultHero({
   amountText: string
   code: string
   issuer?: string
+  icon?: string
+  chainIcon?: string
   verified?: boolean
   positive?: boolean
   subtitle?: ReactNode
@@ -143,23 +209,13 @@ export function TxResultHero({
 }) {
   return (
     <div className="flex flex-col items-center rounded-xl bg-card px-4 py-5 text-center">
-      <div
-        className={`value-enter mb-3 flex h-12 w-12 items-center justify-center rounded-full ${
-          state === 'success'
-            ? 'bg-green-500/15 text-green-500'
-            : state === 'failed'
-              ? 'bg-destructive/15 text-destructive'
-              : 'bg-amber-500/15 text-amber-500'
-        }`}
-      >
-        {state === 'success' ? (
-          <CheckCircle2 size={24} />
-        ) : state === 'failed' ? (
-          <XCircle size={24} />
-        ) : (
-          <Loader2 size={24} className="animate-spin" />
-        )}
-      </div>
+      <TokenStatusIcon
+        state={state}
+        code={code}
+        icon={icon}
+        chainIcon={chainIcon}
+        className="value-enter mb-3"
+      />
       <p
         className={`text-2xl font-bold tabular-nums ${
           state === 'failed'
@@ -169,7 +225,8 @@ export function TxResultHero({
               : 'text-foreground'
         }`}
       >
-        {amountText} <span className="text-base font-medium text-muted-foreground">{code}</span>
+        <RollingAmount text={amountText} />{' '}
+        <span className="text-base font-medium text-muted-foreground">{code}</span>
         {verified ? (
           <VerifiedBadge className="ml-1 inline-block h-4 w-4 align-[-2px]" />
         ) : (

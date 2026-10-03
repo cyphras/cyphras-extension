@@ -1,6 +1,5 @@
 import * as bip39 from 'bip39'
 import { Keypair } from '@stellar/stellar-sdk'
-import type { ChainFamily } from '@constants/chains'
 
 const KEY_DERIVATION_NUMBER = 0
 const STORAGE_KEY_ENCRYPTED = 'cyphras_encrypted_key' // legacy: stores derived secret
@@ -253,7 +252,7 @@ export interface AccountInfo {
   walletId: string // 'primary' | UUID (extra HD wallets) | 'sk:UUID' (imported keys)
   // Per-family derived addresses; the account identity is (walletId, index).
   // publicKey mirrors addresses.stellar during the multichain migration.
-  addresses?: Partial<Record<ChainFamily, string>>
+  addresses?: Partial<Record<'stellar' | 'evm' | 'bitcoin' | 'bitcoinTestnet', string>>
 }
 
 export interface AccountsStore {

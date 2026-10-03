@@ -3,15 +3,16 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useNavigate } from 'react-router-dom'
 import { useWallet } from '@/context/WalletContext'
 import { useHistory } from '@/hooks/useHistory'
-import { useEvmActivity } from '@/hooks/useEvmActivity'
+import { useChainActivity } from '@/hooks/useChainActivity'
 import { useCctpJobs } from '@/hooks/useCctpJobs'
 import { getIconMap } from '@/hooks/useBalances'
+import { iconForAsset } from '@/lib/assetList'
 import { Layout } from '@/components/Layout'
 import { usePreferences } from '@/context/PreferencesContext'
 import { useNetwork } from '@/context/NetworkContext'
 import WalletNavbar from '@/components/WalletNavbar'
 import OperationDetailSheet from '@/components/OperationDetailSheet'
-import { EvmTxSheet } from '@/components/EvmTxSheet'
+import { ChainTxSheet } from '@/components/ChainTxSheet'
 import { BridgeJobSheet } from '@/components/BridgeJobSheet'
 import { NetworkFilterButton, NetworkFilterSheet } from '@/components/NetworkFilterSheet'
 import { ActivityRow } from '@/components/ActivityRow'
@@ -22,13 +23,13 @@ import {
   type HistoryRow,
   type RowView,
   stellarRows,
-  evmRows,
+  chainTxRows,
   bridgeRows,
   foldBridgeHashes,
   sortRows,
   groupRowsByDate,
   stellarView,
-  evmView,
+  chainTxView,
   bridgeView,
   formatFiat,
 } from '@/lib/activity'
@@ -53,7 +54,7 @@ export default function History() {
   const publicKey = status.publicKey ?? ''
 
   const { operations, loading, error, refresh } = useHistory(status.publicKey)
-  const { activity, loading: evmLoading, refresh: refreshEvm } = useEvmActivity(status.publicKey)
+  const { activity, loading: evmLoading, refresh: refreshEvm } = useChainActivity(status.publicKey)
   const { jobs, refresh: refreshJobs } = useCctpJobs(publicKey)
 
   const [selected, setSelected] = useState<HistoryRow | null>(null)
@@ -174,7 +175,7 @@ export default function History() {
       sortRows(
         foldBridgeHashes([
           ...stellarRows(enriched, stellarChainId),
-          ...evmRows(activity),
+          ...chainTxRows(activity),
           ...bridgeRows(jobs, stellarChainId, bridgeEvmChainId),
         ])
       ),
@@ -197,7 +198,7 @@ export default function History() {
   const viewOf = useCallback(
     (row: HistoryRow): RowView => {
       if (row.kind === 'stellar') return stellarView(row.op, publicKey)
-      if (row.kind === 'evm') return evmView(row.tx)
+      if (row.kind === 'evm') return chainTxView(row.tx)
       return bridgeView(
         row.job,
         row.leg,
@@ -208,16 +209,16 @@ export default function History() {
     [publicKey, bridgeFrom, shortChainName]
   )
 
-  // Chain filter chips: the Stellar network plus every EVM chain of this environment.
+  // Chain filter chips: the Stellar network plus every Bitcoin and EVM chain of this environment.
   const envChains = useMemo(() => {
     const isTestnet = activeNetwork.id === 'testnet'
-    const evm =
+    const others = (family: 'evm' | 'bip122') =>
       activeNetwork.id === 'mainnet' || isTestnet
-        ? chains.filter((c) => c.family === 'evm' && c.enabled && c.isTestnet === isTestnet)
+        ? chains.filter((c) => c.family === family && c.enabled && c.isTestnet === isTestnet)
         : []
     return [
       { id: stellarChainId, name: chainOf(stellarChainId)?.name ?? activeNetwork.name },
-      ...evm.map((c) => ({ id: c.id, name: c.name })),
+      ...[...others('bip122'), ...others('evm')].map((c) => ({ id: c.id, name: c.name })),
     ]
   }, [chains, chainOf, activeNetwork.id, activeNetwork.name, stellarChainId])
 
@@ -277,12 +278,7 @@ export default function History() {
   )
 
   const iconFor = useCallback(
-    (code: string, issuer?: string): string | undefined => {
-      const exact = iconMap.get(`${code}:${issuer ?? ''}`)
-      if (exact) return exact
-      for (const [k, v] of iconMap) if (k.startsWith(`${code}:`)) return v
-      return undefined
-    },
+    (code: string, issuer?: string) => iconForAsset(iconMap, code, issuer),
     [iconMap]
   )
 
@@ -475,13 +471,13 @@ export default function History() {
       />
 
       {selected?.kind === 'evm' && (
-        <EvmTxSheet
+        <ChainTxSheet
           tx={selected.tx}
           chain={chainOf(selected.tx.chain)}
           chainName={chainName(selected.tx.chain)}
           chainIcon={chainIcons.get(selected.tx.chain)}
           icon={iconFor(selected.tx.code, selected.tx.tokenAddress)}
-          fiat={fiatOf(evmView(selected.tx))}
+          fiat={fiatOf(chainTxView(selected.tx))}
           onClose={() => setSelected(null)}
         />
       )}

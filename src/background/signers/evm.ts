@@ -8,7 +8,7 @@ import { secp256k1 } from '@noble/curves/secp256k1'
 // m/44'/60'/0'/0/index -> keccak256(uncompressed pubkey)[12..] with EIP-55
 // checksum. The same mnemonic must yield byte-identical addresses to
 // MetaMask, which is what makes seed import/export between wallets safe.
-const EVM_PATH_PREFIX = "m/44'/60'/0'/0/"
+export const EVM_PATH_PREFIX = "m/44'/60'/0'/0/"
 
 function toChecksumAddress(addressHex: string): string {
   const lower = addressHex.toLowerCase()
@@ -31,10 +31,6 @@ export function evmAddressFromPrivateKey(privateKey: Uint8Array): string {
   const uncompressed = secp256k1.getPublicKey(privateKey, false).slice(1)
   const addressHex = bytesToHex(keccak_256(uncompressed).slice(-20))
   return toChecksumAddress(addressHex)
-}
-
-export function deriveEvmAddress(mnemonic: string, index = 0): string {
-  return evmAddressFromPrivateKey(deriveEvmPrivateKey(mnemonic, index))
 }
 
 // Minimal RLP encoder - only what an EIP-1559 transaction needs (byte

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePreferences } from '@/context/PreferencesContext'
 import { VerifiedMark } from '@/components/token/VerifiedMark'
 import { ExternalLink } from 'lucide-react'
 import { BottomSheet } from '@/components/BottomSheet'
@@ -13,10 +14,11 @@ import {
   StatusPill,
 } from '@/components/TxDetailParts'
 import { explorerUrl, type ChainEntry } from '@constants/chains'
-import type { EvmActivity } from '@ext-types/index'
-import { evmView, formatAmount } from '@/lib/activity'
+import type { ChainActivity } from '@ext-types/index'
+import { chainTxView, formatAmount } from '@/lib/activity'
+import { formatSignificant } from '@/lib/amount'
 
-export function EvmTxSheet({
+export function ChainTxSheet({
   tx,
   chain,
   chainName,
@@ -25,7 +27,7 @@ export function EvmTxSheet({
   fiat,
   onClose,
 }: {
-  tx: EvmActivity | null
+  tx: ChainActivity | null
   chain?: ChainEntry
   chainName: string
   chainIcon?: string
@@ -34,9 +36,10 @@ export function EvmTxSheet({
   onClose: () => void
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const { chainExplorer } = usePreferences()
   if (!tx) return null
-  const view = evmView(tx)
-  const explorer = chain ? explorerUrl(chain.explorer.tx, tx.hash) : null
+  const view = chainTxView(tx)
+  const explorer = chain ? explorerUrl(chainExplorer(chain).tx, tx.hash) : null
   const when = new Date(tx.timestamp)
   const sentByYou = tx.direction !== 'in'
 
@@ -111,7 +114,7 @@ export function EvmTxSheet({
           {tx.fee && sentByYou && (
             <DetailRow label="Network fee">
               <span className="tabular-nums">
-                {formatAmount(tx.fee)} {tx.feeCode}
+                {formatSignificant(tx.fee)} {tx.feeCode}
               </span>
             </DetailRow>
           )}
@@ -137,7 +140,7 @@ export function EvmTxSheet({
           {tx.fee && !sentByYou && (
             <DetailRow label="Fee paid by sender">
               <span className="tabular-nums">
-                {formatAmount(tx.fee)} {tx.feeCode}
+                {formatSignificant(tx.fee)} {tx.feeCode}
               </span>
             </DetailRow>
           )}

@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { AutoSkeleton } from '@/components/AutoSkeleton'
-import { chainById, explorerUrl } from '@constants/chains'
+import { BTC_TESTNET_CHAIN, chainById, explorerUrl } from '@constants/chains'
 import { usePreferences } from '@/context/PreferencesContext'
 import { useNavigate } from 'react-router-dom'
 import type { AssetBalance } from '@/hooks/useBalances'
@@ -31,11 +31,13 @@ import { AssetIcon } from '@/components/token/AssetIcon'
 import { useNetwork } from '@/context/NetworkContext'
 import OperationDetailSheet from '@/components/OperationDetailSheet'
 import { ActivityRow } from '@/components/ActivityRow'
-import { EvmTxSheet } from '@/components/EvmTxSheet'
-import { useEvmActivity } from '@/hooks/useEvmActivity'
-import { stellarView, evmView, formatFiat } from '@/lib/activity'
-import type { EvmActivity } from '@ext-types/index'
+import { ChainTxSheet } from '@/components/ChainTxSheet'
+import { StellarCounterpart } from '@/components/StellarCounterpart'
+import { useChainActivity } from '@/hooks/useChainActivity'
+import { stellarView, chainTxView, formatFiat } from '@/lib/activity'
+import type { ChainActivity } from '@ext-types/index'
 import { isRelatedToAsset } from '@/lib/historyUtils'
+import { iconForAsset, verifiedKey } from '@/lib/assetList'
 
 interface OnChainData {
   supply: string | null
@@ -79,7 +81,7 @@ function CopyButton({ text }: { text: string }) {
       onClick={handleCopy}
       className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors ml-1 shrink-0"
     >
-      {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+      {copied ? <Check size={12} className="pop-enter text-green-500" /> : <Copy size={12} />}
     </button>
   )
 }
@@ -130,6 +132,8 @@ interface TokenDetailSheetProps {
   // A grouped multichain token carries its per-chain parts; single-chain
   // tokens arrive without them.
   asset: (AssetBalance & { parts?: AssetBalance[] }) | null
+  balances: AssetBalance[]
+  isFunded: boolean
   chainIcons?: Map<string, string>
   chainNames?: Map<string, string>
   horizonUrl: string
@@ -138,6 +142,8 @@ interface TokenDetailSheetProps {
 
 export default function TokenDetailSheet({
   asset,
+  balances,
+  isFunded,
   chainIcons,
   chainNames,
   horizonUrl,
@@ -151,17 +157,21 @@ export default function TokenDetailSheet({
     getExplorerAccountUrl,
     getExplorerName,
     getExplorerTxUrl,
+    chainExplorer,
   } = usePreferences()
   const { activeNetwork } = useNetwork()
   const { status, accounts } = useWallet()
   const publicKey = status.publicKey ?? ''
-  const { operations } = useHistory(status.publicKey)
-  const { activity: evmActivity } = useEvmActivity(status.publicKey)
+  // Fetched only while the sheet is open: it stays mounted on Home, where its
+  // reads would otherwise compete with the balances on every open.
+  const historyKey = asset ? (status.publicKey ?? undefined) : undefined
+  const { operations } = useHistory(historyKey)
+  const { activity: chainActivity } = useChainActivity(historyKey)
   const [onChain, setOnChain] = useState<OnChainData | null>(null)
   const [fetching, setFetching] = useState(false)
   const [iconMap, setIconMap] = useState<Map<string, string>>(new Map())
   const [selectedOp, setSelectedOp] = useState<Operation | null>(null)
-  const [selectedTx, setSelectedTx] = useState<EvmActivity | null>(null)
+  const [selectedTx, setSelectedTx] = useState<ChainActivity | null>(null)
   const sheetRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -195,13 +205,15 @@ export default function TokenDetailSheet({
   const viewPart =
     isMultichain && chainTab ? (parts.find((p) => p.chain === chainTab) ?? null) : null
   const heroAsset = viewPart ?? a
-  const evmAddress = accounts.find((acc) => acc.publicKey === status.publicKey)?.addresses?.evm
+  const addresses = accounts.find((acc) => acc.publicKey === status.publicKey)?.addresses
   const receiveAddressFor = (chain: string) =>
     chain.startsWith('stellar')
       ? status.publicKey
       : chain.startsWith('eip155')
-        ? (evmAddress ?? null)
-        : null
+        ? (addresses?.evm ?? null)
+        : chain.startsWith('bip122')
+          ? ((chain === BTC_TESTNET_CHAIN ? addresses?.bitcoinTestnet : addresses?.bitcoin) ?? null)
+          : null
 
   const isOpen = asset !== null
 
@@ -226,8 +238,8 @@ export default function TokenDetailSheet({
 
   useEffect(() => {
     if (!asset) return
-    // EVM assets have no Horizon-side stats; their detail view stays local.
-    if (asset.chain.startsWith('eip155')) {
+    // Horizon stats exist only for Stellar assets; other chains' detail view stays local.
+    if (!asset.chain.startsWith('stellar')) {
       setFetching(false)
       setOnChain(null)
       return
@@ -337,41 +349,48 @@ export default function TokenDetailSheet({
     return () => document.removeEventListener('keydown', handleKey)
   }, [isOpen, onClose])
 
-  const isEvm = !!a?.chain.startsWith('eip155')
-  const evmChain = a && isEvm ? chainById(a.chain) : undefined
+  const isStellar = !!a?.chain.startsWith('stellar')
+  const otherChain = a && !isStellar ? chainById(a.chain) : undefined
   const assetExplorerUrl = a
-    ? isEvm
-      ? evmChain
-        ? a.isNative
-          ? ''
-          : explorerUrl(evmChain.explorer.token ?? evmChain.explorer.account, a.issuer)
+    ? !isStellar
+      ? otherChain && !a.isNative
+        ? explorerUrl(
+            chainExplorer(otherChain).token ?? chainExplorer(otherChain).account,
+            a.issuer
+          )
         : ''
       : getExplorerAssetUrl(a.code, a.isNative ? '' : a.issuer, activeNetwork.id)
     : ''
   const issuerExplorerUrl =
     a && !a.isNative
-      ? isEvm
-        ? evmChain
-          ? explorerUrl(evmChain.explorer.account, a.issuer)
+      ? !isStellar
+        ? otherChain
+          ? explorerUrl(chainExplorer(otherChain).account, a.issuer)
           : ''
         : getExplorerAccountUrl(a.issuer, activeNetwork.id)
       : ''
+  const ownAddress = a && !isStellar ? receiveAddressFor(a.chain) : null
 
   // Horizon operations are Stellar-only; without the family guard the native
-  // match would leak XLM activity into EVM natives like ETH. A selected chain
-  // tab narrows the activity to that chain's instance.
+  // match would leak XLM activity into other chains' natives like ETH or BTC. A
+  // selected chain tab narrows the activity to that chain's instance.
   const activityCtx = viewPart ?? a
+  // Each row shows its own asset: a swap in XLM's activity received USDC, not XLM.
+  const rowIcon = (code: string, issuer?: string) =>
+    iconForAsset(iconMap, code, issuer) ??
+    (code === activityCtx?.code ? activityCtx.icon : undefined)
+  const activityOnStellar = !!activityCtx?.chain.startsWith('stellar')
   const relatedOps =
-    activityCtx && !activityCtx.chain.startsWith('eip155')
+    activityCtx && activityOnStellar
       ? operations.filter((op) =>
           isRelatedToAsset(op, activityCtx.code, activityCtx.issuer, activityCtx.isNative)
         )
       : []
-  // EVM activity is matched by chain plus token contract (native by symbol),
+  // Other chains' activity is matched by chain plus token contract (native by symbol),
   // so ETH on one EVM chain never shows another chain's rows.
-  const relatedEvm =
-    activityCtx && activityCtx.chain.startsWith('eip155')
-      ? evmActivity.filter(
+  const relatedChainTx =
+    activityCtx && !activityOnStellar
+      ? chainActivity.filter(
           (tx) =>
             tx.chain === activityCtx.chain &&
             (activityCtx.isNative
@@ -379,11 +398,16 @@ export default function TokenDetailSheet({
               : (tx.tokenAddress ?? '').toLowerCase() === activityCtx.issuer.toLowerCase())
         )
       : []
-  const activityCount = relatedOps.length + relatedEvm.length
-  const fiatFor = (value: string): string | null =>
-    activityCtx && activityCtx.usdPrice !== null
-      ? formatFiat(parseFloat(value) * activityCtx.usdPrice)
-      : null
+  const activityCount = relatedOps.length + relatedChainTx.length
+  // Each row is valued at its own asset's price, like its icon.
+  const fiatFor = (value: string, code: string, issuer?: string): string | null => {
+    const key = verifiedKey(code, issuer)
+    const price =
+      activityCtx && verifiedKey(activityCtx.code, activityCtx.issuer) === key
+        ? activityCtx.usdPrice
+        : (balances.find((b) => verifiedKey(b.code, b.issuer) === key)?.usdPrice ?? null)
+    return price !== null ? formatFiat(parseFloat(value) * price) : null
+  }
   const chainLabelOf = (chain: string) => chainNames?.get(chain) ?? chainById(chain)?.name ?? chain
 
   const activeFlags =
@@ -712,6 +736,31 @@ export default function TokenDetailSheet({
                           </>
                         ) : null}
                       </AutoSkeleton>
+                      {otherChain && ownAddress && (
+                        <>
+                          <div className="flex items-center justify-between px-4 py-3">
+                            <span className="text-sm text-muted-foreground">Network</span>
+                            <span className="text-sm font-medium text-foreground">
+                              {chainLabelOf(otherChain.id)}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between px-4 py-3">
+                            <span className="text-sm text-muted-foreground">Explorer</span>
+                            <a
+                              href={explorerUrl(chainExplorer(otherChain).account, ownAddress)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                            >
+                              {
+                                new URL(chainExplorer(otherChain).account.replace('{address}', 'x'))
+                                  .hostname
+                              }
+                              <ExternalLink size={10} />
+                            </a>
+                          </div>
+                        </>
+                      )}
                     </div>
 
                     {/* flags */}
@@ -734,6 +783,15 @@ export default function TokenDetailSheet({
                       </div>
                     )}
                   </>
+                )}
+
+                {chainTab === null && !isStellar && (
+                  <StellarCounterpart
+                    code={a.code}
+                    balances={balances}
+                    isFunded={isFunded}
+                    chainIcons={chainIcons}
+                  />
                 )}
 
                 {/* receiving address for the selected chain */}
@@ -777,17 +835,21 @@ export default function TokenDetailSheet({
                       <p className="text-xs text-muted-foreground text-center py-4">
                         No transactions yet
                       </p>
-                    ) : activityCtx?.chain.startsWith('eip155') ? (
-                      relatedEvm.map((tx, i) => {
-                        const view = evmView(tx)
+                    ) : !activityOnStellar ? (
+                      relatedChainTx.map((tx, i) => {
+                        const view = chainTxView(tx)
                         return (
                           <ActivityRow
                             key={`${tx.hash}:${i}`}
                             view={view}
                             timestamp={tx.timestamp}
-                            icon={activityCtx.icon}
+                            icon={rowIcon(view.code, view.issuer)}
                             chainIcon={chainIcons?.get(tx.chain)}
-                            fiat={view.amount ? fiatFor(view.amount.value) : null}
+                            fiat={
+                              view.amount
+                                ? fiatFor(view.amount.value, view.code, view.issuer)
+                                : null
+                            }
                             counterparty={view.counterparty}
                             onClick={() => setSelectedTx(tx)}
                           />
@@ -807,9 +869,13 @@ export default function TokenDetailSheet({
                             key={op.id}
                             view={view}
                             timestamp={op.created_at}
-                            icon={activityCtx?.icon}
+                            icon={rowIcon(view.code, view.issuer)}
                             chainIcon={activityCtx ? chainIcons?.get(activityCtx.chain) : undefined}
-                            fiat={view.amount ? fiatFor(view.amount.value) : null}
+                            fiat={
+                              view.amount
+                                ? fiatFor(view.amount.value, view.code, view.issuer)
+                                : null
+                            }
                             counterparty={op.cyphras_private ? undefined : view.counterparty}
                             privatePhase={privatePhase}
                             trailing={op.type === 'change_trust' ? op.asset_code : undefined}
@@ -854,7 +920,13 @@ export default function TokenDetailSheet({
                     onClose()
                     navigate('/receive', {
                       state: on
-                        ? { chain: on.startsWith('eip155') ? 'evm' : 'stellar' }
+                        ? {
+                            chain: on.startsWith('eip155')
+                              ? 'evm'
+                              : on.startsWith('bip122')
+                                ? 'bitcoin'
+                                : 'stellar',
+                          }
                         : undefined,
                     })
                   }}
@@ -895,15 +967,18 @@ export default function TokenDetailSheet({
         zIndex="z-[80]"
       />
       {selectedTx && (
-        <EvmTxSheet
+        <ChainTxSheet
           tx={selectedTx}
           chain={chainById(selectedTx.chain)}
           chainName={chainLabelOf(selectedTx.chain)}
           chainIcon={chainIcons?.get(selectedTx.chain)}
-          icon={activityCtx?.icon}
+          icon={(() => {
+            const v = chainTxView(selectedTx)
+            return rowIcon(v.code, v.issuer)
+          })()}
           fiat={(() => {
-            const v = evmView(selectedTx)
-            return v.amount ? fiatFor(v.amount.value) : null
+            const v = chainTxView(selectedTx)
+            return v.amount ? fiatFor(v.amount.value, v.code, v.issuer) : null
           })()}
           onClose={() => setSelectedTx(null)}
         />

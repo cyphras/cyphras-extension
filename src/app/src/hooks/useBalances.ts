@@ -106,12 +106,29 @@ export interface AssetMeta {
 // carries the badge even before the curated list loads.
 const ALWAYS_VERIFIED = [verifiedKey('XLM', '')]
 
+// One load per network shared by every caller: a page and its sheets mount
+// together and would otherwise each read storage and refetch the list.
+const metaMemo = new Map<string, { at: number; meta: Promise<AssetMeta> }>()
+
 // All curated-list metadata from one load, so callers never race two loads of the same cache.
 // cacheOnly never waits on the network (stale is fine), so first paint shows names, not tickers.
-export async function getAssetMeta(
+export function getAssetMeta(
   networkId: string,
   opts?: { cacheOnly?: boolean }
 ): Promise<AssetMeta> {
+  const hit = metaMemo.get(networkId)
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.meta
+  if (opts?.cacheOnly) return loadAssetMeta(networkId, true)
+  const meta = loadAssetMeta(networkId, false)
+  metaMemo.set(networkId, { at: Date.now(), meta })
+  // An empty result means the list could not load; the next caller tries again.
+  void meta.then((m) => {
+    if (m.names.size === 0 && m.icons.size === 0) metaMemo.delete(networkId)
+  })
+  return meta
+}
+
+async function loadAssetMeta(networkId: string, cacheOnly: boolean): Promise<AssetMeta> {
   const icons = new Map<string, string>()
   const names = new Map<string, string>()
   const groups = new Map<string, string>()
@@ -128,10 +145,13 @@ export async function getAssetMeta(
     let assets = cached?.assets
     const stale = !assets || Date.now() - (cached?.cachedAt ?? 0) > CACHE_TTL_MS
 
-    if (stale && !opts?.cacheOnly) {
-      const fetched = await fetchAssetList(networkId, ['stellar', 'evm'])
-      assets = fetched
-      chrome.storage.local.set({ [cacheKey]: { assets: fetched, cachedAt: Date.now() } })
+    if (stale && !cacheOnly) {
+      const fetched = await fetchAssetList(networkId, ['stellar', 'evm', 'bitcoin'])
+      // An empty list is a failed fetch; the stale copy beats losing every icon and name.
+      if (fetched.length > 0) {
+        assets = fetched
+        chrome.storage.local.set({ [cacheKey]: { assets: fetched, cachedAt: Date.now() } })
+      }
     }
 
     for (const a of assets ?? []) {
@@ -140,7 +160,7 @@ export async function getAssetMeta(
       if (a.group) groups.set(`${a.code}:${a.issuer}`, a.group)
       if (a.verified) verified.add(verifiedKey(a.code, a.issuer))
     }
-    return { icons: await toDataUrls(icons, !opts?.cacheOnly), names, groups, verified }
+    return { icons: await toDataUrls(icons), names, groups, verified }
   } catch {
     // Asset metadata is non-critical - silently fail
   }
@@ -151,11 +171,12 @@ export async function getIconMap(networkId: string): Promise<Map<string, string>
   return (await getAssetMeta(networkId)).icons
 }
 
-// Stellar is the home network, so XLM leads, then Stellar tokens, EVM native coins, EVM tokens.
+// Stellar is the home network, so XLM and Stellar tokens lead, then Bitcoin, then EVM native
+// coins and EVM tokens.
 // Within a tier the larger USD value comes first; unpriced rows follow alphabetically.
 function balanceTier(b: AssetBalance): number {
-  const evm = b.chain.startsWith('eip155') ? 2 : 0
-  return evm + (b.isNative ? 0 : 1)
+  const family = b.chain.startsWith('bip122') ? 2 : b.chain.startsWith('eip155') ? 3 : 0
+  return family + (b.isNative ? 0 : 1)
 }
 
 function compareBalances(a: AssetBalance, b: AssetBalance): number {
@@ -167,18 +188,27 @@ function compareBalances(a: AssetBalance, b: AssetBalance): number {
   return a.code.localeCompare(b.code)
 }
 
+const EMPTY_STATE: BalanceState = {
+  balances: [],
+  totalUsd: null,
+  dailyChangeUsd: null,
+  dailyChangePct: null,
+  loading: true,
+  error: null,
+  isFunded: false,
+  subentryCount: 0,
+}
+
+// The last full result per network and account: any page paints from it at
+// once while the network refresh runs, and the stored copy covers the next
+// popup open. Balances are public chain data, so nothing secret is kept.
+const SNAPSHOT_KEY_PREFIX = 'cyphras_balance_snapshot_'
+const snapshots = new Map<string, BalanceState>()
+
 export function useBalances(publicKey: string | undefined): BalanceState & { refresh: () => void } {
   const { activeNetwork } = useNetwork()
-  const [state, setState] = useState<BalanceState>({
-    balances: [],
-    totalUsd: null,
-    dailyChangeUsd: null,
-    dailyChangePct: null,
-    loading: true,
-    error: null,
-    isFunded: false,
-    subentryCount: 0,
-  })
+  const snapshotKey = publicKey ? `${activeNetwork.id}_${publicKey}` : ''
+  const [state, setState] = useState<BalanceState>(() => snapshots.get(snapshotKey) ?? EMPTY_STATE)
 
   // A fetch only commits state if its captured id still matches, so a slow response for a previous
   // account never paints the current account's screen.
@@ -198,20 +228,35 @@ export function useBalances(publicKey: string | undefined): BalanceState & { ref
       }
 
       try {
-        const response = await new Promise<{
-          unfunded?: boolean
-          balances?: ChainBalance[] | null
-          subentryCount?: number
-          error?: string
-        }>((resolve) => {
-          chrome.runtime.sendMessage(
-            { type: SERVICE_TYPES.FETCH_HORIZON_ACCOUNT, publicKey },
-            (r) => {
-              if (chrome.runtime.lastError || !r) resolve({ error: 'Extension error' })
-              else resolve(r)
-            }
-          )
-        })
+        // Unified portfolio: EVM and Bitcoin balances ride alongside the Stellar
+        // ones, all read at once. Best-effort - an outage there never blocks Stellar.
+        const otherChains = (type: string) =>
+          new Promise<{ balances?: ChainBalance[] }>((resolve) => {
+            chrome.runtime.sendMessage({ type, publicKey }, (r) =>
+              resolve(chrome.runtime.lastError || !r ? {} : r)
+            )
+          })
+        const [response, evm, btc, cachedMeta] = await Promise.all([
+          new Promise<{
+            unfunded?: boolean
+            balances?: ChainBalance[] | null
+            subentryCount?: number
+            error?: string
+          }>((resolve) => {
+            chrome.runtime.sendMessage(
+              { type: SERVICE_TYPES.FETCH_HORIZON_ACCOUNT, publicKey },
+              (r) => {
+                if (chrome.runtime.lastError || !r) resolve({ error: 'Extension error' })
+                else resolve(r)
+              }
+            )
+          }),
+          otherChains(SERVICE_TYPES.FETCH_EVM_BALANCES),
+          otherChains(SERVICE_TYPES.FETCH_BTC_BALANCES),
+          // Cache-only meta so the first paint already carries names and icons;
+          // the priced pass below refreshes them from the network.
+          getAssetMeta(activeNetwork.id, { cacheOnly: true }),
+        ])
 
         if (runId !== runIdRef.current) return
 
@@ -236,41 +281,32 @@ export function useBalances(publicKey: string | undefined): BalanceState & { ref
             ]
         const subentryCount = isFunded ? (response.subentryCount ?? 0) : 0
 
-        // Unified portfolio: EVM balances ride alongside the Stellar ones.
-        // Best-effort - an EVM outage never blocks the Stellar view.
-        const evm = await new Promise<{ balances?: ChainBalance[] }>((resolve) => {
-          chrome.runtime.sendMessage({ type: SERVICE_TYPES.FETCH_EVM_BALANCES, publicKey }, (r) =>
-            resolve(chrome.runtime.lastError || !r ? {} : r)
-          )
-        })
-
-        // Cache-only meta so the first paint already carries names and icons;
-        // the priced pass below refreshes them from the network.
-        const cachedMeta = await getAssetMeta(activeNetwork.id, { cacheOnly: true })
-        const rawBalances: AssetBalance[] = [...stellarBalances, ...(evm.balances ?? [])].map(
-          (b: ChainBalance & { inactive?: boolean }) => ({
-            chain: b.chain,
-            code: b.code,
-            issuer: b.issuer,
-            balance: b.amount,
-            decimals: b.decimals,
-            isNative: b.isNative,
-            locked: b.locked,
-            inactive: b.inactive,
-            usdPrice: null,
-            usdValue: null,
-            change24h: null,
-            icon:
-              b.isNative && b.code === 'XLM'
-                ? undefined
-                : cachedMeta.icons.get(`${b.code}:${b.issuer}`),
-            name:
-              cachedMeta.names.get(`${b.code}:${b.issuer}`) ??
-              (b.isNative && b.code === 'XLM' ? 'Stellar Lumens' : undefined),
-            group: cachedMeta.groups.get(`${b.code}:${b.issuer}`),
-            verified: false,
-          })
-        )
+        const rawBalances: AssetBalance[] = [
+          ...stellarBalances,
+          ...(evm.balances ?? []),
+          ...(btc.balances ?? []),
+        ].map((b: ChainBalance & { inactive?: boolean }) => ({
+          chain: b.chain,
+          code: b.code,
+          issuer: b.issuer,
+          balance: b.amount,
+          decimals: b.decimals,
+          isNative: b.isNative,
+          locked: b.locked,
+          inactive: b.inactive,
+          usdPrice: null,
+          usdValue: null,
+          change24h: null,
+          icon:
+            b.isNative && b.code === 'XLM'
+              ? undefined
+              : cachedMeta.icons.get(`${b.code}:${b.issuer}`),
+          name:
+            cachedMeta.names.get(`${b.code}:${b.issuer}`) ??
+            (b.isNative && b.code === 'XLM' ? 'Stellar Lumens' : undefined),
+          group: cachedMeta.groups.get(`${b.code}:${b.issuer}`),
+          verified: false,
+        }))
 
         setState((prev) => {
           const priced = rawBalances.map((b) => {
@@ -308,14 +344,16 @@ export function useBalances(publicKey: string | undefined): BalanceState & { ref
         // copied code never inherits the real token's price.
         const keyOf = (b: AssetBalance) =>
           priceKey({ code: b.code, issuer: b.isNative ? undefined : b.issuer })
-        const [{ prices, changes_24h, verified }, { icons: iconMap, names, groups }] =
-          await Promise.all([
-            fetchPrices(
-              rawBalances.map((b) => ({ code: b.code, issuer: b.isNative ? undefined : b.issuer })),
-              activeNetwork.id
-            ),
-            getAssetMeta(activeNetwork.id),
-          ])
+        const [
+          { prices, changes_24h, verified },
+          { icons: iconMap, names, groups, verified: listed },
+        ] = await Promise.all([
+          fetchPrices(
+            rawBalances.map((b) => ({ code: b.code, issuer: b.isNative ? undefined : b.issuer })),
+            activeNetwork.id
+          ),
+          getAssetMeta(activeNetwork.id),
+        ])
 
         if (runId !== runIdRef.current) return
 
@@ -339,7 +377,8 @@ export function useBalances(publicKey: string | undefined): BalanceState & { ref
               icon,
               name,
               group: groups.get(`${b.code}:${b.issuer}`),
-              verified: verified[keyOf(b)] ?? false,
+              // The curated list is the source of truth; the price service's copy can lag it.
+              verified: !!verified[keyOf(b)] || listed.has(verifiedKey(b.code, b.issuer)),
             }
           })
           .sort(compareBalances)
@@ -366,7 +405,7 @@ export function useBalances(publicKey: string | undefined): BalanceState & { ref
           dailyChangePct = (changeUsd / totalUsd) * 100
         }
 
-        setState({
+        const next: BalanceState = {
           balances: balancesWithPrices,
           totalUsd,
           dailyChangeUsd,
@@ -375,7 +414,11 @@ export function useBalances(publicKey: string | undefined): BalanceState & { ref
           error: null,
           isFunded,
           subentryCount,
-        })
+        }
+        setState(next)
+        const key = `${activeNetwork.id}_${publicKey}`
+        snapshots.set(key, next)
+        chrome.storage.local.set({ [`${SNAPSHOT_KEY_PREFIX}${key}`]: next })
       } catch {
         if (runId !== runIdRef.current) return
         setState((prev) => ({
@@ -391,23 +434,28 @@ export function useBalances(publicKey: string | undefined): BalanceState & { ref
   )
 
   useEffect(() => {
-    // Bump the run token to invalidate the previous key's in-flight fetch, then clear its balances so
-    // consumers see a loading state rather than stale amounts.
+    // Bump the run token to invalidate the previous key's in-flight fetch. The
+    // last snapshot for this key paints at once; without one, consumers see a
+    // loading state rather than another account's amounts.
     runIdRef.current += 1
-    setState({
-      balances: [],
-      totalUsd: null,
-      dailyChangeUsd: null,
-      dailyChangePct: null,
-      loading: true,
-      error: null,
-      isFunded: false,
-      subentryCount: 0,
-    })
-    fetchBalances(true)
+    const runId = runIdRef.current
+    const cached = snapshots.get(snapshotKey)
+    setState(cached ?? EMPTY_STATE)
+    if (!cached && snapshotKey) {
+      const storageKey = `${SNAPSHOT_KEY_PREFIX}${snapshotKey}`
+      chrome.storage.local.get(storageKey, (r) => {
+        const stored = r[storageKey] as BalanceState | undefined
+        // Only while nothing fresher has landed.
+        if (stored && runId === runIdRef.current) {
+          snapshots.set(snapshotKey, stored)
+          setState((prev) => (prev.loading ? stored : prev))
+        }
+      })
+    }
+    fetchBalances(!cached)
     const interval = setInterval(fetchBalances, 30000)
     return () => clearInterval(interval)
-  }, [fetchBalances])
+  }, [fetchBalances, snapshotKey])
 
   const refresh = useCallback(() => fetchBalances(true), [fetchBalances])
 
