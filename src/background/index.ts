@@ -126,6 +126,7 @@ import {
   grantAccess,
   revokeAccess,
   revokeAllAccess,
+  revokeOriginEverywhere,
   getConnectedApps,
 } from './allowlistManager'
 import {
@@ -587,7 +588,22 @@ async function kickCctpProcessor(): Promise<void> {
 // The badge does not survive a browser restart.
 void refreshCctpBadge()
 
+// Content scripts never read storage, so keep the allowlist and the encrypted vault
+// out of their reach.
+void chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
+
+// Leftovers of the retired fixed-denomination private send.
+async function removeRetiredPrivateSendData(): Promise<void> {
+  await chrome.alarms.clear('cyphras_private_processor')
+  const all = await chrome.storage.local.get(null)
+  const stale = Object.keys(all).filter(
+    (k) => k.startsWith('cyphras_private_') && k !== 'cyphras_private_hint_seen'
+  )
+  if (stale.length > 0) await chrome.storage.local.remove(stale)
+}
+
 chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason === 'update') await removeRetiredPrivateSendData()
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false })
   chrome.sidePanel.setOptions({ path: 'wallet.html?ctx=sidepanel', enabled: true })
   setupAnalyticsAlarm()
@@ -694,24 +710,26 @@ const EXTENSION_ORIGIN = new URL(chrome.runtime.getURL('')).origin
 // Chrome fills in MessageSender itself, so it is the only trustworthy answer to
 // "who is asking"; every field of the message body can be forged by a page.
 function isExtensionPage(sender: chrome.runtime.MessageSender): boolean {
-  if (sender.id !== chrome.runtime.id) return false
-  return sender.origin === EXTENSION_ORIGIN || !!sender.url?.startsWith(`${EXTENSION_ORIGIN}/`)
+  return sender.id === chrome.runtime.id && sender.origin === EXTENSION_ORIGIN
 }
 
-// The web origin of a message relayed by our content script, or null when the
-// sender is not a regular http(s) page.
+const LOOPBACK_HOST_RE = /^(localhost|.+\.localhost|127(\.\d{1,3}){3}|\[::1\])$/
+
+// Only pages with a stable identity can hold a grant: https everywhere, plain http
+// only on loopback, where local dApp development runs and no network can inject.
+// A prerendering page has not been shown to the user, so it cannot ask for anything.
 function webOriginOf(sender: chrome.runtime.MessageSender): string | null {
-  if (sender.id !== chrome.runtime.id || !sender.tab) return null
-  let origin = sender.origin
-  if (!origin && sender.url) {
-    try {
-      origin = new URL(sender.url).origin
-    } catch {
-      return null
-    }
+  if (sender.id !== chrome.runtime.id || !sender.tab || !sender.origin) return null
+  if (sender.documentLifecycle && sender.documentLifecycle !== 'active') return null
+  let url: URL
+  try {
+    url = new URL(sender.origin)
+  } catch {
+    return null
   }
-  if (!origin || !/^https?:\/\//.test(origin)) return null
-  return origin
+  if (url.protocol === 'https:') return sender.origin
+  if (url.protocol === 'http:' && LOOPBACK_HOST_RE.test(url.hostname)) return sender.origin
+  return null
 }
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
@@ -735,11 +753,17 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   }
 
   // Everything else drives the wallet itself (approvals, keys, signing), so only
-  // the wallet's own pages, approval windows and offscreen documents may send it.
+  // the wallet's own pages and approval windows may send it.
   if (!isExtensionPage(sender)) return false
 
   if (message.type === 'APPROVAL_RESPONSE') {
     const { id, approved } = message as ApprovalResponseMessage
+    // Only the window opened for this request may answer it.
+    const windowId = sender.tab?.windowId
+    if (windowId === undefined || approvalWindowToRequest.get(windowId) !== id) {
+      sendResponse({ ok: false })
+      return true
+    }
     const resolver = pendingRequests.get(id)
     if (resolver) {
       pendingRequests.delete(id)
@@ -964,9 +988,23 @@ async function openAndWaitForUnlock(timeoutMs = 2 * 60 * 1000): Promise<string |
 }
 
 type ExternalRequestMessage = {
-  id: string
   requestType: string
   payload?: Record<string, unknown>
+}
+
+// A dApp may name a network, but the wallet only signs for the one its approval
+// window shows: a different passphrase yields a signature valid on that network.
+function rejectForeignNetwork(
+  payload: Record<string, unknown> | undefined,
+  activePassphrase: string,
+  sendResponse: (r: Record<string, unknown>) => void
+): boolean {
+  const requested = payload?.networkPassphrase
+  if (requested === undefined || requested === activePassphrase) return false
+  sendResponse({
+    error: { code: 'NETWORK_MISMATCH', message: 'Switch the wallet to the requested network' },
+  })
+  return true
 }
 
 async function handleExternalRequest(
@@ -975,7 +1013,10 @@ async function handleExternalRequest(
   sendResponse: (r: Record<string, unknown>) => void
 ) {
   try {
-    const { id, requestType, payload } = message
+    const { requestType, payload } = message
+    // Approvals are keyed by an id the wallet picks. A page-picked id could match
+    // another pending request and change what an open approval window signs.
+    const id = crypto.randomUUID()
 
     const session = await chrome.storage.session?.get(SESSION_KEY)
     const pubkey = (session?.[SESSION_KEY] as string | undefined) ?? null
@@ -1160,14 +1201,19 @@ async function handleExternalRequest(
 
       case EXTERNAL_SERVICE_TYPES.GET_NETWORK_DETAILS: {
         const activeNetwork = await getActiveNetwork()
+        // A user-added network's URLs can carry a provider API key, so only a site
+        // connected to the account sees them.
+        const showUrls =
+          activeNetwork.isDefault ||
+          (!!pubkey && (await isAllowed(origin, pubkey, activeNetwork.id)))
         sendResponse({
           result: {
             network: activeNetwork.id,
             networkName: activeNetwork.name,
-            networkUrl: activeNetwork.horizonUrl,
+            networkUrl: showUrls ? activeNetwork.horizonUrl : undefined,
             networkPassphrase: activeNetwork.passphrase,
-            sorobanRpcUrl: activeNetwork.sorobanRpcUrl,
-            friendbotUrl: activeNetwork.friendbotUrl,
+            sorobanRpcUrl: showUrls ? activeNetwork.sorobanRpcUrl : undefined,
+            friendbotUrl: showUrls ? activeNetwork.friendbotUrl : undefined,
           },
         })
         break
@@ -1190,7 +1236,8 @@ async function handleExternalRequest(
         }
 
         const activeNetwork = await getActiveNetwork()
-        const networkPassphrase = (payload?.networkPassphrase as string) ?? activeNetwork.passphrase
+        if (rejectForeignNetwork(payload, activeNetwork.passphrase, sendResponse)) return
+        const networkPassphrase = activeNetwork.passphrase
 
         // Store full XDR in session storage - approval window reads from there (no truncation)
         await storeApprovalPayload(id, { xdr, origin })
@@ -1320,7 +1367,8 @@ async function handleExternalRequest(
         }
 
         const activeNetwork = await getActiveNetwork()
-        const sasPassphrase = (payload?.networkPassphrase as string) ?? activeNetwork.passphrase
+        if (rejectForeignNetwork(payload, activeNetwork.passphrase, sendResponse)) return
+        const sasPassphrase = activeNetwork.passphrase
 
         await storeApprovalPayload(id, { xdr: sasXdr, origin })
         const sasParams = new URLSearchParams({ id, origin })
@@ -1514,7 +1562,8 @@ async function handleExternalRequest(
         }
 
         const activeNetwork = await getActiveNetwork()
-        const saePassphrase = (payload?.networkPassphrase as string) ?? activeNetwork.passphrase
+        if (rejectForeignNetwork(payload, activeNetwork.passphrase, sendResponse)) return
+        const saePassphrase = activeNetwork.passphrase
 
         await storeApprovalPayload(id, { entryXdr, origin })
         const saeParams = new URLSearchParams({ id, origin })
@@ -1707,12 +1756,8 @@ async function handleExternalRequest(
       }
 
       case EXTERNAL_SERVICE_TYPES.REVOKE_ALL_ACCESS: {
-        if (!pubkey) {
-          sendResponse({ error: { code: 'NOT_CONNECTED', message: 'Wallet is locked' } })
-          return
-        }
-        const { id: raaNetId } = await getActiveNetwork()
-        await revokeAllAccess(pubkey, raaNetId)
+        // A site can only disconnect itself, on every account and network.
+        await revokeOriginEverywhere(origin)
         notifyTabsWalletChanged()
         sendResponse({ result: { ok: true } })
         break
@@ -2340,8 +2385,9 @@ async function handleExternalRequest(
       }
 
       case EXTERNAL_SERVICE_TYPES.SIMULATE_CONTRACT: {
-        // Read-only simulation needs no signing: use the session pubkey if unlocked, else a placeholder
-        // (the sequence number does not affect simulation output).
+        // Read-only simulation needs no signing. The session pubkey is the source only for
+        // a site connected to it: simulation costs differ when a call authorizes its own
+        // source, so any other site could test guessed addresses against the user's.
         const scContractId = payload?.contractId as string
         const scMethod = payload?.method as string
         const scArgSpecs = (payload?.args ?? []) as ScValSpec[]
@@ -2367,7 +2413,11 @@ async function handleExternalRequest(
 
           const scArgs = scArgSpecs.map(scValSpecToXdr)
           const scOp = new Contract(scContractId).call(scMethod, ...scArgs)
-          const scAccount = new Account(pubkey ?? Keypair.random().publicKey(), '0')
+          const scSource =
+            pubkey && (await isAllowed(origin, pubkey, scNetwork.id))
+              ? pubkey
+              : Keypair.random().publicKey()
+          const scAccount = new Account(scSource, '0')
 
           const scBaseTx = new TransactionBuilder(scAccount, {
             fee: BASE_FEE,
@@ -2998,7 +3048,11 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       ])
       const allLocal = await chrome.storage.local.get(null)
       const assetKeys = Object.keys(allLocal).filter(
-        (k) => k.startsWith('cyphras_custom_assets_') || k.startsWith('cyphras_balance_snapshot_')
+        (k) =>
+          k.startsWith('cyphras_custom_assets_') ||
+          k.startsWith('cyphras_balance_snapshot_') ||
+          k.startsWith('cyphras_shielded_notes_') ||
+          k.startsWith('cyphras_private_')
       )
       if (assetKeys.length > 0) await chrome.storage.local.remove(assetKeys)
       notifyTabsWalletChanged()

@@ -109,6 +109,18 @@ export async function revokeAllAccess(publicKey: string, networkId?: string): Pr
   await saveAllowList(list)
 }
 
+// Removes one site from every account and chain. A site that disconnects itself
+// must never touch the grants other sites hold.
+export async function revokeOriginEverywhere(origin: string): Promise<void> {
+  const list = await getAllowList()
+  for (const chains of Object.values(list)) {
+    for (const chainId of Object.keys(chains)) {
+      chains[chainId] = chains[chainId].filter((o) => o !== origin)
+    }
+  }
+  await saveAllowList(list)
+}
+
 export async function getConnectedApps(publicKey: string, networkId: string): Promise<string[]> {
   const list = await getAllowList()
   const key = await accountKeyOf(publicKey)

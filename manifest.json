@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "116",
   "name": "Cyphras",
   "description": "Cyphras is a non-custodial wallet. Manage accounts, sign transactions, and connect to dApps.",
   "version": "0.3.0",
