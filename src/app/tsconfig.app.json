@@ -23,7 +23,6 @@
       "@bg/*": ["../background/*"],
       "@constants/*": ["../constants/*"],
       "@ext-types/*": ["../types/*"],
-      "@private/*": ["../private/*"],
       "@shielded/*": ["../shielded/*"]
     }
   },

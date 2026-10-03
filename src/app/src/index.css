@@ -201,18 +201,6 @@ html.is-popup #root {
   }
 }
 
-.shimmer {
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
-  transform: translateX(-100%);
-  animation: cyphras-shimmer 1.6s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .shimmer {
-    animation: none;
-  }
-}
-
 /* Loading placeholders: a soft light sweep across the muted block, tuned
    per theme so it reads as light passing over, not as a flashing bar. */
 .skeleton-sweep {

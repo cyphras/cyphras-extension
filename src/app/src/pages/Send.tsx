@@ -8,7 +8,7 @@ import { useNetwork } from '@/context/NetworkContext'
 import { useBalances } from '@/hooks/useBalances'
 import { usePreferences } from '@/context/PreferencesContext'
 import { Button } from '@/components/ui/button'
-import { ExternalLink, Settings, ChevronLeft, X, Search, AlertTriangle, Info } from 'lucide-react'
+import { ExternalLink, Settings, ChevronLeft, X, Search } from 'lucide-react'
 import WalletNavbar from '@/components/WalletNavbar'
 import { SendEvm } from '@/components/SendEvm'
 import { SendBitcoin } from '@/components/SendBitcoin'
@@ -28,7 +28,7 @@ import {
 } from '@/lib/amount'
 import { SideCard, AmountInput, QuickFillChips } from '@/components/PairCard'
 import { RecipientRow } from '@/components/RecipientRow'
-import type { PaymentParams, PrivateSendQuote, ServiceResponse } from '@ext-types/index'
+import type { PaymentParams } from '@ext-types/index'
 import { fetchPrices, priceKey } from '@/lib/api'
 import type { AssetBalance } from '@/hooks/useBalances'
 import { trimZeros } from '@/lib/historyUtils'
@@ -38,29 +38,9 @@ import {
   CopyValue,
   DetailRow,
   NetworkValue,
-  TokenStatusIcon,
   TxResultHero,
 } from '@/components/TxDetailParts'
 import { useStellarChain } from '@/hooks/useStellarChain'
-
-type SendMode = 'public' | 'private'
-type PrivacyLevel = 'fast' | 'standard' | 'maximum'
-
-const PRIVACY_LEVELS: { value: PrivacyLevel; label: string; eta: string; hint: string }[] = [
-  { value: 'fast', label: 'Fast', eta: '~1-5 min', hint: 'Strong privacy, fastest delivery' },
-  {
-    value: 'standard',
-    label: 'Standard',
-    eta: '~5-20 min',
-    hint: 'Stronger privacy, balanced timing',
-  },
-  {
-    value: 'maximum',
-    label: 'Maximum',
-    eta: '~20-45 min',
-    hint: 'Strongest privacy, largest anonymity set',
-  },
-]
 
 // Scoped per (networkId, account) so recents do not bleed across accounts or networks.
 function chainRecentsKey(networkId: string, account: string): string {
@@ -72,12 +52,7 @@ function recentRecipientsKey(networkId: string, account: string): string {
 }
 const MAX_RECENT_RECIPIENTS = 5
 
-const ANON_SET_WARN = 10
-
-// XLM reserved per split to cover the Soroban commit tx (~0.011 XLM observed), with safe margin.
-const COMMIT_GAS_HEADROOM_PER_NOTE_STROOPS = 1_000_000n
-
-type Step = 'form' | 'privacy' | 'confirm' | 'success'
+type Step = 'form' | 'confirm' | 'success'
 type FeeTier = 'low' | 'medium' | 'high' | 'custom'
 
 interface FeeStats {
@@ -522,17 +497,6 @@ export default function Send() {
     chainNames.get(chainId) ?? chainById(chainId)?.name ?? chainId
   const { getExplorerTxUrl, formatValue } = usePreferences()
 
-  const privateAssets = activeNetwork.privateAssets ?? []
-  const privateAvailable = privateAssets.length > 0 && !!activeNetwork.privatePoolFactory
-
-  const [mode, setMode] = useState<SendMode>('public')
-  const [privacyLevel, setPrivacyLevel] = useState<PrivacyLevel>('standard')
-  const [quote, setQuote] = useState<PrivateSendQuote | null>(null)
-  const [committed, setCommitted] = useState(0)
-  const [acknowledged, setAcknowledged] = useState(false)
-  const [privateAmountUsd, setPrivateAmountUsd] = useState<string | null>(null)
-  const [privateXlmPrice, setPrivateXlmPrice] = useState<number | null>(null)
-
   const [step, setStep] = useState<Step>('form')
   const [destination, setDestination] = useState('')
   const [amount, setAmount] = useState('')
@@ -743,139 +707,7 @@ export default function Send() {
   const activeFeeStroops = feeTier === 'custom' ? customFee || feeStats.medium : feeStats[feeTier]
   const activeFeeXlm = stroopsToXlm(activeFeeStroops)
 
-  const decimals = privateAssets.find((a) => a.asset === selectedAssetObj.code)?.decimals ?? 7
-  // The relayer fee is paid in XLM regardless of the send asset, so format it with XLM decimals.
-  const xlmDecimals = privateAssets.find((a) => a.asset === 'XLM')?.decimals ?? 7
-
-  const zeroAnonSet = quote?.pieces.some((p) => p.anonSet === 0) ?? false
-  const weakAnonSet = quote?.pieces.some((p) => p.anonSet > 0 && p.anonSet < ANON_SET_WARN) ?? false
-  const totalFee = quote ? BigInt(quote.feeStroops) * BigInt(quote.totalNotes) : 0n
-  // User-facing total: relayer fee plus the per-commit network fee across every split.
-  const totalFeeStroops = quote
-    ? totalFee + BigInt(quote.commitFeeStroops ?? '0') * BigInt(quote.totalNotes)
-    : 0n
-  const currentPrivacy = PRIVACY_LEVELS.find((l) => l.value === privacyLevel)
-
-  const privateAvailableForAsset =
-    privateAvailable && privateAssets.some((a) => a.asset === selectedAssetObj.code)
-
-  // Relayer fee and commit gas are always paid in XLM, so the XLM reserve is checked separately
-  // from the send-asset balance.
-  function balanceError(): string | null {
-    const sendStroops = toStroops(amount, decimals)
-    if (sendStroops === null) {
-      return null
-    }
-    const code = selectedAssetObj.code
-    const gasHeadroom = COMMIT_GAS_HEADROOM_PER_NOTE_STROOPS * BigInt(quote?.totalNotes ?? 1)
-    const xlmNeeded = totalFee + gasHeadroom + (code === 'XLM' ? sendStroops : 0n)
-    // Stellar XLM only (ETH is native too), and only what sits above the reserve.
-    const xlmBalance = balances.find((b) => b.isNative && familyOf(b) === 'stellar')
-    const xlmHave = xlmBalance
-      ? spendableUnits(xlmBalance.balance, xlmDecimals, xlmBalance.locked)
-      : 0n
-    if (xlmHave < xlmNeeded) {
-      return 'Not enough XLM for relayer fees'
-    }
-    if (code !== 'XLM') {
-      const assetBalance = balances.find((b) => b.code === code && familyOf(b) === 'stellar')
-      const assetHave = assetBalance
-        ? spendableUnits(assetBalance.balance, decimals, assetBalance.locked)
-        : 0n
-      if (assetHave < sendStroops) {
-        return `Insufficient ${code} balance`
-      }
-    }
-    return null
-  }
-
-  async function handlePrivateContinue() {
-    setError('')
-    setAcknowledged(false)
-    if (!isValidPublicKey(destination)) {
-      setError('Enter a valid recipient address')
-      return
-    }
-    const stroops = toStroops(amount, decimals)
-    if (stroops === null || stroops <= 0n) {
-      setError('Enter a valid amount')
-      return
-    }
-    setLoading(true)
-    const { prices } = await fetchPrices([selectedPriceAsset, { code: 'XLM' }], activeNetwork.id)
-    const assetPrice = prices[priceKey(selectedPriceAsset)] ?? null
-    setPrivateAmountUsd(assetPrice !== null ? formatValue(parseFloat(amount) * assetPrice) : null)
-    setPrivateXlmPrice(prices['XLM'] ?? null)
-    chrome.runtime.sendMessage(
-      {
-        type: SERVICE_TYPES.PRIVATE_QUOTE,
-        asset: selectedAssetObj.code,
-        amount: stroops.toString(),
-        recipient: destination,
-      },
-      (response: ServiceResponse) => {
-        setLoading(false)
-        if (response?.error || !response?.privateQuote) {
-          setError(response?.error ?? 'Could not quote this amount')
-          return
-        }
-        setQuote(response.privateQuote)
-        setStep('confirm')
-      }
-    )
-  }
-
-  function handlePrivateConfirm() {
-    setError('')
-    const stroops = toStroops(amount, decimals)
-    if (stroops === null) {
-      return
-    }
-    const insufficient = balanceError()
-    if (insufficient) {
-      setError(insufficient)
-      return
-    }
-    setLoading(true)
-    chrome.runtime.sendMessage(
-      {
-        type: SERVICE_TYPES.PRIVATE_PREPARE_SEND,
-        recipient: destination,
-        asset: selectedAssetObj.code,
-        amount: stroops.toString(),
-        privacyLevel,
-      },
-      (response: ServiceResponse) => {
-        setLoading(false)
-        if (response?.error) {
-          setError(response.error)
-          return
-        }
-        setCommitted(response.notes?.length ?? 0)
-        rememberRecipient(destination)
-        setStep('success')
-      }
-    )
-  }
-
-  function handleFormContinue() {
-    if (!isValidPublicKey(destination)) {
-      setError('Enter a valid recipient address')
-      return
-    }
-    const amountNum = parseFloat(amount)
-    if (isNaN(amountNum) || amountNum <= 0) {
-      setError('Enter a valid amount')
-      return
-    }
-    if (selectedBalance && amountNum > parseFloat(selectedBalance.balance)) {
-      setError('Amount exceeds your balance')
-      return
-    }
-    if (!privateAvailableForAsset) setMode('public')
-    setError('')
-    setStep('privacy')
-  }
+  const decimals = selectedBalance?.decimals ?? 7
 
   async function handleContinue() {
     setError('')
@@ -989,7 +821,7 @@ export default function Send() {
     )
   }
 
-  const sheetOpen = step === 'privacy' || step === 'confirm' || step === 'success'
+  const sheetOpen = step === 'confirm' || step === 'success'
   const shortDest = lastDestRef.current
     ? `${lastDestRef.current.slice(0, 4)}...${lastDestRef.current.slice(-4)}`
     : ''
@@ -1021,15 +853,10 @@ export default function Send() {
   function handleSendAgain() {
     setAmount('')
     setMemo('')
-    setQuote(null)
     setTxHash('')
-    setCommitted(0)
     setTxPreview(null)
     setSendTxDetails(null)
-    setAcknowledged(false)
     setLiveFiat(null)
-    setMode('public')
-    setPrivacyLevel('standard')
     setError('')
     setStep('form')
   }
@@ -1212,11 +1039,8 @@ export default function Send() {
                   if (loading) return
                   if (step === 'form') {
                     setRecipientFamily(null)
-                  } else if (step === 'privacy') {
-                    setStep('form')
-                    setError('')
                   } else {
-                    setStep('privacy')
+                    setStep('form')
                     setError('')
                   }
                 }}
@@ -1346,7 +1170,6 @@ export default function Send() {
               error={exceedsBalance ? 'Exceeds balance' : null}
             />
 
-            {/* Memo applies to public sends only; it is ignored by the private flow. */}
             <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <p className="text-xs text-muted-foreground">
@@ -1375,11 +1198,6 @@ export default function Send() {
               <Reveal show={memoType === 'text' && !!memo} gap={8}>
                 <p className="text-xs text-muted-foreground text-right">{memo.length}/28</p>
               </Reveal>
-              <Reveal show={mode === 'private' && !!memo} gap={8}>
-                <p className="text-xs text-muted-foreground">
-                  Memos are stripped from private payments to protect your privacy.
-                </p>
-              </Reveal>
             </div>
           </div>
         </div>
@@ -1389,8 +1207,8 @@ export default function Send() {
           <Reveal show={!!error && step === 'form'}>
             <p className="text-xs text-destructive mb-3">{error}</p>
           </Reveal>
-          <Button className="w-full" onClick={handleFormContinue}>
-            Continue
+          <Button className="w-full" onClick={handleContinue} disabled={loading}>
+            {loading ? 'Preparing...' : 'Continue'}
           </Button>
         </div>
       </div>
@@ -1403,11 +1221,8 @@ export default function Send() {
           className={`absolute inset-0 bg-black/60 transition-opacity duration-300 ${sheetOpen ? 'opacity-100' : 'opacity-0'}`}
           onClick={() => {
             if (loading) return
-            if (step === 'privacy') {
+            if (step === 'confirm') {
               setStep('form')
-              setError('')
-            } else if (step === 'confirm') {
-              setStep('privacy')
               setError('')
             }
           }}
@@ -1420,18 +1235,10 @@ export default function Send() {
           </div>
           <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
             <p className="text-sm font-semibold text-foreground">
-              {step === 'privacy'
-                ? 'Send privacy'
-                : mode === 'private'
-                  ? step === 'success'
-                    ? 'Private payment queued'
-                    : 'Confirm private send'
-                  : step === 'success'
-                    ? 'Payment sent'
-                    : 'Confirm send'}
+              {step === 'success' ? 'Payment sent' : 'Confirm send'}
             </p>
             <div className="flex items-center gap-1">
-              {step === 'confirm' && mode === 'public' && (
+              {step === 'confirm' && (
                 <button
                   onClick={() => setShowSettings(true)}
                   aria-label="Open send settings"
@@ -1445,11 +1252,8 @@ export default function Send() {
                   if (loading) return
                   if (step === 'success') {
                     navigate('/')
-                  } else if (step === 'privacy') {
-                    setStep('form')
-                    setError('')
                   } else {
-                    setStep('privacy')
+                    setStep('form')
                     setError('')
                   }
                 }}
@@ -1466,410 +1270,7 @@ export default function Send() {
             key={step}
             className="flex flex-1 flex-col min-h-0 animate-in fade-in-0 slide-in-from-bottom-2 duration-200"
           >
-            {step === 'privacy' ? (
-              <>
-                <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3 [&>*]:shrink-0">
-                  <p className="text-sm text-muted-foreground">
-                    Choose who can see that this payment came from you.
-                  </p>
-
-                  <button
-                    onClick={() => setMode('public')}
-                    aria-pressed={mode === 'public'}
-                    className={`cursor-pointer flex items-start gap-3 rounded-xl border p-4 text-left transition-colors ${
-                      mode === 'public'
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border bg-card hover:bg-muted'
-                    }`}
-                  >
-                    <span
-                      className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
-                        mode === 'public' ? 'border-primary' : 'border-muted-foreground/40'
-                      }`}
-                    >
-                      {mode === 'public' && <span className="h-2 w-2 rounded-full bg-primary" />}
-                    </span>
-                    <span className="flex flex-col gap-1">
-                      <span className="text-sm font-bold text-foreground">Public send</span>
-                      <span className="text-xs text-muted-foreground">
-                        Standard transfer. Fast and low-cost. The recipient can see which account
-                        sent it.
-                      </span>
-                    </span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      if (privateAvailableForAsset) setMode('private')
-                    }}
-                    disabled={!privateAvailableForAsset}
-                    aria-pressed={mode === 'private'}
-                    className={`flex items-start gap-3 rounded-xl border p-4 text-left transition-colors ${
-                      privateAvailableForAsset ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
-                    } ${
-                      mode === 'private'
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border bg-card hover:bg-muted'
-                    }`}
-                  >
-                    <span
-                      className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
-                        mode === 'private' ? 'border-primary' : 'border-muted-foreground/40'
-                      }`}
-                    >
-                      {mode === 'private' && <span className="h-2 w-2 rounded-full bg-primary" />}
-                    </span>
-                    <span className="flex flex-col gap-1">
-                      <span className="text-sm font-bold text-foreground">Private send</span>
-                      <span className="text-xs text-muted-foreground">
-                        Hides the sender, amount, and on-chain link. Delivered after a short privacy
-                        delay.
-                      </span>
-                      {!privateAvailableForAsset && (
-                        <span className="mt-1 rounded-md bg-muted px-2 py-1 text-xs text-foreground">
-                          Private send supports XLM and USDC
-                        </span>
-                      )}
-                    </span>
-                  </button>
-
-                  <Reveal show={!!error} gap={12}>
-                    <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2.5">
-                      <p className="text-xs text-destructive">{error}</p>
-                    </div>
-                  </Reveal>
-                </div>
-                <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
-                  <Button
-                    variant="outline"
-                    className="flex-1"
-                    onClick={() => {
-                      setStep('form')
-                      setError('')
-                    }}
-                    disabled={loading}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    className="flex-1"
-                    onClick={() => {
-                      if (mode === 'public') handleContinue()
-                      else handlePrivateContinue()
-                    }}
-                    disabled={loading}
-                  >
-                    {loading ? 'Preparing...' : 'Continue'}
-                  </Button>
-                </div>
-              </>
-            ) : mode === 'private' ? (
-              step === 'success' ? (
-                <>
-                  <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
-                    <div className="flex flex-col items-center gap-3 text-center pt-1">
-                      <TokenStatusIcon
-                        state="success"
-                        code={selectedAssetObj.code}
-                        icon={selectedAssetObj.icon}
-                        chainIcon={stellarChain.icon}
-                      />
-                      <div>
-                        <p className="text-base font-bold text-foreground">
-                          Payment sent privately
-                        </p>
-                        <p className="text-sm text-muted-foreground mt-0.5">
-                          {amount} {selectedAssetObj.code} to {shortDest}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl bg-card divide-y divide-border">
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <p className="text-xs text-muted-foreground">To</p>
-                        <div className="flex items-center gap-2 min-w-0" title={destination}>
-                          {destination && <StellarAvatar publicKey={destination} size={16} />}
-                          <p className="text-xs font-mono text-foreground">
-                            {destination.slice(0, 4)}...{destination.slice(-4)}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <p className="text-xs text-muted-foreground">Splits</p>
-                        <p className="text-sm text-foreground">{committed}</p>
-                      </div>
-                      {currentPrivacy && (
-                        <div className="flex items-center justify-between px-4 py-3">
-                          <p className="text-xs text-muted-foreground">Estimated delivery</p>
-                          <p className="text-sm text-foreground">{currentPrivacy.eta}</p>
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <p className="text-xs text-muted-foreground">Network</p>
-                        <p className="text-sm text-foreground">
-                          <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
-                        </p>
-                      </div>
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <p className="text-xs text-muted-foreground">Max fee</p>
-                        <div className="text-right">
-                          <p className="text-sm font-medium text-foreground">
-                            {formatUnits(totalFeeStroops.toString(), xlmDecimals)} XLM
-                          </p>
-                          {privateXlmPrice !== null && (
-                            <p className="text-xs text-muted-foreground">
-                              {formatValue(
-                                (Number(totalFeeStroops) / 10 ** xlmDecimals) * privateXlmPrice
-                              )}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <p className="text-center text-xs text-muted-foreground">
-                      Delivering in the background. Safe to close - track it in your History.
-                    </p>
-                  </div>
-                  <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
-                    <Button variant="outline" className="flex-1" onClick={handleSendAgain}>
-                      Send again
-                    </Button>
-                    <Button className="flex-1" onClick={() => navigate('/history')}>
-                      View History
-                    </Button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3 [&>*]:shrink-0">
-                    {quote && (
-                      <>
-                        <div className="rounded-xl bg-card px-4 py-3 flex items-center gap-3">
-                          <AssetIcon
-                            icon={selectedAssetObj.icon}
-                            code={selectedAssetObj.code}
-                            size={36}
-                          />
-                          <div className="flex flex-col min-w-0">
-                            <p className="text-2xl font-bold text-foreground tabular-nums">
-                              {amount} {selectedAssetObj.code}
-                            </p>
-                            <div className="flex items-center gap-2">
-                              {privateAmountUsd && (
-                                <p className="text-xs text-muted-foreground">{privateAmountUsd}</p>
-                              )}
-                              <p className="text-xs text-primary">Private</p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2.5">
-                          <span className="text-xs text-muted-foreground">Privacy level</span>
-                          <div className="flex gap-0.5 rounded-xl bg-muted p-1">
-                            {PRIVACY_LEVELS.map((lvl) => (
-                              <button
-                                key={lvl.value}
-                                onClick={() => setPrivacyLevel(lvl.value)}
-                                className={`cursor-pointer flex-1 rounded-lg py-2 text-sm font-medium transition-all ${
-                                  privacyLevel === lvl.value
-                                    ? 'bg-background text-foreground shadow-sm'
-                                    : 'text-muted-foreground hover:text-foreground'
-                                }`}
-                              >
-                                {lvl.label}
-                              </button>
-                            ))}
-                          </div>
-                          {currentPrivacy && (
-                            <p className="text-xs text-muted-foreground">
-                              {currentPrivacy.eta} - {currentPrivacy.hint}
-                            </p>
-                          )}
-                        </div>
-
-                        <div className="rounded-xl bg-card divide-y divide-border">
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <p className="text-xs text-muted-foreground">From</p>
-                            <div
-                              className="flex items-center gap-2"
-                              title={status.publicKey ?? undefined}
-                            >
-                              {status.publicKey && (
-                                <StellarAvatar publicKey={status.publicKey} size={16} />
-                              )}
-                              <p className="text-xs font-mono text-foreground">
-                                {status.publicKey
-                                  ? `${status.publicKey.slice(0, 4)}...${status.publicKey.slice(-4)}`
-                                  : '-'}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <p className="text-xs text-muted-foreground">To</p>
-                            <div className="flex items-center gap-2 min-w-0" title={destination}>
-                              {destination && <StellarAvatar publicKey={destination} size={16} />}
-                              <p className="text-xs font-mono text-foreground">
-                                {destination.slice(0, 4)}...{destination.slice(-4)}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="rounded-xl bg-card divide-y divide-border">
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <p className="text-xs text-muted-foreground">Network</p>
-                            <p className="text-sm text-foreground">
-                              <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
-                            </p>
-                          </div>
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <span
-                              className="flex items-center gap-1 text-xs text-muted-foreground"
-                              title="Your payment is split into separate deposits so the full amount is not exposed as one transfer"
-                            >
-                              Splits
-                              <Info
-                                size={12}
-                                className="text-muted-foreground/70"
-                                aria-label="Your payment is split into separate deposits so the full amount is not exposed as one transfer"
-                              />
-                            </span>
-                            <p className="text-sm text-foreground">{quote.totalNotes}</p>
-                          </div>
-                          {currentPrivacy && (
-                            <div className="flex items-center justify-between px-4 py-3">
-                              <p className="text-xs text-muted-foreground">Estimated duration</p>
-                              <p className="text-sm text-foreground">{currentPrivacy.eta}</p>
-                            </div>
-                          )}
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <p className="text-xs text-muted-foreground">Recipient gets</p>
-                            <p className="text-sm text-foreground">
-                              {amount} {selectedAssetObj.code}
-                            </p>
-                          </div>
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <p className="text-xs text-muted-foreground">Max fee</p>
-                            <div className="text-right">
-                              <p className="text-sm font-medium text-foreground">
-                                {formatUnits(totalFeeStroops.toString(), xlmDecimals)} XLM
-                              </p>
-                              {privateXlmPrice !== null && (
-                                <p className="text-xs text-muted-foreground">
-                                  {formatValue(
-                                    (Number(totalFeeStroops) / 10 ** xlmDecimals) * privateXlmPrice
-                                  )}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-2">
-                          <p
-                            className="flex items-center gap-1 text-xs font-medium text-muted-foreground"
-                            title="The more deposits share your pool, the larger your anonymity set and the stronger your privacy"
-                          >
-                            Split breakdown
-                            <Info
-                              size={12}
-                              className="text-muted-foreground/70"
-                              aria-label="The more deposits share your pool, the larger your anonymity set and the stronger your privacy"
-                            />
-                          </p>
-                          <div className="flex flex-col gap-1.5">
-                            {quote.pieces.map((p) => (
-                              <div
-                                key={p.denomination}
-                                className="flex items-center justify-between text-sm"
-                              >
-                                <span className="text-foreground">
-                                  {p.count} x {formatUnits(p.denomination, decimals)}{' '}
-                                  {selectedAssetObj.code}
-                                </span>
-                                <span
-                                  className={`text-xs ${p.anonSet < ANON_SET_WARN ? 'text-destructive' : 'text-muted-foreground'}`}
-                                >
-                                  shares pool with {p.anonSet} others
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {zeroAnonSet ? (
-                          <div className="flex flex-col gap-2 rounded-lg bg-destructive/10 p-3 text-xs text-destructive">
-                            <p className="flex items-start gap-2">
-                              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                              This amount has no other deposits in its pool yet, so it cannot be
-                              hidden right now. For full privacy, choose a different amount or wait
-                              for the pool to fill. Sending now seeds the pool so others can join.
-                            </p>
-                            <label className="flex items-start gap-2">
-                              <input
-                                type="checkbox"
-                                checked={acknowledged}
-                                onChange={(e) => setAcknowledged(e.target.checked)}
-                                className="mt-0.5 shrink-0"
-                              />
-                              <span>I understand this payment will not be private</span>
-                            </label>
-                          </div>
-                        ) : weakAnonSet ? (
-                          <div className="flex flex-col gap-2 rounded-lg bg-destructive/10 p-3 text-xs text-destructive">
-                            <p className="flex items-start gap-2">
-                              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                              This pool's anonymity set is still small. For maximum privacy, wait
-                              for a larger pool or use the Maximum privacy level.
-                            </p>
-                            <label className="flex items-start gap-2">
-                              <input
-                                type="checkbox"
-                                checked={acknowledged}
-                                onChange={(e) => setAcknowledged(e.target.checked)}
-                                className="mt-0.5 shrink-0"
-                              />
-                              <span>I understand privacy is reduced with a small pool</span>
-                            </label>
-                          </div>
-                        ) : null}
-                      </>
-                    )}
-                    <Reveal show={!!error} gap={12}>
-                      <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2.5">
-                        <p className="text-xs text-destructive">{error}</p>
-                      </div>
-                    </Reveal>
-                    <Reveal show={loading} gap={12}>
-                      <p className="text-center text-xs text-muted-foreground">
-                        Signing and submitting to {stellarChain.name}...
-                      </p>
-                    </Reveal>
-                  </div>
-                  <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
-                    <Button
-                      variant="outline"
-                      className="flex-1"
-                      onClick={() => {
-                        setStep('privacy')
-                        setError('')
-                      }}
-                      disabled={loading}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      className="flex-1"
-                      onClick={handlePrivateConfirm}
-                      disabled={loading || ((zeroAnonSet || weakAnonSet) && !acknowledged)}
-                    >
-                      {loading ? 'Sending...' : 'Confirm and send'}
-                    </Button>
-                  </div>
-                </>
-              )
-            ) : step === 'success' ? (
+            {step === 'success' ? (
               <>
                 <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
                   <TxResultHero
@@ -2034,7 +1435,7 @@ export default function Send() {
                     variant="outline"
                     className="flex-1"
                     onClick={() => {
-                      setStep('privacy')
+                      setStep('form')
                       setError('')
                     }}
                     disabled={loading}
