@@ -27,12 +27,6 @@ function getBadge(op: Operation, publicKey: string): Badge {
   const dir = getDirection(op, publicKey)
   const isRemoveTrust = op.limit === '0' || op.limit === '0.0000000'
   const p = { bg: 'bg-primary', color: 'text-primary-foreground' }
-  if (op.cyphras_private) {
-    // Reuse the plain send/receive arrows so private transfers blend into the history list.
-    return op.cyphras_private.direction === 'out'
-      ? { icon: <ArrowUp size={10} />, ...p }
-      : { icon: <ArrowDown size={10} />, ...p }
-  }
   switch (op.type) {
     case 'payment':
       return dir === 'in'
@@ -133,9 +127,7 @@ export function OpIcon({
 
   let code = 'XLM'
   let issuer: string | undefined
-  if (op.cyphras_private) {
-    code = op.cyphras_private.asset
-  } else if (
+  if (
     op.type === 'payment' ||
     op.type === 'change_trust' ||
     op.type === 'claim_claimable_balance'

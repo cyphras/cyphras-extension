@@ -103,50 +103,6 @@ export interface CctpFeeBreakdown {
   destination: CctpFeeLeg
 }
 
-export type PrivateNoteStatus = 'pending' | 'committed' | 'scheduled' | 'revealed' | 'failed'
-
-export interface PrivateNote {
-  counter: number
-  pool: string
-  asset: string
-  denomination: string
-  relayerFee: string
-  recipient: string
-  privacyLevel: 'fast' | 'standard' | 'maximum'
-  status: PrivateNoteStatus
-  txHash: string | null
-  revealTxHash?: string
-  jobId: string | null
-  scheduledFor?: string
-  // When scheduling happened, so the delivery bar can advance in step with the ETA countdown.
-  scheduledAt?: number
-  // The processor's last on-chain check that this note's commit leaf is in the pool, so the UI shows
-  // what actually left the wallet rather than the intended amount.
-  committedOnChain?: boolean
-  // The commit tx fee_charged (stroops), set when the commit confirms, so the fee total renders locally without a Horizon fetch.
-  commitFeeStroops?: string
-  commitAttempts?: number
-  lastError?: string
-  recovered?: boolean
-  // Shared by every note from one send so History groups splits together; absent on older notes.
-  batchId?: string
-  createdAt: number
-}
-
-export interface PrivateQuotePiece {
-  denomination: string
-  count: number
-  anonSet: number
-}
-
-export interface PrivateSendQuote {
-  feeStroops: string
-  pieces: PrivateQuotePiece[]
-  totalNotes: number
-  // Per-commit network fee in stroops from simulating a commit; "0" if it could not be estimated.
-  commitFeeStroops?: string
-}
-
 export interface ServicePayload {
   type: ServiceType
   password?: string
@@ -175,7 +131,6 @@ export interface ServiceResponse {
   publicKey?: string
   mnemonic?: string
   error?: string
-  code?: string
   isUnlocked?: boolean
   hasWallet?: boolean
   isLegacy?: boolean
@@ -201,8 +156,6 @@ export interface ServiceResponse {
   quote?: SwapQuote
   connectedApps?: string[]
   ok?: boolean
-  notes?: PrivateNote[]
-  privateQuote?: PrivateSendQuote
   accounts?: AccountInfo[]
   activePublicKey?: string
   account?: AccountInfo
@@ -213,7 +166,6 @@ export interface ServiceResponse {
   subentryCount?: number
   secretKey?: string
   timeoutSeconds?: number
-  recovered?: number
   // Private mode (shielded). Amounts are stringified stroops to stay JSON-safe.
   shieldedAddress?: string
   shieldedBalance?: string

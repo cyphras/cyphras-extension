@@ -18,7 +18,6 @@ import { NetworkFilterButton, NetworkFilterSheet } from '@/components/NetworkFil
 import { ActivityRow } from '@/components/ActivityRow'
 import { Alert } from '@/components/Alert'
 import { Button } from '@/components/ui/button'
-import { enrichWithPrivate } from '@/lib/historyUtils'
 import {
   type HistoryRow,
   type RowView,
@@ -42,8 +41,6 @@ import {
   chainById,
   type ChainEntry,
 } from '@constants/chains'
-import { SERVICE_TYPES } from '@constants/services'
-import type { PrivateNote, ServiceResponse } from '@ext-types/index'
 import { RefreshCw, ChevronLeft, Inbox, Loader2 } from 'lucide-react'
 
 export default function History() {
@@ -64,9 +61,6 @@ export default function History() {
   const [chains, setChains] = useState<ChainEntry[]>(BUILTIN_CHAINS)
   const [chainIcons, setChainIcons] = useState<Map<string, string>>(new Map())
   const [prices, setPrices] = useState<Record<string, number | null>>({})
-  const [notes, setNotes] = useState<PrivateNote[]>([])
-  const [notesLoaded, setNotesLoaded] = useState(false)
-  const [poolSet, setPoolSet] = useState<Set<string>>(new Set())
 
   const stellarChainId = LEGACY_NETWORK_TO_CHAIN[activeNetwork.id] ?? activeNetwork.id
   const bridgeEvmChainId = activeNetwork.id === 'testnet' ? 'eip155:11155111' : 'eip155:1'
@@ -77,10 +71,6 @@ export default function History() {
   const chainName = useCallback(
     (id: string) => chainOf(id)?.name ?? (id === stellarChainId ? activeNetwork.name : id),
     [chainOf, stellarChainId, activeNetwork.name]
-  )
-
-  const hasInFlight = notes.some(
-    (n) => n.status === 'pending' || n.status === 'committed' || n.status === 'scheduled'
   )
 
   useEffect(() => {
@@ -97,89 +87,16 @@ export default function History() {
     }
   }, [])
 
-  // Local notes drive the sender rows; pool addresses identify a private receive. Both are
-  // best-effort, history renders without them.
-  const refreshNotes = useCallback(() => {
-    chrome.runtime.sendMessage({ type: SERVICE_TYPES.PRIVATE_LIST_NOTES }, (r: ServiceResponse) => {
-      setNotes(r?.notes ?? [])
-      setNotesLoaded(true)
-    })
-  }, [])
-
-  useEffect(() => {
-    // Reset loaded first so an account switch holds the skeleton until the new account's notes
-    // resolve, instead of flashing the previous account's rows.
-    setNotesLoaded(false)
-    chrome.runtime.sendMessage({ type: SERVICE_TYPES.PRIVATE_PROCESS_NOTES })
-    refreshNotes()
-  }, [publicKey, refreshNotes])
-
-  useEffect(() => {
-    // Poll only while a payment is in flight; each tick nudges the processor so reveals confirm in
-    // seconds rather than waiting for the background's 1-minute alarm.
-    if (!hasInFlight) return
-    const id = setInterval(() => {
-      chrome.runtime.sendMessage({ type: SERVICE_TYPES.PRIVATE_PROCESS_NOTES })
-      refreshNotes()
-    }, 4000)
-    return () => clearInterval(id)
-  }, [hasInFlight, refreshNotes])
-
-  useEffect(() => {
-    // Repaint when the background processor advances note state. A short-lived MV3 service worker
-    // cannot hold a WebSocket open across the relayer's minutes-long delay, so storage is the push.
-    if (!publicKey) return
-    const noteKey = `cyphras_private_notes_${publicKey}`
-    const onChanged = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
-      if (area === 'local' && changes[noteKey]) refreshNotes()
-    }
-    chrome.storage.onChanged.addListener(onChanged)
-    return () => chrome.storage.onChanged.removeListener(onChanged)
-  }, [publicKey, refreshNotes])
-
-  useEffect(() => {
-    const url = activeNetwork.relayerUrl
-    if (!url) {
-      setPoolSet(new Set())
-      return
-    }
-    let cancelled = false
-    fetch(`${url.replace(/\/$/, '')}/v1/info/pools`, {
-      headers: { 'X-Cyphras-Network': activeNetwork.id },
-    })
-      .then((r) => r.json())
-      .then((body: { pools?: { address: string }[] }) => {
-        if (!cancelled) setPoolSet(new Set((body.pools ?? []).map((p) => p.address)))
-      })
-      .catch(() => {
-        if (!cancelled) setPoolSet(new Set())
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [activeNetwork.relayerUrl, activeNetwork.id])
-
-  const enriched = useMemo(() => {
-    const formatStroops = (stroops: string, asset: string): string => {
-      const decimals = activeNetwork.privateAssets?.find((a) => a.asset === asset)?.decimals ?? 7
-      const base = 10n ** BigInt(decimals)
-      const v = BigInt(stroops)
-      const frac = (v % base).toString().padStart(decimals, '0').replace(/0+$/, '')
-      return frac ? `${v / base}.${frac}` : (v / base).toString()
-    }
-    return enrichWithPrivate(operations, notes, poolSet, publicKey, formatStroops)
-  }, [operations, notes, poolSet, publicKey, activeNetwork.privateAssets])
-
   const rows = useMemo(
     () =>
       sortRows(
         foldBridgeHashes([
-          ...stellarRows(enriched, stellarChainId),
+          ...stellarRows(operations, stellarChainId),
           ...chainTxRows(activity),
           ...bridgeRows(jobs, stellarChainId, bridgeEvmChainId),
         ])
       ),
-    [enriched, activity, jobs, stellarChainId, bridgeEvmChainId]
+    [operations, activity, jobs, stellarChainId, bridgeEvmChainId]
   )
 
   // Titles name the chain family only ("Bridge to Stellar"); the network
@@ -294,19 +211,8 @@ export default function History() {
 
   const grouped = groupRowsByDate(visibleRows)
 
-  // The sheet captures a row when opened; re-derive the Stellar op from the live list so a
-  // private send's ETA and split phases keep advancing while the sheet stays open.
-  const liveSelectedOp =
-    selected?.kind === 'stellar'
-      ? (enriched.find((o) => o.id === selected.op.id) ?? selected.op)
-      : null
-
-  // Gate on both so public and private rows render in one paint, not public rows first.
-  const showSkeleton = loading || !notesLoaded
-
   const refreshAll = () => {
     refresh()
-    refreshNotes()
     refreshEvm()
     void refreshJobs()
   }
@@ -344,7 +250,7 @@ export default function History() {
             </div>
           )}
 
-          {showSkeleton && (
+          {loading && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-3 px-1 py-2">
                 <Skeleton className="h-2.5 w-20 rounded" />
@@ -371,14 +277,14 @@ export default function History() {
 
           {error && <Alert message={error} onRetry={refreshAll} retrying={loading} />}
 
-          {!showSkeleton && evmLoading && envChains.length > 1 && (
+          {!loading && evmLoading && envChains.length > 1 && (
             <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
               <Loader2 size={12} className="animate-spin" />
               Syncing EVM activity
             </div>
           )}
 
-          {!showSkeleton && visibleRows.length === 0 && (
+          {!loading && visibleRows.length === 0 && (
             <div className="flex flex-col items-center gap-3 py-8 text-center">
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted">
                 <Inbox size={24} className="text-muted-foreground" />
@@ -401,7 +307,7 @@ export default function History() {
             </div>
           )}
 
-          {!showSkeleton &&
+          {!loading &&
             grouped.map(({ label, rows: dayRows }, gi) => (
               <div
                 key={`${filter}:${label}`}
@@ -422,17 +328,6 @@ export default function History() {
                 {dayRows.map((row) => {
                   const view = viewOf(row)
                   const fiat = fiatOf(view)
-                  const privatePhase =
-                    row.kind === 'stellar' &&
-                    row.op.cyphras_private?.direction === 'out' &&
-                    row.op.cyphras_private.phase &&
-                    row.op.cyphras_private.phase.key !== 'delivered'
-                      ? row.op.cyphras_private.phase
-                      : null
-                  // Recipients of a private send only ever see a plain receive; never
-                  // surface the pool contract as a counterparty.
-                  const counterparty =
-                    row.kind === 'stellar' && row.op.cyphras_private ? undefined : view.counterparty
 
                   return (
                     <ActivityRow
@@ -442,8 +337,7 @@ export default function History() {
                       icon={iconFor(view.code, view.issuer)}
                       chainIcon={chainIcons.get(row.chain)}
                       fiat={fiat}
-                      counterparty={counterparty}
-                      privatePhase={privatePhase}
+                      counterparty={view.counterparty}
                       trailing={
                         row.kind === 'stellar' && row.op.type === 'change_trust'
                           ? row.op.asset_code
@@ -459,7 +353,7 @@ export default function History() {
       </Layout>
 
       <OperationDetailSheet
-        op={liveSelectedOp}
+        op={selected?.kind === 'stellar' ? selected.op : null}
         publicKey={publicKey}
         horizonUrl={activeNetwork.horizonUrl}
         iconMap={iconMap}
@@ -467,7 +361,6 @@ export default function History() {
         getExplorerTxUrl={getExplorerTxUrl}
         networkId={activeNetwork.id}
         networkName={activeNetwork.name}
-        onAction={refreshNotes}
       />
 
       {selected?.kind === 'evm' && (

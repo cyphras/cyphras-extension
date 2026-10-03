@@ -2,8 +2,8 @@
 // pipeline, dapp handlers); a CHAIN ENTRY fixes the configuration. Entries
 // come from three sources merged in this order of authority: user custom
 // chains, these shipped builtins, then the backend registry (display/config
-// refresh only - the registry must never supply relayer/shielded/private
-// fields, those stay shipped-only as the trust anchor).
+// refresh only - the registry must never supply relayer/shielded fields,
+// those stay shipped-only as the trust anchor).
 export type ChainFamily = 'stellar' | 'evm' | 'bip122'
 
 export interface ChainExplorer {

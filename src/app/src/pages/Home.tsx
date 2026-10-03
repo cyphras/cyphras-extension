@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type ComponentType } from 'react'
+import { useState, useRef, useEffect, type ComponentType } from 'react'
 import { VerifiedBadge } from '@/components/token/VerifiedBadge'
 import { NumberTicker } from '@/components/NumberTicker'
 import { PixelMask, PixelProgress } from '@/components/Pixel'
@@ -46,15 +46,9 @@ import {
   type NetworkFilterOption,
 } from '@/components/NetworkFilterSheet'
 import { Alert } from '@/components/Alert'
-import { PhaseBadge } from '@/components/PhaseBadge'
-import { DeliveryProgressBar } from '@/components/DeliveryProgressBar'
-import { StellarAvatar } from '@/components/StellarAvatar'
-import { groupSenderNotes, summarizeSendAmounts } from '@/lib/historyUtils'
-import { summarizePhase, aggregatePhase } from '@/lib/phase'
-import type { PhaseInfo } from '@/lib/phase'
 import type { AssetBalance } from '@/hooks/useBalances'
 import { SERVICE_TYPES } from '@constants/services'
-import type { PrivateNote, ServiceResponse } from '@ext-types/index'
+import type { ServiceResponse } from '@ext-types/index'
 import {
   RefreshCw,
   Send,
@@ -67,15 +61,11 @@ import {
   Eye,
   Plus,
   Check,
-  X,
-  ChevronDown,
   ArrowDownToLine,
   ArrowUpFromLine,
   ArrowLeftRight,
 } from 'lucide-react'
 
-// Newest dismissed completion-notice timestamp; only sends newer than this are announced.
-const PRIVATE_ACK_KEY = 'cyphras_private_ack'
 // One-time flag: the private-mode coach-mark is shown until dismissed or discovered.
 const PRIVATE_HINT_KEY = 'cyphras_private_hint_seen'
 const WHATS_NEW_KEY = 'cyphras_whats_new_seen'
@@ -340,80 +330,11 @@ export default function Home() {
   const [fundingLoading, setFundingLoading] = useState(false)
   const [fundingError, setFundingError] = useState('')
   const [selectedToken, setSelectedToken] = useState<AssetBalance | null>(null)
-  const [notes, setNotes] = useState<PrivateNote[]>([])
-  const [progressDismissed, setProgressDismissed] = useState(false)
-  const [progressExpanded, setProgressExpanded] = useState(false)
-  const [ackAt, setAckAt] = useState(0)
   const cardRef = useRef<HTMLDivElement>(null)
   const shieldedMenuRef = useRef<HTMLDivElement>(null)
   const [shieldedMenuOpen, setShieldedMenuOpen] = useState(false)
   const [copiedCy1, setCopiedCy1] = useState(false)
   const [shieldedAddr, setShieldedAddr] = useState<string | null>(null)
-
-  const publicKey = status.publicKey ?? ''
-
-  const formatStroops = (stroops: string, asset: string): string => {
-    const decimals = activeNetwork.privateAssets?.find((a) => a.asset === asset)?.decimals ?? 7
-    const base = 10n ** BigInt(decimals)
-    const v = BigInt(stroops)
-    const frac = (v % base).toString().padStart(decimals, '0').replace(/0+$/, '')
-    return frac ? `${v / base}.${frac}` : (v / base).toString()
-  }
-
-  // Group by send (batchId) with the same logic as History, so two sends to the same recipient stay
-  // distinct rather than merging on a time window.
-  const sendStatus = (() => {
-    const batches = groupSenderNotes(notes)
-    const inFlight = (s: PrivateNote['status']) =>
-      s === 'pending' || s === 'committed' || s === 'scheduled'
-    const activeSends: {
-      key: string
-      recipient: string
-      phase: PhaseInfo
-      asset: string
-      amount: string
-      notes: PrivateNote[]
-    }[] = []
-    let latestDeliveredAt = 0
-    for (const b of batches) {
-      if (b.some((n) => inFlight(n.status))) {
-        const sums = summarizeSendAmounts(b)
-        activeSends.push({
-          key: b[0].batchId ?? String(b[0].counter),
-          recipient: b[0].recipient,
-          phase: summarizePhase(b),
-          asset: b[0].asset,
-          amount: formatStroops(sums.intended.toString(), b[0].asset),
-          notes: b,
-        })
-        continue
-      }
-      // Only batches fully delivered to the recipient feed the completion notice; a fully recovered send
-      // (funds returned to the sender) is not a "complete" delivery and is left to the History row.
-      if (b.every((n) => n.status === 'revealed' && !n.recovered)) {
-        const at = Math.max(...b.map((n) => n.createdAt ?? 0))
-        if (at > latestDeliveredAt) latestDeliveredAt = at
-      }
-    }
-    return { activeSends, latestDeliveredAt }
-  })()
-
-  const activeSends = sendStatus.activeSends
-  // One active send shows its own phase; several show a per-phase count so sends at different stages
-  // are not blended into a single misleading fraction.
-  const aggregate =
-    activeSends.length === 0
-      ? null
-      : activeSends.length === 1
-        ? activeSends[0].phase
-        : aggregatePhase(activeSends.map((s) => s.phase))
-  const hasInFlight = activeSends.length > 0
-  const activeKeys = activeSends.map((s) => s.key).join(',')
-
-  // Only the most recent undismissed delivered send, and never while a newer send still owns the
-  // in-flight card.
-  const showComplete =
-    !hasInFlight && sendStatus.latestDeliveredAt > 0 && sendStatus.latestDeliveredAt > ackAt
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -443,59 +364,6 @@ export default function Home() {
       live = false
     }
   }, [shieldedAvailable, activePublicKey])
-
-  const refreshNotes = useCallback(() => {
-    chrome.runtime.sendMessage({ type: SERVICE_TYPES.PRIVATE_LIST_NOTES }, (r: ServiceResponse) => {
-      if (Array.isArray(r?.notes)) {
-        setNotes(r.notes)
-      }
-    })
-  }, [])
-
-  useEffect(() => {
-    chrome.storage.local.get(PRIVATE_ACK_KEY, (res) => {
-      setAckAt(typeof res[PRIVATE_ACK_KEY] === 'number' ? res[PRIVATE_ACK_KEY] : 0)
-    })
-  }, [])
-
-  const dismissComplete = useCallback(() => {
-    const at = sendStatus.latestDeliveredAt
-    if (at <= 0) return
-    setAckAt(at)
-    chrome.storage.local.set({ [PRIVATE_ACK_KEY]: at })
-  }, [sendStatus.latestDeliveredAt])
-
-  useEffect(() => {
-    chrome.runtime.sendMessage({ type: SERVICE_TYPES.PRIVATE_PROCESS_NOTES })
-    refreshNotes()
-  }, [publicKey, refreshNotes])
-
-  useEffect(() => {
-    // Poll only while a send is still in flight; an idle home does no background work.
-    if (!hasInFlight) return
-    const id = setInterval(() => {
-      chrome.runtime.sendMessage({ type: SERVICE_TYPES.PRIVATE_PROCESS_NOTES })
-      refreshNotes()
-    }, 4000)
-    return () => clearInterval(id)
-  }, [hasInFlight, refreshNotes])
-
-  useEffect(() => {
-    // Re-arm whenever the set of active sends changes, so dismissing one card does not suppress a later
-    // send that starts while earlier ones are still in flight.
-    setProgressDismissed(false)
-  }, [activeKeys])
-
-  useEffect(() => {
-    // Repaint when the background processor advances note state, so the card updates without polling.
-    if (!publicKey) return
-    const noteKey = `cyphras_private_notes_${publicKey}`
-    const onChanged = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
-      if (area === 'local' && changes[noteKey]) refreshNotes()
-    }
-    chrome.storage.onChanged.addListener(onChanged)
-    return () => chrome.storage.onChanged.removeListener(onChanged)
-  }, [publicKey, refreshNotes])
 
   useEffect(() => {
     // Repaint the private balance when a background spend or scan changes any shielded note store.
@@ -1005,117 +873,6 @@ export default function Home() {
                   </div>
                   <PixelProgress steps={bridgeSteps(inFlightBridges[0]).map((st) => st.state)} />
                 </button>
-              )}
-
-              {hasInFlight && !progressDismissed && (
-                <div className="rounded-xl bg-card px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() =>
-                        activeSends.length > 1
-                          ? setProgressExpanded((v) => !v)
-                          : navigate('/history')
-                      }
-                      className="cursor-pointer flex flex-1 items-center gap-3 text-left min-w-0"
-                    >
-                      {activeSends.length === 1 ? (
-                        <StellarAvatar publicKey={activeSends[0].recipient} size={32} />
-                      ) : (
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15">
-                          <Send size={16} className="text-primary" />
-                        </div>
-                      )}
-                      <div className="flex flex-1 flex-col gap-1 min-w-0">
-                        {activeSends.length > 1 ? (
-                          <p className="truncate text-sm font-medium text-foreground">
-                            {activeSends.length} private sends
-                          </p>
-                        ) : (
-                          <p className="truncate text-sm font-medium text-foreground tabular-nums">
-                            {activeSends[0].amount} {activeSends[0].asset}
-                            <span className="ml-1.5 font-mono text-xs font-normal text-muted-foreground">
-                              to {activeSends[0].recipient.slice(0, 4)}...
-                              {activeSends[0].recipient.slice(-4)}
-                            </span>
-                          </p>
-                        )}
-                        {aggregate && <PhaseBadge phase={aggregate} />}
-                      </div>
-                    </button>
-                    {activeSends.length > 1 ? (
-                      <button
-                        onClick={() => setProgressExpanded((v) => !v)}
-                        aria-label="Toggle send list"
-                        className="cursor-pointer shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                      >
-                        <ChevronDown
-                          size={16}
-                          className={`transition-transform ${progressExpanded ? 'rotate-180' : ''}`}
-                        />
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => setProgressDismissed(true)}
-                        aria-label="Dismiss private send status"
-                        className="cursor-pointer shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                      >
-                        <X size={14} />
-                      </button>
-                    )}
-                  </div>
-                  {activeSends.length === 1 && (
-                    <DeliveryProgressBar
-                      key={activeSends[0].key}
-                      notes={activeSends[0].notes}
-                      className="mt-2.5"
-                    />
-                  )}
-                  {activeSends.length > 1 && progressExpanded && (
-                    <div className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
-                      {activeSends.map((s) => (
-                        <button
-                          key={s.key}
-                          onClick={() => navigate('/history')}
-                          className="cursor-pointer flex items-center justify-between gap-2 text-left"
-                        >
-                          <div className="flex min-w-0 items-center gap-2">
-                            <StellarAvatar publicKey={s.recipient} size={16} />
-                            <span className="truncate font-mono text-xs text-foreground">
-                              {s.recipient.slice(0, 4)}...{s.recipient.slice(-4)}
-                            </span>
-                          </div>
-                          <PhaseBadge phase={s.phase} size={12} className="shrink-0" />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {showComplete && (
-                <div className="flex items-center gap-3 rounded-xl bg-card px-4 py-3">
-                  <button
-                    onClick={() => navigate('/history')}
-                    className="cursor-pointer flex flex-1 items-center gap-3 text-left min-w-0"
-                  >
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-green-500/15">
-                      <Check size={18} className="pop-enter text-green-500" />
-                    </div>
-                    <div className="flex flex-col min-w-0">
-                      <p className="text-sm font-medium text-foreground">Private send complete</p>
-                      <p className="text-xs text-muted-foreground">
-                        Delivered privately, sender and amount stayed hidden
-                      </p>
-                    </div>
-                  </button>
-                  <button
-                    onClick={dismissComplete}
-                    aria-label="Dismiss private send status"
-                    className="cursor-pointer shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
               )}
 
               {!active && displayBalances.length > 0 && (

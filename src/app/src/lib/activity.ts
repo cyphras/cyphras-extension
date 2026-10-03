@@ -241,15 +241,11 @@ export function stellarView(op: Operation, publicKey: string): RowView {
   const dir = getDirection(op, publicKey)
   const amount = getAmountDisplay(op)
   const failed = op.transaction_successful === false
-  const inFlight =
-    op.cyphras_private?.direction === 'out' &&
-    !!op.cyphras_private.phase &&
-    op.cyphras_private.phase.key !== 'delivered'
   return {
     label: getOpLabel(op, publicKey),
     direction: dir,
     amount: amount && amount.amount ? { value: amount.amount, code: amount.code } : null,
-    status: failed ? 'failed' : inFlight ? 'pending' : 'confirmed',
+    status: failed ? 'failed' : 'confirmed',
     code: amount?.code ?? 'XLM',
     issuer: op.asset_issuer,
     counterparty: dir === 'in' ? (op.from ?? op.funder) : op.to,

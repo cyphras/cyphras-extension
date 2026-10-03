@@ -14,7 +14,6 @@ Manage accounts, sign transactions, and connect to decentralized applications, a
 
 ## Features
 
-- Private payments on Stellar mainnet and testnet: send XLM and Stellar assets with the sender, amount, and on-chain link hidden, using zero-knowledge proofs
 - Private mode (testnet): hold a shielded balance in XLM or USDC and shield, send, receive, and unshield privately through a private address (`cy1...`), backed by an on-chain shielded pool
 - Create and import wallets using a recovery phrase or secret key
 - Multiple accounts with HD key derivation (BIP44)

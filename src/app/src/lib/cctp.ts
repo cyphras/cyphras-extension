@@ -6,8 +6,7 @@ export function shortAddr(addr: string): string {
   return addr.length > 16 ? `${addr.slice(0, 8)}...${addr.slice(-6)}` : addr
 }
 
-// Same icon semantics as the private-send PhaseBadge: spinner = active work, clock = an
-// intentional wait.
+// A spinner means active work; a clock means an intentional wait.
 export function statusMeta(status: CctpJobInfo['status']): {
   label: string
   icon: CctpStatusIcon

@@ -858,12 +858,6 @@ export default function TokenDetailSheet({
                     ) : (
                       relatedOps.map((op) => {
                         const view = stellarView(op, publicKey)
-                        const privatePhase =
-                          op.cyphras_private?.direction === 'out' &&
-                          op.cyphras_private.phase &&
-                          op.cyphras_private.phase.key !== 'delivered'
-                            ? op.cyphras_private.phase
-                            : null
                         return (
                           <ActivityRow
                             key={op.id}
@@ -876,8 +870,7 @@ export default function TokenDetailSheet({
                                 ? fiatFor(view.amount.value, view.code, view.issuer)
                                 : null
                             }
-                            counterparty={op.cyphras_private ? undefined : view.counterparty}
-                            privatePhase={privatePhase}
+                            counterparty={view.counterparty}
                             trailing={op.type === 'change_trust' ? op.asset_code : undefined}
                             onClick={() => setSelectedOp(op)}
                           />

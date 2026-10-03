@@ -2,8 +2,6 @@ import { Loader2 } from 'lucide-react'
 import { VerifiedBadge } from '@/components/token/VerifiedBadge'
 import { VerifiedMark } from '@/components/token/VerifiedMark'
 import { AssetIcon } from '@/components/token/AssetIcon'
-import { PhaseBadge } from '@/components/PhaseBadge'
-import type { PhaseInfo } from '@/lib/phase'
 import { formatTime } from '@/lib/historyUtils'
 import { formatAmount, shortAddress, type RowView } from '@/lib/activity'
 
@@ -32,7 +30,6 @@ export function ActivityRow({
   chainIcon,
   fiat,
   counterparty,
-  privatePhase,
   trailing,
   onClick,
 }: {
@@ -42,7 +39,6 @@ export function ActivityRow({
   chainIcon?: string
   fiat: string | null
   counterparty?: string
-  privatePhase?: PhaseInfo | null
   trailing?: string
   onClick: () => void
 }) {
@@ -95,9 +91,7 @@ export function ActivityRow({
         ) : trailing ? (
           <p className="font-mono text-xs text-muted-foreground">{trailing}</p>
         ) : null}
-        {privatePhase ? (
-          <PhaseBadge phase={privatePhase} size={13} hideLabel />
-        ) : view.status !== 'confirmed' ? (
+        {view.status !== 'confirmed' ? (
           <StatusPill status={view.status} label={view.statusLabel} />
         ) : fiat ? (
           <p className="text-xs tabular-nums text-muted-foreground">{fiat}</p>
