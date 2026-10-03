@@ -119,7 +119,7 @@ export default function OperationDetailSheet({
   if (!cur) return null
 
   const dir = getDirection(cur, publicKey)
-  const amount = getAmountDisplay(cur)
+  const amount = getAmountDisplay(cur, publicKey)
   const label = getOpLabel(cur, publicKey)
 
   const status: { text: string; tone: 'ok' | 'bad' } =
@@ -140,7 +140,8 @@ export default function OperationDetailSheet({
         code: cur.buying_asset_type === 'native' ? 'XLM' : (cur.buying_asset_code ?? 'XLM'),
         issuer: cur.buying_asset_issuer,
       }
-    if (cur.asset_type === 'native' || !cur.asset_code) return { code: amount?.code || 'XLM' }
+    if (cur.asset_type === 'native' || !cur.asset_code)
+      return { code: amount?.code || 'XLM', issuer: amount?.issuer }
     return { code: cur.asset_code, issuer: cur.asset_issuer }
   })()
   const heroIcon = heroAsset.issuer

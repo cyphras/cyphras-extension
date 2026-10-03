@@ -239,7 +239,7 @@ export function bridgeView(
 
 export function stellarView(op: Operation, publicKey: string): RowView {
   const dir = getDirection(op, publicKey)
-  const amount = getAmountDisplay(op)
+  const amount = getAmountDisplay(op, publicKey)
   const failed = op.transaction_successful === false
   return {
     label: getOpLabel(op, publicKey),
@@ -247,7 +247,7 @@ export function stellarView(op: Operation, publicKey: string): RowView {
     amount: amount && amount.amount ? { value: amount.amount, code: amount.code } : null,
     status: failed ? 'failed' : 'confirmed',
     code: amount?.code ?? 'XLM',
-    issuer: op.asset_issuer,
+    issuer: amount?.issuer ?? op.asset_issuer,
     counterparty: dir === 'in' ? (op.from ?? op.funder) : op.to,
   }
 }

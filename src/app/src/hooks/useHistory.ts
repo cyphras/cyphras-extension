@@ -1,6 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNetwork } from '@/context/NetworkContext'
 
+// Horizon lists only Stellar Asset Contract movements here, never custom Soroban token transfers.
+interface AssetBalanceChange {
+  type: string // transfer, mint, burn or clawback
+  from?: string
+  to?: string
+  amount: string
+  asset_type: string
+  asset_code?: string
+  asset_issuer?: string
+}
+
 export interface Operation {
   id: string
   type: string
@@ -49,6 +60,7 @@ export interface Operation {
 
   // invoke_host_function
   function?: string
+  asset_balance_changes?: AssetBalanceChange[]
 
   // claim_claimable_balance
   balance_id?: string
