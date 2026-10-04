@@ -271,7 +271,7 @@ export default function ShieldedSend({
     setRecipient(retryPlan?.to ?? '')
     setRecipientFocused(false)
     setAmount(retryPlan ? formatUnits(retryPlan.amount, decimals) : '')
-    setSelfRelay(false)
+    setSelfRelay(retryPlan?.route.kind === 'self')
     setShieldAnyway(false)
     setRefusedWhileSubmitting(false)
     setError(null)
@@ -756,10 +756,16 @@ export default function ShieldedSend({
           <Row label="To">
             <span className="font-mono">{shortAddress(retryPlan.to)}</span>
           </Row>
+          <Row label="Went through">
+            {retryPlan.route.kind === 'relayer'
+              ? `Relayer ${new URL(retryPlan.route.url).host}`
+              : `Your account ${shortAddress(retryPlan.route.account)}`}
+          </Row>
         </div>
         <p className="px-1 text-[11px] leading-snug text-muted-foreground">
-          The retry spends the same notes as the stalled payment, so at most one of them can land.
-          Any fee is shown on the next step, before anything is sent.
+          The retry spends the same notes as the stalled payment, so at most one of them can land,
+          and goes the same way unless you change it. Any fee is shown on the next step, before
+          anything is sent.
         </p>
         {retryPlan.kind === 'unshield' && selfRelayOption()}
         {error && (

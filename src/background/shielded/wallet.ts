@@ -223,6 +223,7 @@ function planView(p: PlanView): ShieldedPlanView {
     amount: p.amount.toString(),
     fee: p.fee.toString(),
     to: p.to,
+    route: p.route,
     state: p.state,
     txHash: orNull(p.txHash),
     createdAt: p.createdAt,
@@ -350,17 +351,9 @@ export async function shieldedSpend(
     )
   }
   const route = req.selfRelay ? { selfRelay: signer } : { maxFee: pool.maxRelayerFee }
-  // Without split the SDK answers an unshield with a single submission.
   return startReviewed(holder, (confirm) =>
-    watchingPlans(
-      wallet,
-      () =>
-        wallet.unshield({
-          to: req.to,
-          amount: req.amount,
-          confirm,
-          ...route,
-        }) as Promise<Submission>
+    watchingPlans(wallet, () =>
+      wallet.unshield({ to: req.to, amount: req.amount, confirm, ...route })
     )
   )
 }
@@ -373,7 +366,14 @@ export async function shieldedRetry(
   selfRelay: boolean
 ): Promise<ShieldedStep> {
   const { wallet, pool, signer } = await walletFor(net, poolId)
-  const route = selfRelay ? { selfRelay: signer } : { maxFee: pool.maxRelayerFee }
+  const plan = (await wallet.plans()).find((p) => p.planId === planId)
+  // The SDK retries a relayed plan through its relayer first, then the others. A self-relayed one
+  // it moves to relayers only when they are named.
+  const route = selfRelay
+    ? { selfRelay: signer }
+    : plan?.route.kind === 'self'
+      ? { relayer: pool.deployment.relayers.map((r) => r.url), maxFee: pool.maxRelayerFee }
+      : { maxFee: pool.maxRelayerFee }
   return startReviewed(holder, (confirm) =>
     watchingPlans(wallet, () => wallet.retry(planId, { confirm, ...route }))
   )

@@ -196,6 +196,13 @@ function planStatus(p: ShieldedPlanView): RowStatus {
   }
 }
 
+// Who holds a payment that may still land, and where its retry goes first.
+function routeNote(p: ShieldedPlanView): string {
+  return p.route.kind === 'relayer'
+    ? `Went through the relayer ${new URL(p.route.url).host}.`
+    : 'Submitted by your account itself.'
+}
+
 // What the account itself can do about a deposit or a payout, each a transaction it signs and pays
 // the network fee of.
 interface AccountAction {
@@ -251,11 +258,13 @@ function Row({
   icon,
   title,
   status,
+  note,
   action,
 }: {
   icon: ReactNode
   title: string
   status: RowStatus
+  note?: string
   action?: ReactNode
 }) {
   return (
@@ -273,6 +282,7 @@ function Row({
         {status.detail && (
           <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{status.detail}</p>
         )}
+        {note && <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{note}</p>}
         {action}
       </div>
     </div>
@@ -382,6 +392,7 @@ export default function ShieldedActivity({
           icon={p.kind === 'send' ? <Send size={14} /> : <ArrowUpFromLine size={14} />}
           title={`${p.kind === 'send' ? 'Send' : 'Unshield'} ${amount(p.amount)} to ${shortAddress(p.to)}`}
           status={planStatus(p)}
+          note={p.mustRetry ? routeNote(p) : undefined}
           action={
             needsRetry(p) ? (
               <button

@@ -174,6 +174,9 @@ export interface ShieldedPlanView {
   amount: string
   fee: string
   to: string
+  // The relayer it went through, or the account that submitted it itself; a retry goes the same
+  // way unless the popup asks for the other.
+  route: { kind: 'relayer'; url: string } | { kind: 'self'; account: string }
   state: ShieldedPlanState
   txHash: string | null
   createdAt: number
