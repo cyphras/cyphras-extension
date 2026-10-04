@@ -142,8 +142,6 @@ import {
 } from './shielded/wallet'
 import { errorView } from './shielded/errors'
 import { watchReviewPort } from './shielded/reviews'
-import { SHIELDED_DEPLOYMENTS } from './shielded/deployments'
-import { removeRetiredShieldedData } from './shielded/store'
 import {
   trackInstall,
   trackDailyPing,
@@ -586,16 +584,18 @@ void refreshCctpBadge()
 // out of their reach.
 void chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
 
-// Leftovers of the retired fixed-denomination private send, and shielded records of pools this
-// release no longer opens.
+// Private data this release has no reader for: the fixed-denomination send's alarm and records,
+// and the notes kept under cyphras_shielded_notes_. The sealed records of every v2 vault stay,
+// whether this release opens the vault or not, since a payment in flight may need them.
 async function removeRetiredPrivateData(): Promise<void> {
   await chrome.alarms.clear('cyphras_private_processor')
   const all = await chrome.storage.local.get(null)
   const stale = Object.keys(all).filter(
-    (k) => k.startsWith('cyphras_private_') && k !== 'cyphras_private_hint_seen'
+    (k) =>
+      (k.startsWith('cyphras_private_') && k !== 'cyphras_private_hint_seen') ||
+      k.startsWith('cyphras_shielded_notes_')
   )
   if (stale.length > 0) await chrome.storage.local.remove(stale)
-  await removeRetiredShieldedData(Object.values(SHIELDED_DEPLOYMENTS).map((d) => d.deployment))
 }
 
 chrome.runtime.onInstalled.addListener(async (details) => {
