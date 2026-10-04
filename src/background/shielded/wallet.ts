@@ -21,6 +21,7 @@ import {
   getAccountsStore,
   getSessionExtraHDMnemonics,
   getSessionMnemonic,
+  getSessionPublicKey,
   type AccountInfo,
 } from '../keyManager'
 import { SHIELDED_DEPLOYMENTS, type ShieldedDeployment } from './deployments'
@@ -68,6 +69,12 @@ function poolOf(net: NetworkConfig, poolId: string | undefined): ShieldedDeploym
 }
 
 async function activeAccount(): Promise<{ account: AccountInfo; mnemonic: string }> {
+  // A lock can leave the recovery phrase in the session for a pending dApp approval; the unlocked
+  // account's key is what says the wallet is open.
+  if (!(await getSessionPublicKey())) {
+    closeShieldedWallets()
+    throw new ShieldedRefusal('locked', 'Unlock the wallet first.')
+  }
   const store = await getAccountsStore()
   const activePk =
     store.activePublicKey ?? store.accounts.find((a) => a.index === store.activeIndex)?.publicKey

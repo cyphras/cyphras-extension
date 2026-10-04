@@ -111,6 +111,7 @@ import {
   getSessionImportedSecrets,
   clearSessionImportedSecrets,
   clearWallet,
+  SESSION_KEY,
   type AccountInfo,
 } from './keyManager'
 import {
@@ -178,7 +179,6 @@ import {
   contract as StellarContract,
 } from '@stellar/stellar-sdk'
 
-const SESSION_KEY = 'cyphras_session_pubkey'
 const FAILED_ATTEMPTS_KEY = 'cyphras_failed_attempts'
 const LOCKED_UNTIL_KEY = 'cyphras_locked_until'
 const AUTO_LOCK_TIMEOUT_KEY = 'cyphras_auto_lock_timeout'
@@ -644,12 +644,12 @@ chrome.storage.local.get('cyphras_sidebar_by_default', (result) => {
 
 function lockSession() {
   chrome.storage.session?.remove(SESSION_KEY)
+  closeShieldedWallets()
   if (pendingRequests.size === 0) {
     clearSessionSecret()
     clearSessionMnemonic()
     clearSessionExtraHDMnemonics()
     clearSessionImportedSecrets()
-    closeShieldedWallets()
   }
   notifyTabsWalletChanged()
 }

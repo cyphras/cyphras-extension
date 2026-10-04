@@ -15,6 +15,8 @@ interface OpenReview {
 }
 
 const open = new Map<string, OpenReview>()
+// Moves on at every lock, so a spend that started before one cannot be confirmed after it.
+let generation = 0
 // Outcomes of reviews declined for the popup, as by a timeout. A late answer gets the outcome,
 // with the plan a repriced spend already saved, rather than a fresh start.
 const closed = new Map<string, Promise<ShieldedStep>>()
@@ -44,15 +46,20 @@ export function startReviewed(
       settle = { resolve, reject }
     })
   const first = nextStep()
+  const started = generation
   let reviews = 0
   const confirm: ConfirmSpend = (review) =>
     new Promise<boolean>((answer) => {
+      if (generation !== started) {
+        answer(false)
+        return
+      }
       const reviewId = crypto.randomUUID()
       const decide = (approve: boolean): Promise<ShieldedStep> => {
         clearTimeout(timer)
         open.delete(reviewId)
         const after = nextStep()
-        answer(approve)
+        answer(approve && generation === started)
         return after
       }
       const decline = () => {
@@ -96,5 +103,6 @@ export function watchReviewPort(port: chrome.runtime.Port): boolean {
 }
 
 export function declineAllReviews(): void {
+  generation++
   for (const review of [...open.values()]) review.decline()
 }
