@@ -150,6 +150,8 @@ export default function ShieldedSend({
   const [amount, setAmount] = useState('')
   const [selfRelay, setSelfRelay] = useState(false)
   const [shieldAnyway, setShieldAnyway] = useState(false)
+  // The SDK refused a shield because a deposit is submitting, which a stale status may not show yet.
+  const [refusedWhileSubmitting, setRefusedWhileSubmitting] = useState(false)
   const [step, setStep] = useState<Step>({ kind: 'form' })
   const [error, setError] = useState<string | null>(null)
   const sheetRef = useRef<HTMLDivElement>(null)
@@ -259,6 +261,7 @@ export default function ShieldedSend({
     setAmount(retryPlan ? formatUnits(retryPlan.amount, decimals) : '')
     setSelfRelay(false)
     setShieldAnyway(false)
+    setRefusedWhileSubmitting(false)
     setError(null)
     setStep({ kind: retryPlan ? 'retry' : 'form' })
   }, [open, action, retryPlan, decimals, releaseReview])
@@ -320,7 +323,8 @@ export default function ShieldedSend({
   const to = recipient.trim()
   const recipientValid =
     a === 'shield' || (a === 'send' ? to.startsWith(privatePrefix) : STELLAR_DESTINATION.test(to))
-  const submittingDeposit = status?.deposits.some((d) => d.state === 'submitting') ?? false
+  const submittingDeposit =
+    refusedWhileSubmitting || (status?.deposits.some((d) => d.state === 'submitting') ?? false)
   const canReview =
     step.kind === 'form' &&
     units !== null &&
@@ -399,8 +403,10 @@ export default function ShieldedSend({
           setStep({ kind: 'stopped', message: reply.error })
           return
         }
-        // An earlier deposit started submitting meanwhile; the review asks again.
+        // A deposit of this account is submitting, maybe one the network dropped, which stays so
+        // for good; the review asks again, now offering to shield anyway.
         if (reply.code === 'deposit_submitting') {
+          setRefusedWhileSubmitting(true)
           setShieldAnyway(false)
           setStep({ kind: 'shield-review' })
         } else {
