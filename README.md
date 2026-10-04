@@ -14,7 +14,7 @@ Manage accounts, sign transactions, and connect to decentralized applications, a
 
 ## Features
 
-- Private mode (testnet): hold a shielded balance in XLM or USDC and shield, send, receive, and unshield privately through a private address (`cy1...`), backed by an on-chain shielded pool
+- Private mode (testnet preview): shield XLM into a private balance, send and receive it through a private address (`cyt1...`), and unshield to any Stellar address, with zero-knowledge proofs made on your device
 - Create and import wallets using a recovery phrase or secret key
 - Multiple accounts with HD key derivation (BIP44)
 - Connect to dApps with a single approval flow
