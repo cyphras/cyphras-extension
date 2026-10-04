@@ -3366,13 +3366,14 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
     case SERVICE_TYPES.SHIELDED_SPEND: {
       const m = message as unknown as {
         poolId?: string
+        holder?: string
         kind?: string
         to?: string
         amount?: string
         selfRelay?: boolean
       }
-      if (!isNonEmptyString(m.poolId)) {
-        sendResponse({ error: 'poolId is required' })
+      if (!isNonEmptyString(m.poolId) || !isNonEmptyString(m.holder)) {
+        sendResponse({ error: 'poolId and holder are required' })
         return
       }
       if (m.kind !== 'send' && m.kind !== 'unshield') {
@@ -3389,7 +3390,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getActiveNetwork()
-        const step = await shieldedSpend(net, m.poolId, {
+        const step = await shieldedSpend(net, m.poolId, m.holder, {
           kind: m.kind,
           to: m.to.trim(),
           amount: BigInt(m.amount),
@@ -3403,14 +3404,23 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
     }
 
     case SERVICE_TYPES.SHIELDED_RETRY: {
-      const m = message as unknown as { poolId?: string; planId?: string; selfRelay?: boolean }
-      if (!isNonEmptyString(m.poolId) || !isNonEmptyString(m.planId)) {
-        sendResponse({ error: 'poolId and planId are required' })
+      const m = message as unknown as {
+        poolId?: string
+        holder?: string
+        planId?: string
+        selfRelay?: boolean
+      }
+      if (
+        !isNonEmptyString(m.poolId) ||
+        !isNonEmptyString(m.holder) ||
+        !isNonEmptyString(m.planId)
+      ) {
+        sendResponse({ error: 'poolId, holder and planId are required' })
         return
       }
       try {
         const net = await getActiveNetwork()
-        const step = await shieldedRetry(net, m.poolId, m.planId, m.selfRelay === true)
+        const step = await shieldedRetry(net, m.poolId, m.holder, m.planId, m.selfRelay === true)
         sendResponse({ shieldedStep: step })
       } catch (err) {
         sendResponse(shieldedFailure(err))

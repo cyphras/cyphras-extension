@@ -10,11 +10,14 @@ const REVIEW_TIMEOUT_MS = 3 * 60_000
 const OUTCOME_TTL_MS = 10 * 60_000
 
 interface OpenReview {
+  readonly holder: string
   decide(approve: boolean): Promise<ShieldedStep>
   decline(): void
 }
 
 const open = new Map<string, OpenReview>()
+// Tokens of the ports popups hold for the payments they started.
+const holders = new Set<string>()
 // Moves on whenever the wallets close, as at a lock, so a spend that started before cannot be
 // confirmed after.
 let generation = 0
@@ -35,10 +38,12 @@ function reviewView(reviewId: string, review: SpendReview, repriced: boolean): S
   }
 }
 
-// Starts a spend whose confirmations go to the popup, settling with its first review or with its
-// result when it ends before asking. A relayer that raises its fee after a review makes the SDK
-// ask again, so deciding one review can yield another, about a plan it already saved.
+// Starts a spend whose confirmations go to the popup holding `holder`, settling with its first
+// review or with its result when it ends before asking. A relayer that raises its fee after a
+// review makes the SDK ask again, so deciding one review can yield another, about a plan it
+// already saved.
 export function startReviewed(
+  holder: string,
   spend: (confirm: ConfirmSpend) => Promise<Submission>
 ): Promise<ShieldedStep> {
   let settle: { resolve: (step: ShieldedStep) => void; reject: (err: unknown) => void }
@@ -51,7 +56,8 @@ export function startReviewed(
   let reviews = 0
   const confirm: ConfirmSpend = (review) =>
     new Promise<boolean>((answer) => {
-      if (generation !== started) {
+      // A lock since the spend started, or a popup that is gone, declines it before it is shown.
+      if (generation !== started || !holders.has(holder)) {
         answer(false)
         return
       }
@@ -70,7 +76,7 @@ export function startReviewed(
         setTimeout(() => closed.delete(reviewId), OUTCOME_TTL_MS)
       }
       const timer = setTimeout(decline, REVIEW_TIMEOUT_MS)
-      open.set(reviewId, { decide, decline })
+      open.set(reviewId, { holder, decide, decline })
       settle.resolve({ kind: 'review', review: reviewView(reviewId, review, reviews++ > 0) })
     })
   spend(confirm).then(
@@ -94,12 +100,17 @@ export function decideReview(reviewId: string, approve: boolean): Promise<Shield
   throw new ShieldedRefusal('review_expired', 'This review is no longer open.')
 }
 
-// A review's port is held by the popup that shows it; the popup closing, or leaving the review,
-// declines it. Returns false for a port of another kind.
+// The port a popup holds for a payment it started. The popup closing, or leaving the payment,
+// declines its open review, and any review it would still get. Returns false for a port of
+// another kind.
 export function watchReviewPort(port: chrome.runtime.Port): boolean {
   if (!port.name.startsWith(SHIELDED_REVIEW_PORT)) return false
-  const reviewId = port.name.slice(SHIELDED_REVIEW_PORT.length)
-  port.onDisconnect.addListener(() => open.get(reviewId)?.decline())
+  const holder = port.name.slice(SHIELDED_REVIEW_PORT.length)
+  holders.add(holder)
+  port.onDisconnect.addListener(() => {
+    holders.delete(holder)
+    for (const review of [...open.values()]) if (review.holder === holder) review.decline()
+  })
   return true
 }
 

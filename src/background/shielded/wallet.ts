@@ -322,11 +322,12 @@ async function watchingPlans(
 export async function shieldedSpend(
   net: NetworkConfig,
   poolId: string,
+  holder: string,
   req: SpendRequest
 ): Promise<ShieldedStep> {
   const { wallet, pool, signer } = await walletFor(net, poolId)
   if (req.kind === 'send') {
-    return startReviewed((confirm) =>
+    return startReviewed(holder, (confirm) =>
       watchingPlans(wallet, () =>
         wallet.send({ to: req.to, amount: req.amount, maxFee: pool.maxRelayerFee, confirm })
       )
@@ -334,7 +335,7 @@ export async function shieldedSpend(
   }
   const route = req.selfRelay ? { selfRelay: signer } : { maxFee: pool.maxRelayerFee }
   // Without split the SDK answers an unshield with a single submission.
-  return startReviewed((confirm) =>
+  return startReviewed(holder, (confirm) =>
     watchingPlans(
       wallet,
       () =>
@@ -351,12 +352,13 @@ export async function shieldedSpend(
 export async function shieldedRetry(
   net: NetworkConfig,
   poolId: string,
+  holder: string,
   planId: string,
   selfRelay: boolean
 ): Promise<ShieldedStep> {
   const { wallet, pool, signer } = await walletFor(net, poolId)
   const route = selfRelay ? { selfRelay: signer } : { maxFee: pool.maxRelayerFee }
-  return startReviewed((confirm) =>
+  return startReviewed(holder, (confirm) =>
     watchingPlans(wallet, () => wallet.retry(planId, { confirm, ...route }))
   )
 }
