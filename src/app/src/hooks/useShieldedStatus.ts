@@ -25,9 +25,10 @@ interface ShieldedStatusState {
   reload: () => void
 }
 
-// Sooner while a deposit or payment is in flight, so its state follows the chain.
+// While a deposit or payment is in flight the next sync comes sooner, and backs off again each time
+// a sync finds nothing new, as a deposit can wait for screening for a day.
 const BUSY_SYNC_MS = 15_000
-const IDLE_SYNC_MS = 60_000
+const IDLE_SYNC_MS = 120_000
 
 type StatusRequest = typeof SERVICE_TYPES.SHIELDED_STATUS | typeof SERVICE_TYPES.SHIELDED_SYNC
 
@@ -44,12 +45,17 @@ function readStatus(
   })
 }
 
+// A stranded payout is left out: it waits for a claim, which no sync brings.
 export function shieldedInFlight(status: ShieldedStatusView): boolean {
   return (
     status.deposits.some((d) => d.state === 'submitting' || d.state === 'pending') ||
-    status.plans.some((p) => ['prepared', 'submitted', 'queued', 'stranded'].includes(p.state))
+    status.plans.some((p) => ['prepared', 'submitted', 'queued'].includes(p.state))
   )
 }
+
+// What a sync can change in a status; syncedAt moves on every sync and says nothing new.
+const contentOf = (statuses: (ShieldedStatusView | null)[]): string =>
+  JSON.stringify(statuses.map((s) => s && { ...s, syncedAt: null }))
 
 // A pool prices off the asset it shields.
 function poolPriceAsset(pool: ShieldedPoolOption): PriceAsset {
@@ -72,8 +78,13 @@ export function useShieldedStatus(
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Drops replies from a previous account or network so they never paint after a switch.
+  // Drops replies from a previous account or network so they never paint after a switch. Syncs of
+  // the current scope can overlap, so syncing stays on until the last one ends.
   const runIdRef = useRef(0)
+  const syncsRef = useRef(0)
+  // Syncs in a row that found nothing new, which stretch the wait before the next one.
+  const quietRef = useRef(0)
+  const contentRef = useRef('')
   const poolsRef = useRef(pools)
   poolsRef.current = pools
   const poolKey = pools.map((p) => p.poolId).join(',')
@@ -83,9 +94,20 @@ export function useShieldedStatus(
       const current = poolsRef.current
       if (!enabled || current.length === 0) return
       const runId = runIdRef.current
-      if (type === SERVICE_TYPES.SHIELDED_SYNC) setSyncing(true)
+      const sync = type === SERVICE_TYPES.SHIELDED_SYNC
+      if (sync) {
+        syncsRef.current++
+        setSyncing(true)
+      }
       const replies = await Promise.all(current.map((p) => readStatus(type, p.poolId)))
       if (runId !== runIdRef.current) return
+      if (sync) {
+        syncsRef.current--
+        setSyncing(syncsRef.current > 0)
+        const content = contentOf(replies.map((r) => r.status))
+        quietRef.current = content === contentRef.current ? quietRef.current + 1 : 0
+        contentRef.current = content
+      }
       setStatuses((prev) => {
         const next = { ...prev }
         current.forEach((p, i) => {
@@ -95,16 +117,21 @@ export function useShieldedStatus(
         return next
       })
       setError(replies.find((r) => r.error)?.error ?? null)
-      if (type === SERVICE_TYPES.SHIELDED_SYNC) setSyncing(false)
     },
     [enabled]
   )
 
-  const refresh = useCallback(() => void read(SERVICE_TYPES.SHIELDED_SYNC), [read])
+  const refresh = useCallback(() => {
+    quietRef.current = 0
+    void read(SERVICE_TYPES.SHIELDED_SYNC)
+  }, [read])
   const reload = useCallback(() => void read(SERVICE_TYPES.SHIELDED_STATUS), [read])
 
   useEffect(() => {
     runIdRef.current++
+    syncsRef.current = 0
+    quietRef.current = 0
+    contentRef.current = ''
     setStatuses({})
     setError(null)
     setSyncing(false)
@@ -121,16 +148,19 @@ export function useShieldedStatus(
       setPrices(next)
     })
     // What the background already holds paints first; the sync then brings it up to the chain.
-    void read(SERVICE_TYPES.SHIELDED_STATUS).then(() => read(SERVICE_TYPES.SHIELDED_SYNC))
+    void read(SERVICE_TYPES.SHIELDED_STATUS).then(() => {
+      if (runId === runIdRef.current) return read(SERVICE_TYPES.SHIELDED_SYNC)
+    })
     // poolKey stands for the pools, whose array is rebuilt on every render.
   }, [enabled, accountPk, networkId, poolKey, read])
 
   const busy = Object.values(statuses).some(shieldedInFlight)
   useEffect(() => {
     if (!enabled || !open || syncing) return
-    const timer = setTimeout(refresh, busy ? BUSY_SYNC_MS : IDLE_SYNC_MS)
+    const wait = busy ? Math.min(BUSY_SYNC_MS * 2 ** quietRef.current, IDLE_SYNC_MS) : IDLE_SYNC_MS
+    const timer = setTimeout(() => void read(SERVICE_TYPES.SHIELDED_SYNC), wait)
     return () => clearTimeout(timer)
-  }, [enabled, open, syncing, busy, refresh, statuses])
+  }, [enabled, open, syncing, busy, read, statuses])
 
   const byPool: Record<string, ShieldedPoolState> = {}
   for (const pool of pools) {
