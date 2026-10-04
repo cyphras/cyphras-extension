@@ -786,7 +786,7 @@ export default function ShieldedSend({
             </p>
             <p className="text-xs leading-snug text-muted-foreground">
               {a === 'shield'
-                ? 'Check Private activity before shielding again.'
+                ? 'Private activity follows the deposit until it lands or its deadline passes. Check there before shielding again.'
                 : 'Do not send it again. If its deadline passes without it landing, Private activity offers a retry with the same notes.'}
             </p>
             <Button className="mt-2 w-full" onClick={close}>

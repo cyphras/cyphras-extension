@@ -46,9 +46,9 @@ function limitMessage(d: Details, fallback: string): string {
 }
 
 function transactionFailedMessage(d: Details, fallback: string): string {
-  if (d.refused === true) {
-    return 'The network refused the transaction, so nothing was sent. You can try again.'
-  }
+  // The RPC's report, which a deposit or payment saved before the send outlives: the popup decides
+  // what may still land.
+  if (d.refused === true) return 'The RPC reports that the network refused the transaction.'
   if (d.vaultError !== undefined) return `The pool refused the transaction (${d.vaultError}).`
   if (d.secondProvider === 'no_diagnostics') {
     return 'The second RPC gave no diagnostics, so the outcome is unknown. Try another provider.'
