@@ -246,10 +246,11 @@ function planView(p: PlanView): ShieldedPlanView {
 
 async function statusOf(entry: OpenWallet): Promise<ShieldedStatusView> {
   const { wallet } = entry
-  const [balance, deposits, plans] = await Promise.all([
+  const [balance, deposits, plans, history] = await Promise.all([
     wallet.balance(),
     wallet.deposits(),
     wallet.plans(),
+    wallet.history(),
   ])
   return {
     address: wallet.generateAddress(),
@@ -261,6 +262,13 @@ async function statusOf(entry: OpenWallet): Promise<ShieldedStatusView> {
     },
     deposits: deposits.map(depositView).reverse(),
     plans: plans.map(planView).sort((a, b) => b.createdAt - a.createdAt),
+    received: history
+      .filter((h) => h.kind === 'receive')
+      .map((h) => ({
+        amount: h.amount.toString(),
+        txHash: orNull(h.txHash),
+        ledger: orNull(h.ledger),
+      })),
     syncedAt: entry.syncedAt,
     syncError: entry.syncError,
     services: wallet.verification().state,

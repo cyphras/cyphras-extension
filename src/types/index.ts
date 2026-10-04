@@ -191,11 +191,19 @@ export interface ShieldedPlanView {
   needsUserDecision: boolean
 }
 
+// A payment another account sent to this one, found in the pool's notes.
+export interface ShieldedReceivedView {
+  amount: string
+  txHash: string | null
+  ledger: number | null
+}
+
 export interface ShieldedStatusView {
   address: string
   balance: ShieldedBalanceView
   deposits: ShieldedDepositView[]
   plans: ShieldedPlanView[]
+  received: ShieldedReceivedView[] // newest first
   syncedAt: number | null
   syncError: ShieldedErrorView | null
   // 'mismatch': a service or the vault points elsewhere, so shields and spends are refused.

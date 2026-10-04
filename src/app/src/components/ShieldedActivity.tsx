@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ArrowDownToLine, ArrowUpFromLine, RotateCcw, Send } from 'lucide-react'
+import { ArrowDownLeft, ArrowDownToLine, ArrowUpFromLine, RotateCcw, Send } from 'lucide-react'
 import { formatUnits } from '@/lib/amount'
 import { shortAddress } from '@/lib/address'
 import { SERVICE_TYPES } from '@constants/services'
@@ -298,7 +298,8 @@ interface ShieldedActivityProps {
   onChanged: () => void
 }
 
-// The account's deposits and payments with where each stands, newest first.
+// The account's payments, the payments it received and its deposits, with where each stands, newest
+// first within each.
 export default function ShieldedActivity({
   status,
   poolId,
@@ -311,7 +312,9 @@ export default function ShieldedActivity({
   const [running, setRunning] = useState<string | null>(null)
   const [outcomes, setOutcomes] = useState<Record<string, { ok: boolean; text: string }>>({})
   const plans = status.plans.filter((p) => p.state !== 'superseded')
-  if (status.deposits.length === 0 && plans.length === 0) return null
+  if (status.deposits.length === 0 && plans.length === 0 && status.received.length === 0) {
+    return null
+  }
   const amount = (units: string) => `${formatUnits(units, decimals)} ${code}`
   const now = Math.floor(Date.now() / 1000)
 
@@ -405,6 +408,14 @@ export default function ShieldedActivity({
               actionsOf(planActions(p))
             )
           }
+        />
+      ))}
+      {status.received.map((r, i) => (
+        <Row
+          key={`${r.txHash ?? 'received'}-${i}`}
+          icon={<ArrowDownLeft size={14} />}
+          title={`Received ${amount(r.amount)}`}
+          status={{ label: 'Received', tone: 'ok' }}
         />
       ))}
       {status.deposits.map((d, i) => (
