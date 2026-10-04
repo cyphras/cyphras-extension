@@ -108,7 +108,10 @@ function sdkMessage(err: CyphrasError): string {
     case 'quote_invalid':
       return 'The relayer quote failed a check, so nothing was sent.'
     case 'not_confirmed':
-      return 'Cancelled.'
+      // Only a review that comes after the payment was saved, one with a raised fee, names it.
+      return typeof d.planId === 'string'
+        ? 'The raised fee was not approved, so the payment was not proved again.'
+        : 'Cancelled.'
     case 'destination_invalid':
       return sentence(err.message)
     case 'destination_is_issuer':
