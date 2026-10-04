@@ -20,7 +20,7 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
   plugins: [
-    // snarkjs / circomlibjs in the offscreen prover reference the Node Buffer global.
+    // snarkjs in the offscreen prover references the Node Buffer global.
     nodePolyfills({ include: ['buffer'], globals: { Buffer: true } }),
     tailwindcss(),
     react(),
@@ -50,7 +50,6 @@ export default defineConfig({
       '@bg': resolve(SRC_ROOT, 'background'),
       '@constants': resolve(SRC_ROOT, 'constants'),
       '@ext-types': resolve(SRC_ROOT, 'types'),
-      '@shielded': resolve(SRC_ROOT, 'shielded'),
     },
   },
   build: {

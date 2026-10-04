@@ -3,5 +3,5 @@
   "compilerOptions": {
     "tsBuildInfoFile": "./.tmp/tsconfig.ext.tsbuildinfo"
   },
-  "include": ["../background", "../content", "../constants", "../types", "../shielded"]
+  "include": ["../background", "../content", "../constants", "../types"]
 }
