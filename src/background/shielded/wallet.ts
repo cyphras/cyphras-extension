@@ -125,8 +125,8 @@ async function openWallet(
     artifacts: packagedArtifacts(pool.artifactPaths),
     storage: chromeStore(pool.deployment),
     rpcUrl: pool.rpcUrl,
-    // Stored state that no longer decrypts cannot be recovered; the chain rebuilds the notes and
-    // stateReset() tells the user what was lost.
+    // Stored state that does not decrypt cannot be recovered, so the wallet starts fresh: the
+    // chain rebuilds the notes and stateReset() says what was lost.
     resetUnreadableState: true,
   })
   return {
@@ -296,7 +296,7 @@ export async function shieldedShield(
   }
 }
 
-export interface SpendRequest {
+interface SpendRequest {
   kind: 'send' | 'unshield'
   to: string
   amount: bigint

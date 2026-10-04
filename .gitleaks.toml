@@ -3,19 +3,15 @@ title = "cyphras-extension"
 [extend]
 useDefault = true
 
-# Public on-chain identifiers and integrity pins trip the generic-api-key rule.
-# Only formats that can never be a secret are allowed: Stellar contract IDs
-# (secret keys start with S, not C), 40-hex EVM addresses, and the circuit
-# hash pin files. A bare 64-hex string is not allowed because an EVM private key has
-# that shape.
+# Public on-chain identifiers trip the generic-api-key rule. Only formats that can
+# never be a secret are allowed: Stellar contract IDs (secret keys start with S,
+# not C) and 40-hex EVM addresses. A bare 64-hex string is not allowed because an
+# EVM private key has that shape.
 [allowlist]
-description = "public contract IDs, EVM addresses and circuit hash pins"
+description = "public contract IDs and EVM addresses"
 regexes = [
   '''^C[A-Z2-7]{55}$''',
   '''^0x[a-fA-F0-9]{40}$''',
-]
-paths = [
-  '''^src/(shielded|private)/circuitHashes\.ts$''',
 ]
 
 # The default rules flag a seed only next to a word like "secret". Version byte

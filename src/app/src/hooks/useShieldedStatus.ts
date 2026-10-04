@@ -5,7 +5,7 @@ import { SERVICE_TYPES } from '@constants/services'
 import type { ServiceResponse, ShieldedStatusView } from '@ext-types/index'
 import type { ShieldedPoolOption } from './useShieldedAvailable'
 
-export interface ShieldedPoolState {
+interface ShieldedPoolState {
   status: ShieldedStatusView | null
   // The spendable balance in USD, with the asset's price and 24h change.
   usdValue: number | null
@@ -46,7 +46,7 @@ function readStatus(
 }
 
 // A stranded payout is left out: it waits for a claim, which no sync brings.
-export function shieldedInFlight(status: ShieldedStatusView): boolean {
+function shieldedInFlight(status: ShieldedStatusView): boolean {
   return (
     status.deposits.some((d) => d.state === 'submitting' || d.state === 'pending') ||
     status.plans.some((p) => ['prepared', 'submitted', 'queued'].includes(p.state))

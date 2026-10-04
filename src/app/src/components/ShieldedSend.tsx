@@ -410,7 +410,6 @@ export default function ShieldedSend({
         return
       }
       setStep({ kind: 'shielded', receipt: reply.value })
-      onDone()
     })
   }
 

@@ -749,7 +749,7 @@ export default function Home() {
                             </p>
                             {!hideBalance && t.pending && t.pending.length > 0 && (
                               <p className="text-[11px] text-amber-600 dark:text-amber-400">
-                                {t.pending.join(' · ')}
+                                {t.pending.join(', ')}
                               </p>
                             )}
                           </div>
