@@ -1,4 +1,5 @@
 import {
+  CyphrasError,
   PrivateWallet,
   keySource,
   type DepositInfo,
@@ -375,7 +376,18 @@ export async function shieldedAccountAction(
       : action === 'refund'
         ? wallet.refundDeposit(id, signer)
         : wallet.claimExit(id, signer)
-  return (await track(run)).txHash
+  try {
+    return (await track(run)).txHash
+  } catch (err) {
+    // Cancel and refund read the entry queue first, which no longer holds a settled deposit.
+    if (err instanceof CyphrasError && err.code === 'not_found') {
+      throw new ShieldedRefusal(
+        'not_found',
+        'That deposit is no longer pending: it was admitted, cancelled or refunded.'
+      )
+    }
+    throw err
+  }
 }
 
 export function shieldedDecide(reviewId: string, approve: boolean): Promise<ShieldedStep> {

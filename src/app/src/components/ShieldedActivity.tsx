@@ -166,7 +166,10 @@ function planStatus(p: ShieldedPlanView): RowStatus {
       return {
         label: `Stranded${unconfirmed}`,
         tone: 'bad',
-        detail: 'The destination could not receive the payout. Claim it once it can.',
+        detail:
+          p.exitConfirmed === true
+            ? 'The destination could not receive the payout. Claim it once it can.'
+            : "Only the pool's indexer says the destination could not receive the payout. A claim is offered once the vault's own events show it.",
       }
     case 'superseded':
       return { label: 'Replaced by a retry', tone: 'muted' }
@@ -217,8 +220,10 @@ function depositActions(d: ShieldedDepositView, now: number): AccountAction[] {
   return actions
 }
 
+// A claim is offered only on a stranded exit the vault's own events show: the vault refuses any
+// other, and the claim's simulation would still show the RPC this account beside the exit.
 function planActions(p: ShieldedPlanView): AccountAction[] {
-  if (p.state !== 'stranded') return []
+  if (p.state !== 'stranded' || p.exitConfirmed !== true) return []
   return p.strandedExits.map((id) => ({
     key: `claim:${id}`,
     type: SERVICE_TYPES.SHIELDED_CLAIM,
@@ -293,11 +298,16 @@ export default function ShieldedActivity({
       { type: action.type, poolId, id: action.id },
       (r: ServiceResponse) => {
         setRunning(null)
-        const failed = chrome.runtime.lastError ? 'Extension error' : r?.error
-        setOutcomes((prev) => ({
-          ...prev,
-          [action.key]: failed ? { ok: false, text: failed } : { ok: true, text: 'Sent.' },
-        }))
+        // A restart after the request left may still have sent the transaction.
+        const outcome = chrome.runtime.lastError
+          ? {
+              ok: true,
+              text: 'The extension restarted, so it may have been sent. The next sync shows what became of it.',
+            }
+          : r?.error
+            ? { ok: false, text: r.error }
+            : { ok: true, text: 'Sent.' }
+        setOutcomes((prev) => ({ ...prev, [action.key]: outcome }))
         onChanged()
       }
     )
