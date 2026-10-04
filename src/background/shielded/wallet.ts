@@ -101,7 +101,6 @@ async function activeAccount(): Promise<{ account: AccountInfo; mnemonic: string
 // the spec restores the same private balance from it.
 async function openWallet(
   pool: ShieldedDeployment,
-  rpcUrl: string,
   account: AccountInfo,
   mnemonic: string
 ): Promise<OpenWallet> {
@@ -116,7 +115,7 @@ async function openWallet(
     prover: offscreenProver(pool.deployment, pool.artifactPaths),
     artifacts: packagedArtifacts(pool.artifactPaths),
     storage: chromeStore(pool.deployment),
-    rpcUrl,
+    rpcUrl: pool.rpcUrl,
     // Stored state that no longer decrypts cannot be recovered; the chain rebuilds the notes and
     // stateReset() tells the user what was lost.
     resetUnreadableState: true,
@@ -135,16 +134,10 @@ async function walletFor(net: NetworkConfig, poolId: string | undefined): Promis
   assertShieldedAllowed(net)
   const pool = poolOf(net, poolId)
   const { account, mnemonic } = await activeAccount()
-  const key = [
-    pool.deployment.id,
-    net.sorobanRpcUrl,
-    account.walletId,
-    account.index,
-    account.publicKey,
-  ].join('|')
+  const key = [pool.deployment.id, account.walletId, account.index, account.publicKey].join('|')
   let entry = wallets.get(key)
   if (!entry) {
-    const opening = openWallet(pool, net.sorobanRpcUrl, account, mnemonic)
+    const opening = openWallet(pool, account, mnemonic)
     opening.catch(() => {
       if (wallets.get(key) === opening) wallets.delete(key)
     })

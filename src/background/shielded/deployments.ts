@@ -5,11 +5,14 @@ import {
   type DeploymentName,
 } from '@cyphras/private'
 
-// A vault the SDK release pins, where the extension ships its circuit files, and the most the
-// wallet lets a relayer charge for one payment.
+// A vault the SDK release pins, the RPC private mode reads it through, where the extension ships
+// its circuit files, and the most the wallet lets a relayer charge for one payment. The RPC is
+// fixed here rather than taken from network settings, since it decides which notes, roots and
+// payment fates the wallet believes.
 export interface ShieldedDeployment {
   readonly name: DeploymentName
   readonly deployment: Deployment
+  readonly rpcUrl: string
   readonly artifactPaths: Readonly<Record<ArtifactName, string>>
   readonly maxRelayerFee: bigint
 }
@@ -23,14 +26,17 @@ const TESTNET_ARTIFACTS: Readonly<Record<ArtifactName, string>> = {
 
 function pinned(
   name: DeploymentName,
+  rpcUrl: string,
   artifactPaths: Readonly<Record<ArtifactName, string>>,
   maxRelayerFee: bigint
 ): [string, ShieldedDeployment][] {
   const deployment = PINNED_DEPLOYMENTS[name]
-  return deployment ? [[name, { name, deployment, artifactPaths, maxRelayerFee }]] : []
+  return deployment ? [[name, { name, deployment, rpcUrl, artifactPaths, maxRelayerFee }]] : []
 }
 
 // By the deployment name the network config gives a pool. A deployment the SDK release does not
 // pin is missing, so private mode refuses its pool.
 export const SHIELDED_DEPLOYMENTS: Readonly<Record<string, ShieldedDeployment>> =
-  Object.fromEntries(pinned('testnet/xlm', TESTNET_ARTIFACTS, 10_000_000n))
+  Object.fromEntries(
+    pinned('testnet/xlm', 'https://soroban-testnet.stellar.org', TESTNET_ARTIFACTS, 10_000_000n)
+  )

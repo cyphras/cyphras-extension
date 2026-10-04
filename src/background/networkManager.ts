@@ -113,6 +113,7 @@ export async function editNetwork(network: NetworkConfig): Promise<NetworkConfig
   const networks = await getNetworks()
   const existing = networks.find((n) => n.id === network.id)
   if (!existing) throw new Error('Network not found')
+  if (existing.isDefault) throw new Error('Default networks cannot be edited')
 
   // Strip shielded so an edit cannot inject a private-mode block; defaults re-apply it on read
   const { shielded: _editShielded, ...editClean } = network
