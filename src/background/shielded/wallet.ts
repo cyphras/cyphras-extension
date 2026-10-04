@@ -291,6 +291,21 @@ export interface SpendRequest {
   selfRelay: boolean
 }
 
+// A spend that failed after saving a plan the wallet did not hold before has a payment out that
+// may still land, whatever the error, so the popup never offers to pay it again with new notes.
+async function watchingPlans(
+  wallet: PrivateWallet,
+  spend: () => Promise<Submission>
+): Promise<Submission> {
+  const before = new Set((await wallet.plans()).map((p) => p.planId))
+  try {
+    return await spend()
+  } catch (err) {
+    if ((await wallet.plans()).some((p) => !before.has(p.planId))) throw new MayStillLand(err)
+    throw err
+  }
+}
+
 export async function shieldedSpend(
   net: NetworkConfig,
   poolId: string,
@@ -299,14 +314,24 @@ export async function shieldedSpend(
   const { wallet, pool, signer } = await walletFor(net, poolId)
   if (req.kind === 'send') {
     return startReviewed((confirm) =>
-      wallet.send({ to: req.to, amount: req.amount, maxFee: pool.maxRelayerFee, confirm })
+      watchingPlans(wallet, () =>
+        wallet.send({ to: req.to, amount: req.amount, maxFee: pool.maxRelayerFee, confirm })
+      )
     )
   }
   const route = req.selfRelay ? { selfRelay: signer } : { maxFee: pool.maxRelayerFee }
   // Without split the SDK answers an unshield with a single submission.
-  return startReviewed(
-    (confirm) =>
-      wallet.unshield({ to: req.to, amount: req.amount, confirm, ...route }) as Promise<Submission>
+  return startReviewed((confirm) =>
+    watchingPlans(
+      wallet,
+      () =>
+        wallet.unshield({
+          to: req.to,
+          amount: req.amount,
+          confirm,
+          ...route,
+        }) as Promise<Submission>
+    )
   )
 }
 
@@ -318,7 +343,9 @@ export async function shieldedRetry(
 ): Promise<ShieldedStep> {
   const { wallet, pool, signer } = await walletFor(net, poolId)
   const route = selfRelay ? { selfRelay: signer } : { maxFee: pool.maxRelayerFee }
-  return startReviewed((confirm) => wallet.retry(planId, { confirm, ...route }))
+  return startReviewed((confirm) =>
+    watchingPlans(wallet, () => wallet.retry(planId, { confirm, ...route }))
+  )
 }
 
 export function shieldedDecide(reviewId: string, approve: boolean): Promise<ShieldedStep> {

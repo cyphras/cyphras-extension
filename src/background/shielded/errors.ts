@@ -53,9 +53,7 @@ function transactionFailedMessage(d: Details, fallback: string): string {
   if (d.secondProvider === 'no_diagnostics') {
     return 'The second RPC gave no diagnostics, so the outcome is unknown. Try another provider.'
   }
-  if (d.hash !== undefined) {
-    return 'The transaction is not confirmed yet. It stays pending until the network settles it.'
-  }
+  // The SDK's own words say how it ended: failed on chain, or expired unconfirmed.
   return sentence(fallback)
 }
 
@@ -129,7 +127,12 @@ function sdkMessage(err: CyphrasError): string {
 }
 
 export function errorView(err: unknown): ShieldedErrorView {
-  if (err instanceof MayStillLand) return { ...errorView(err.cause), mayLand: true }
+  if (err instanceof MayStillLand) {
+    const view = errorView(err.cause)
+    const message =
+      view.code === 'unexpected' ? 'An unexpected error came after it was saved.' : view.message
+    return { ...view, message, mayLand: true }
+  }
   if (err instanceof CyphrasError) {
     const { planId } = err.details
     return {

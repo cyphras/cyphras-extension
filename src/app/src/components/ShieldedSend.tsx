@@ -215,6 +215,7 @@ export default function ShieldedSend({
         }
         if (reply.code !== 'not_confirmed') setError(reply.error)
         setStep({ kind: retryPlan ? 'retry' : 'form' })
+        onDone()
         return
       }
       if (reply.value.kind === 'review') {
