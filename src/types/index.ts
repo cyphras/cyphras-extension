@@ -121,6 +121,8 @@ export interface ShieldedBalanceView {
   awaitingPayout: string // unshields waiting in the vault's exit queue
 }
 
+// 'unresolved': it was still submitting when no RPC provider held the ledgers it could have landed
+// in any more. Whether it landed is unknown, but it can no longer land.
 export type ShieldedDepositState =
   | 'submitting'
   | 'pending'
@@ -128,6 +130,7 @@ export type ShieldedDepositState =
   | 'cancelled'
   | 'refunded'
   | 'failed'
+  | 'unresolved'
 
 // What a screening reason code means; 'unknown' says nothing about whether the deposit may still
 // be admitted.

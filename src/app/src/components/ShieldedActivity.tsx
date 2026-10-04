@@ -126,6 +126,13 @@ function depositStatus(d: ShieldedDepositView): RowStatus {
       }
     case 'failed':
       return { label: 'Failed', tone: 'bad', detail: 'Nothing was deposited.' }
+    case 'unresolved':
+      return {
+        label: 'Outcome unknown',
+        tone: 'warn',
+        detail:
+          'It can no longer land, but whether it did is unknown. If it did, it shows here once the pool confirms it.',
+      }
   }
 }
 
