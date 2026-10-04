@@ -1,7 +1,7 @@
 import type {
   ArtifactName,
   ArtifactSource,
-  Deployment,
+  CircuitPins,
   Groth16Proof,
   Prover,
   TransactionWitness,
@@ -16,28 +16,14 @@ import {
   type ProveRequest,
 } from './wire'
 
-// Package files read once and shared by every open wallet, so a second account does not hold
-// another copy of the zkey.
-const packaged = new Map<string, Promise<Uint8Array>>()
-
-async function readPackaged(path: string): Promise<Uint8Array> {
-  const res = await fetch(chrome.runtime.getURL(path))
-  if (!res.ok) throw new Error(`${path} is missing from the extension`)
-  return new Uint8Array(await res.arrayBuffer())
-}
-
-// The circuit files shipped in the extension package; the SDK checks each against its pin.
+// The circuit files shipped in the extension package. The SDK reads only the verifying key from
+// here, and checks it against its pin.
 export function packagedArtifacts(paths: Readonly<Record<ArtifactName, string>>): ArtifactSource {
   return {
-    load(name) {
-      const path = paths[name]
-      let reading = packaged.get(path)
-      if (!reading) {
-        reading = readPackaged(path)
-        packaged.set(path, reading)
-        reading.catch(() => packaged.delete(path))
-      }
-      return reading
+    async load(name) {
+      const res = await fetch(chrome.runtime.getURL(paths[name]))
+      if (!res.ok) throw new Error(`${paths[name]} is missing from the extension`)
+      return new Uint8Array(await res.arrayBuffer())
     },
   }
 }
@@ -94,20 +80,17 @@ async function connectedProver(): Promise<chrome.runtime.Port> {
 }
 
 // snarkjs runs in the offscreen document, since it needs browser APIs the service worker lacks.
-// The document reads its own copy of the wasm and zkey from the package and checks it against the
-// same pins, which is far cheaper than passing megabytes through extension messaging.
-export function offscreenProver(
-  deployment: Deployment,
-  paths: Readonly<Record<ArtifactName, string>>
-): Prover {
+// The document loads the wasm and zkey from the package itself and proves only with files that
+// match the pins of the proof, so the worker never holds the proving key.
+export function offscreenProver(paths: Readonly<Record<ArtifactName, string>>): Prover {
   return {
-    async prove(witness: TransactionWitness): Promise<Groth16Proof> {
+    async prove(witness: TransactionWitness, circuit: CircuitPins): Promise<Groth16Proof> {
       const port = await connectedProver()
       const request: ProveRequest = {
         id: nextRequest++,
         witness: toWire(witness),
-        wasm: { path: paths.wasm, sha256: deployment.artifacts.wasm },
-        zkey: { path: paths.zkey, sha256: deployment.artifacts.zkey },
+        circuit: { wasm: circuit.wasm, zkey: circuit.zkey },
+        paths,
       }
       const reply = await new Promise<ProveReply | undefined>((settle) => {
         pending.set(request.id, { port, settle })

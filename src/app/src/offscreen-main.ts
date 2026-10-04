@@ -1,43 +1,35 @@
-import type { TransactionWitness } from '@cyphras/private'
+import type { ArtifactName, Prover, TransactionWitness } from '@cyphras/private'
 import { snarkjsProver } from '@cyphras/private-prover-snarkjs'
 import {
   PROVER_PORT,
   PROVER_WAKE,
   fromWire,
   toWire,
-  type ProveArtifact,
   type ProveReply,
   type ProveRequest,
 } from '@bg/shielded/wire'
 
-// Extension pages may not start blob: workers, so snarkjs proves on this document's own thread.
-const prover = snarkjsProver({ singleThread: true })
+// A prover per set of package files. Each loads the wasm and zkey itself and keeps the ones that
+// matched the pins of a proof; a load that failed is tried again for the next.
+const provers = new Map<string, Prover>()
 
-// Checked files by path and pin; a failed load is retried on the next request.
-const artifacts = new Map<string, Promise<Uint8Array>>()
-
-async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
-  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
-// The proof binds to bytes that match the pin the service worker checked its own copy against.
-function load(artifact: ProveArtifact): Promise<Uint8Array> {
-  const key = `${artifact.path}:${artifact.sha256}`
-  let loading = artifacts.get(key)
-  if (!loading) {
-    loading = (async () => {
-      const res = await fetch(chrome.runtime.getURL(artifact.path))
-      const bytes = new Uint8Array(await res.arrayBuffer())
-      if ((await sha256Hex(bytes)) !== artifact.sha256) {
-        throw new Error(`${artifact.path} does not match its pin`)
-      }
-      return bytes
-    })()
-    artifacts.set(key, loading)
-    loading.catch(() => artifacts.delete(key))
+function proverFor(paths: Readonly<Record<ArtifactName, string>>): Prover {
+  const key = `${paths.wasm}|${paths.zkey}`
+  let prover = provers.get(key)
+  if (!prover) {
+    prover = snarkjsProver({
+      artifacts: {
+        async load(name) {
+          const res = await fetch(chrome.runtime.getURL(paths[name]))
+          return new Uint8Array(await res.arrayBuffer())
+        },
+      },
+      // Extension pages may not start blob: workers, so snarkjs proves on this document's thread.
+      singleThread: true,
+    })
+    provers.set(key, prover)
   }
-  return loading
+  return prover
 }
 
 // One proof at a time: proving takes the whole thread and most of the memory it can get.
@@ -45,8 +37,8 @@ let queue: Promise<unknown> = Promise.resolve()
 
 async function prove(req: ProveRequest): Promise<ProveReply> {
   try {
-    const [wasm, zkey] = await Promise.all([load(req.wasm), load(req.zkey)])
-    const proof = await prover.prove(fromWire(req.witness) as TransactionWitness, { wasm, zkey })
+    const witness = fromWire(req.witness) as TransactionWitness
+    const proof = await proverFor(req.paths).prove(witness, req.circuit)
     return { id: req.id, ok: true, proof: toWire(proof) }
   } catch {
     // The witness holds spending keys, so no error detail leaves this document.

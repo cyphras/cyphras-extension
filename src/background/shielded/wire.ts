@@ -1,3 +1,5 @@
+import type { ArtifactName, CircuitPins } from '@cyphras/private'
+
 // Extension messaging carries JSON only, so the bigints of a witness or a proof travel as decimal
 // strings; neither holds anything else at its leaves.
 export type Wire = string | Wire[] | { [key: string]: Wire }
@@ -24,16 +26,13 @@ export function fromWire(value: Wire): unknown {
 export const PROVER_PORT = 'offscreen-prover'
 export const PROVER_WAKE = 'offscreen-prover-wake'
 
-export interface ProveArtifact {
-  readonly path: string
-  readonly sha256: string
-}
-
+// The circuit's pins come with each proof the SDK asks for, and the paths say where the package
+// holds its files; the document proves only with files that match the pins.
 export interface ProveRequest {
   readonly id: number
   readonly witness: Wire
-  readonly wasm: ProveArtifact
-  readonly zkey: ProveArtifact
+  readonly circuit: CircuitPins
+  readonly paths: Readonly<Record<ArtifactName, string>>
 }
 
 export type ProveReply = { readonly id: number } & (

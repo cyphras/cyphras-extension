@@ -122,7 +122,7 @@ async function openWallet(
   const wallet = await PrivateWallet.open({
     deployment: pool.name,
     keys: keySource.mnemonic(mnemonic, { account: account.index }),
-    prover: offscreenProver(pool.deployment, pool.artifactPaths),
+    prover: offscreenProver(pool.artifactPaths),
     artifacts: packagedArtifacts(pool.artifactPaths),
     storage: chromeStore(pool.deployment),
     rpcUrl: pool.rpcUrl,
