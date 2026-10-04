@@ -205,6 +205,9 @@ export interface ShieldedReviewView {
   fee: string
   to: string
   selfRelay: boolean
+  // Asked again after the relayer raised its fee: the payment is already saved with these notes
+  // and may still land, so declining it never makes way for a new payment.
+  repriced: boolean
   warnings: { code: string; message: string }[]
 }
 

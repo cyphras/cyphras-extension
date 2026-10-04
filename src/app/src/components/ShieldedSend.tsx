@@ -58,7 +58,8 @@ type Step =
   | { kind: 'retry' }
   | { kind: 'shield-review' }
   | { kind: 'preparing' }
-  | { kind: 'review'; review: ShieldedReviewView; repriced: boolean }
+  | { kind: 'review'; review: ShieldedReviewView }
+  | { kind: 'cancelling' }
   | { kind: 'working' }
   | { kind: 'shielded'; receipt: ShieldedReceiptView }
   | { kind: 'submitted'; txHash: string | null }
@@ -152,8 +153,10 @@ export default function ShieldedSend({
   const [step, setStep] = useState<Step>({ kind: 'form' })
   const [error, setError] = useState<string | null>(null)
   const sheetRef = useRef<HTMLDivElement>(null)
-  // The review the background holds open, declined if the sheet closes on it.
+  // The review the background holds open, declined if the sheet closes on it, and the last review
+  // shown, which the next reply answers.
   const openReviewRef = useRef<string | null>(null)
+  const lastReviewRef = useRef<ShieldedReviewView | null>(null)
   const stellarChain = useStellarChain()
   const avatarKey = useAvatarKey()
 
@@ -194,26 +197,31 @@ export default function ShieldedSend({
   }, [step.kind, poolId])
 
   // A review comes back from the background either as the first step of a spend or after a
-  // relayer raised its fee; anything else ends the spend.
+  // relayer raised its fee; anything else ends the spend. The end of a spend whose answered review
+  // was repriced is never a fresh start, since that payment is saved and may still land.
   const followStep = useCallback(
-    (reply: Reply<ShieldedStep>, repriced: boolean) => {
-      if (!reply.ok) {
+    (reply: Reply<ShieldedStep>) => {
+      const answered = lastReviewRef.current
+      if (!reply.ok || reply.value.kind !== 'review') {
         openReviewRef.current = null
-        if (reply.mayLand) {
+        lastReviewRef.current = null
+      }
+      if (!reply.ok) {
+        if (reply.mayLand || answered?.repriced) {
           setStep({ kind: 'stopped', message: reply.error })
           onDone()
           return
         }
-        setError(reply.error)
+        if (reply.code !== 'not_confirmed') setError(reply.error)
         setStep({ kind: retryPlan ? 'retry' : 'form' })
         return
       }
       if (reply.value.kind === 'review') {
         openReviewRef.current = reply.value.review.reviewId
-        setStep({ kind: 'review', review: reply.value.review, repriced })
+        lastReviewRef.current = reply.value.review
+        setStep({ kind: 'review', review: reply.value.review })
         return
       }
-      openReviewRef.current = null
       setStep({ kind: 'submitted', txHash: reply.value.txHash })
       onDone()
     },
@@ -299,7 +307,7 @@ export default function ShieldedSend({
         selfRelay: retryPlan.kind === 'unshield' && selfRelay,
       },
       (r) => r.shieldedStep
-    ).then((reply) => followStep(reply, false))
+    ).then(followStep)
   }
 
   function review() {
@@ -321,21 +329,17 @@ export default function ShieldedSend({
         selfRelay: a === 'unshield' && selfRelay,
       },
       (r) => r.shieldedStep
-    ).then((reply) => followStep(reply, false))
+    ).then(followStep)
   }
 
-  function confirmReview(reviewId: string) {
+  // Both answers wait for what the SDK made of them: declining a repriced review still leaves its
+  // saved payment, which may land.
+  function answerReview(reviewId: string, approve: boolean) {
     openReviewRef.current = null
-    setStep({ kind: 'working' })
-    ask(
-      { type: SERVICE_TYPES.SHIELDED_DECIDE, reviewId, approve: true },
-      (r) => r.shieldedStep
-    ).then((reply) => followStep(reply, true))
-  }
-
-  function cancelReview() {
-    decline()
-    setStep({ kind: retryPlan ? 'retry' : 'form' })
+    setStep({ kind: approve ? 'working' : 'cancelling' })
+    ask({ type: SERVICE_TYPES.SHIELDED_DECIDE, reviewId, approve }, (r) => r.shieldedStep).then(
+      followStep
+    )
   }
 
   function approveShield() {
@@ -603,13 +607,14 @@ export default function ShieldedSend({
     )
   }
 
-  function spendReview(r: ShieldedReviewView, repriced: boolean) {
+  function spendReview(r: ShieldedReviewView) {
     const total = BigInt(r.amount) + BigInt(r.fee)
     return (
       <>
-        {repriced && (
+        {r.repriced && (
           <p className="rounded-xl bg-amber-500/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
-            The relayer changed its fee. Review the new fee before it proves again.
+            The relayer raised its fee after the payment was saved. Confirm proves it again with the
+            same notes; cancelling leaves the saved payment, which may still land.
           </p>
         )}
         <div className="rounded-xl bg-card px-4 py-2">
@@ -645,10 +650,14 @@ export default function ShieldedSend({
           </div>
         )}
         <div className="flex gap-3">
-          <Button variant="outline" className="flex-1" onClick={cancelReview}>
+          <Button
+            variant="outline"
+            className="flex-1"
+            onClick={() => answerReview(r.reviewId, false)}
+          >
             Cancel
           </Button>
-          <Button className="flex-1" onClick={() => confirmReview(r.reviewId)}>
+          <Button className="flex-1" onClick={() => answerReview(r.reviewId, true)}>
             Confirm
           </Button>
         </div>
@@ -746,7 +755,9 @@ export default function ShieldedSend({
       case 'preparing':
         return progress('Syncing the pool and asking the relayer for a quote...')
       case 'review':
-        return spendReview(step.review, step.repriced)
+        return spendReview(step.review)
+      case 'cancelling':
+        return progress('Cancelling...')
       case 'working':
         return progress('Proving on this device and submitting. This can take a minute.')
       case 'shielded':

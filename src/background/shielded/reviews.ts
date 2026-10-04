@@ -5,14 +5,20 @@ import { ShieldedRefusal } from './errors'
 // A review holds the account's other private operations until the user answers it, so one left
 // unanswered is declined.
 const REVIEW_TIMEOUT_MS = 3 * 60_000
+// How long the outcome of a review declined without the popup's answer waits for that answer.
+const OUTCOME_TTL_MS = 10 * 60_000
 
 interface OpenReview {
   decide(approve: boolean): Promise<ShieldedStep>
+  decline(): void
 }
 
 const open = new Map<string, OpenReview>()
+// Outcomes of reviews declined for the popup, as by a timeout. A late answer gets the outcome,
+// with the plan a repriced spend already saved, rather than a fresh start.
+const closed = new Map<string, Promise<ShieldedStep>>()
 
-function reviewView(reviewId: string, review: SpendReview): ShieldedReviewView {
+function reviewView(reviewId: string, review: SpendReview, repriced: boolean): ShieldedReviewView {
   return {
     reviewId,
     kind: review.kind,
@@ -20,13 +26,14 @@ function reviewView(reviewId: string, review: SpendReview): ShieldedReviewView {
     fee: review.fee.toString(),
     to: review.to,
     selfRelay: review.relayer === undefined,
+    repriced,
     warnings: review.warnings.map((w) => ({ code: w.code, message: w.message })),
   }
 }
 
 // Starts a spend whose confirmations go to the popup, settling with its first review or with its
 // result when it ends before asking. A relayer that raises its fee after a review makes the SDK
-// ask again, so deciding one review can yield another.
+// ask again, so deciding one review can yield another, about a plan it already saved.
 export function startReviewed(
   spend: (confirm: ConfirmSpend) => Promise<Submission>
 ): Promise<ShieldedStep> {
@@ -36,23 +43,26 @@ export function startReviewed(
       settle = { resolve, reject }
     })
   const first = nextStep()
+  let reviews = 0
   const confirm: ConfirmSpend = (review) =>
     new Promise<boolean>((answer) => {
       const reviewId = crypto.randomUUID()
-      const close = (approve: boolean) => {
+      const decide = (approve: boolean): Promise<ShieldedStep> => {
         clearTimeout(timer)
         open.delete(reviewId)
+        const after = nextStep()
         answer(approve)
+        return after
       }
-      const timer = setTimeout(() => close(false), REVIEW_TIMEOUT_MS)
-      open.set(reviewId, {
-        decide(approve) {
-          const after = nextStep()
-          close(approve)
-          return after
-        },
-      })
-      settle.resolve({ kind: 'review', review: reviewView(reviewId, review) })
+      const decline = () => {
+        const after = decide(false)
+        after.catch(() => undefined)
+        closed.set(reviewId, after)
+        setTimeout(() => closed.delete(reviewId), OUTCOME_TTL_MS)
+      }
+      const timer = setTimeout(decline, REVIEW_TIMEOUT_MS)
+      open.set(reviewId, { decide, decline })
+      settle.resolve({ kind: 'review', review: reviewView(reviewId, review, reviews++ > 0) })
     })
   spend(confirm).then(
     (s) =>
@@ -69,10 +79,12 @@ export function startReviewed(
 
 export function decideReview(reviewId: string, approve: boolean): Promise<ShieldedStep> {
   const review = open.get(reviewId)
-  if (!review) throw new ShieldedRefusal('review_expired', 'This review expired. Start again.')
-  return review.decide(approve)
+  if (review) return review.decide(approve)
+  const outcome = closed.get(reviewId)
+  if (outcome) return outcome
+  throw new ShieldedRefusal('review_expired', 'This review is no longer open.')
 }
 
 export function declineAllReviews(): void {
-  for (const review of [...open.values()]) review.decide(false).catch(() => undefined)
+  for (const review of [...open.values()]) review.decline()
 }
