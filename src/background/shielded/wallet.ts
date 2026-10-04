@@ -107,6 +107,16 @@ async function activeAccount(): Promise<{ account: AccountInfo; mnemonic: string
   return { account, mnemonic }
 }
 
+// The account's own key, which must be the one the recovery phrase gives at its index.
+async function accountKeypair(account: AccountInfo, mnemonic: string): Promise<Keypair> {
+  const { secret } = await deriveKeypairRaw(mnemonic, account.index)
+  const keypair = Keypair.fromSecret(secret)
+  if (keypair.publicKey() !== account.publicKey) {
+    throw new ShieldedRefusal('account_mismatch', 'The active account does not match the wallet.')
+  }
+  return keypair
+}
+
 // Extension account N is private account N of the same recovery phrase, so any wallet that follows
 // the spec restores the same private balance from it.
 async function openWallet(
@@ -114,11 +124,7 @@ async function openWallet(
   account: AccountInfo,
   mnemonic: string
 ): Promise<OpenWallet> {
-  const { secret } = await deriveKeypairRaw(mnemonic, account.index)
-  const keypair = Keypair.fromSecret(secret)
-  if (keypair.publicKey() !== account.publicKey) {
-    throw new ShieldedRefusal('account_mismatch', 'The active account does not match the wallet.')
-  }
+  const keypair = await accountKeypair(account, mnemonic)
   const wallet = await PrivateWallet.open({
     deployment: pool.name,
     keys: keySource.mnemonic(mnemonic, { account: account.index }),
@@ -253,11 +259,21 @@ async function statusOf(entry: OpenWallet): Promise<ShieldedStatusView> {
   }
 }
 
+// Derived from the recovery phrase alone, so the address shows without opening the wallet or
+// waiting for a sync.
 export async function shieldedReceiveAddress(
   net: NetworkConfig,
   poolId: string | undefined
 ): Promise<string> {
-  return (await walletFor(net, poolId)).wallet.generateAddress()
+  assertShieldedAllowed(net)
+  const pool = poolOf(net, poolId)
+  const { account, mnemonic } = await activeAccount()
+  await accountKeypair(account, mnemonic)
+  return PrivateWallet.address({
+    network: pool.deployment.network,
+    keys: keySource.mnemonic(mnemonic, { account: account.index }),
+    storage: chromeStore(pool.deployment),
+  })
 }
 
 export async function shieldedStatus(
