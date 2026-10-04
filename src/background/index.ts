@@ -136,6 +136,7 @@ import {
   shieldedAccountAction,
   settleShieldedWallets,
   shieldedDecide,
+  shieldedQuote,
   shieldedReceiveAddress,
   shieldedRetry,
   shieldedShield,
@@ -3358,6 +3359,26 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           m.whileSubmitting === true
         )
         sendResponse({ shieldedReceipt: receipt })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_QUOTE: {
+      const m = message as unknown as { poolId?: string; kind?: string; selfRelay?: boolean }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      if (m.kind !== 'send' && m.kind !== 'unshield') {
+        sendResponse({ error: "kind must be 'send' or 'unshield'" })
+        return
+      }
+      try {
+        const net = await getActiveNetwork()
+        const selfRelay = m.kind === 'unshield' && m.selfRelay === true
+        sendResponse({ shieldedQuote: await shieldedQuote(net, m.poolId, m.kind, selfRelay) })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }

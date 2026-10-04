@@ -13,6 +13,7 @@ import type {
   ShieldedDepositView,
   ShieldedErrorView,
   ShieldedPlanView,
+  ShieldedQuoteView,
   ShieldedReceiptView,
   ShieldedStatusView,
   ShieldedStep,
@@ -312,6 +313,21 @@ export async function shieldedShield(
     }
     throw err
   }
+}
+
+// A quote reads the vault as the last sync left it, which a worker that just started has not run.
+export async function shieldedQuote(
+  net: NetworkConfig,
+  poolId: string,
+  kind: 'send' | 'unshield',
+  selfRelay: boolean
+): Promise<ShieldedQuoteView> {
+  const entry = await walletFor(net, poolId)
+  if (entry.syncedAt === null) await syncOnce(entry)
+  const quote = await entry.wallet.quote(
+    selfRelay ? { kind, selfRelay } : { kind, maxFee: entry.pool.maxRelayerFee }
+  )
+  return { fee: quote.fee.toString(), maxAmount: quote.maxAmount.toString() }
 }
 
 interface SpendRequest {

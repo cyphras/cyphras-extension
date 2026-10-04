@@ -203,6 +203,15 @@ export interface ShieldedStatusView {
   stateReset: string | null
 }
 
+// What a send or unshield would pay now, and what the notes as of the last sync can move with that
+// fee; the review asks the relayer again.
+export interface ShieldedQuoteView {
+  fee: string
+  // The most one payment can move after the fee: from the two largest notes, and for an unshield
+  // within the pool's cap for one withdrawal.
+  maxAmount: string
+}
+
 export interface ShieldedReceiptView {
   depositId: number | null // null until a sync finds the ID
   txHash: string
@@ -294,6 +303,7 @@ export interface ServiceResponse {
   shieldedStatus?: ShieldedStatusView
   shieldedReceipt?: ShieldedReceiptView
   shieldedStep?: ShieldedStep
+  shieldedQuote?: ShieldedQuoteView
   jobId?: string
   jobs?: CctpJobInfo[]
   maxFee?: string

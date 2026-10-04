@@ -26,6 +26,7 @@ import { SERVICE_TYPES, SHIELDED_REVIEW_PORT } from '@constants/services'
 import type {
   ServiceResponse,
   ShieldedPlanView,
+  ShieldedQuoteView,
   ShieldedReceiptView,
   ShieldedReviewView,
   ShieldedStatusView,
@@ -154,6 +155,9 @@ export default function ShieldedSend({
   const [refusedWhileSubmitting, setRefusedWhileSubmitting] = useState(false)
   const [step, setStep] = useState<Step>({ kind: 'form' })
   const [error, setError] = useState<string | null>(null)
+  // The fee a new send or unshield would pay now, or why the relayer could not say.
+  const [quote, setQuote] = useState<ShieldedQuoteView | null>(null)
+  const [quoteError, setQuoteError] = useState<string | null>(null)
   const sheetRef = useRef<HTMLDivElement>(null)
   // Each opening of the sheet is a session; a reply from an older session, or one that arrives once
   // the sheet is closed, never paints.
@@ -278,6 +282,31 @@ export default function ShieldedSend({
     setStep({ kind: retryPlan ? 'retry' : 'form' })
   }, [open, action, retryPlan, decimals, releaseFlow])
 
+  // Asked again when the route changes, or when a sync changes what the notes can pay.
+  const spendable = status?.balance.spendable
+  useEffect(() => {
+    setQuote(null)
+    setQuoteError(null)
+    if (!open || retryPlan || (a !== 'send' && a !== 'unshield')) return
+    let current = true
+    ask(
+      {
+        type: SERVICE_TYPES.SHIELDED_QUOTE,
+        poolId,
+        kind: a,
+        selfRelay: a === 'unshield' && selfRelay,
+      },
+      (r) => r.shieldedQuote
+    ).then((reply) => {
+      if (!current) return
+      if (reply.ok) setQuote(reply.value)
+      else setQuoteError(reply.error)
+    })
+    return () => {
+      current = false
+    }
+  }, [open, a, retryPlan, poolId, selfRelay, spendable])
+
   // A payment request of this session. A reply that comes after the session ended is dropped; the
   // background declined any review in it when the session's port went.
   const requestStep = useCallback(async (message: object): Promise<Reply<ShieldedStep> | null> => {
@@ -321,6 +350,10 @@ export default function ShieldedSend({
         : null
   const units = parseUnits(amount, decimals)
   const exceedsBalance = units !== null && balanceUnits !== null && units > balanceUnits
+  // What the notes cannot pay in one payment once the fee is taken.
+  const maxAmount = a !== 'shield' && quote ? BigInt(quote.maxAmount) : null
+  const exceedsOnePayment =
+    !exceedsBalance && units !== null && maxAmount !== null && units > maxAmount
 
   // The address prefix of this network, taken from the account's own private address.
   const privatePrefix = status ? status.address.slice(0, status.address.indexOf('1') + 1) : 'cy'
@@ -334,12 +367,14 @@ export default function ShieldedSend({
     units !== null &&
     units > 0n &&
     !exceedsBalance &&
+    !exceedsOnePayment &&
     (a === 'shield' || to !== '') &&
     recipientValid
 
   function fill(fraction: number) {
     if (balanceUnits === null) return
-    const portion = fraction === 1 ? balanceUnits : fractionUnits(balanceUnits, fraction)
+    const max = maxAmount ?? balanceUnits
+    const portion = fraction === 1 ? max : fractionUnits(balanceUnits, fraction)
     setAmount(portion > 0n ? formatUnits(portion, decimals) : '0')
   }
 
@@ -555,9 +590,9 @@ export default function ShieldedSend({
             {showChips && (
               <div className="flex shrink-0 items-center gap-1">
                 {([0.25, 0.5, 1] as const).map((f) =>
-                  // The relayer fee is only known at review, so a private Max cannot leave room
-                  // for it; shield keeps its fee back from the public balance instead.
-                  f === 1 && a !== 'shield' ? null : (
+                  // A private Max leaves room for the quoted fee, so it waits for the quote; shield
+                  // keeps its fee back from the public balance instead.
+                  f === 1 && a !== 'shield' && maxAmount === null ? null : (
                     <button
                       key={f}
                       onClick={() => fill(f)}
@@ -571,6 +606,11 @@ export default function ShieldedSend({
             )}
           </div>
           {exceedsBalance && <p className="text-xs text-destructive">Exceeds balance</p>}
+          {exceedsOnePayment && maxAmount !== null && (
+            <p className="text-xs text-destructive">
+              One payment can move at most {unit(maxAmount)} after the fee
+            </p>
+          )}
         </div>
 
         {recipientField()}
@@ -581,7 +621,11 @@ export default function ShieldedSend({
           <p className="px-1 text-[11px] text-muted-foreground">
             {a === 'unshield' && selfRelay
               ? `No relayer fee; your account pays the network fee, at most ${unit(NETWORK_FEE_CAP_STROOPS)}.`
-              : 'The relayer fee is quoted on the next step, before anything is sent.'}
+              : quote
+                ? `Relayer fee ${unit(quote.fee)}, confirmed on the next step before anything is sent.`
+                : quoteError
+                  ? `No fee quote yet: ${quoteError} The next step asks again.`
+                  : 'Asking the relayer for its fee...'}
           </p>
         )}
 
