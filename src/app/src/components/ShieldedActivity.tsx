@@ -146,7 +146,11 @@ function planStatus(p: ShieldedPlanView): RowStatus {
   }
   switch (p.state) {
     case 'prepared':
-      return { label: 'Prepared', tone: 'warn' }
+      return {
+        label: 'Prepared',
+        tone: 'warn',
+        detail: 'It may still land until its deadline passes, and holds its notes until then.',
+      }
     case 'submitted':
       return {
         label: p.relayerStatus === 'held' ? 'Held by the relayer' : 'Submitted',
@@ -161,7 +165,10 @@ function planStatus(p: ShieldedPlanView): RowStatus {
         detail: "The payout waits in the pool's exit queue and is paid in order.",
       }
     case 'settled':
-      return { label: `Paid out${unconfirmed}`, tone: 'ok' }
+      // A transfer settles as soon as it lands: its payment is the recipient's note, not a payout.
+      return p.kind === 'send'
+        ? { label: 'Sent', tone: 'ok' }
+        : { label: `Paid out${unconfirmed}`, tone: 'ok' }
     case 'stranded':
       return {
         label: `Stranded${unconfirmed}`,
