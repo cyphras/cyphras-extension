@@ -31,9 +31,15 @@ export default defineConfig({
     },
   },
   resolve: {
-    alias: {
-      '@constants': resolve(SRC_ROOT, 'constants'),
-      '@ext-types': resolve(SRC_ROOT, 'types'),
-    },
+    alias: [
+      { find: '@constants', replacement: resolve(SRC_ROOT, 'constants') },
+      { find: '@ext-types', replacement: resolve(SRC_ROOT, 'types') },
+      // The browser build of stellar-sdk bundles stellar-base and exports all of it, so the
+      // private payments SDK, whose peer dependency it is, takes that copy rather than a second.
+      {
+        find: /^@stellar\/stellar-base$/,
+        replacement: resolve(ROOT, 'node_modules/@stellar/stellar-sdk'),
+      },
+    ],
   },
 })
