@@ -1,7 +1,8 @@
 import type { TransactionWitness } from '@cyphras/private'
 import { snarkjsProver } from '@cyphras/private-prover-snarkjs'
 import {
-  PROVE_TARGET,
+  PROVER_PORT,
+  PROVER_WAKE,
   fromWire,
   toWire,
   type ProveArtifact,
@@ -46,22 +47,40 @@ async function prove(req: ProveRequest): Promise<ProveReply> {
   try {
     const [wasm, zkey] = await Promise.all([load(req.wasm), load(req.zkey)])
     const proof = await prover.prove(fromWire(req.witness) as TransactionWitness, { wasm, zkey })
-    return { ok: true, proof: toWire(proof) }
+    return { id: req.id, ok: true, proof: toWire(proof) }
   } catch {
     // The witness holds spending keys, so no error detail leaves this document.
-    return { ok: false }
+    return { id: req.id, ok: false }
   }
 }
 
-// Proofs are for the extension itself; a content script, which runs in a tab, is turned away.
-function fromExtension(sender: chrome.runtime.MessageSender): boolean {
-  return sender.id === chrome.runtime.id && !sender.tab
+// Witnesses come only over a port this document opens to the service worker, which accepts it
+// from this document alone; nothing else in the extension receives what is posted on it.
+let port: chrome.runtime.Port | null = null
+
+function connect(): void {
+  if (port) return
+  const opened = chrome.runtime.connect({ name: PROVER_PORT })
+  opened.onMessage.addListener((req: ProveRequest) => {
+    const run = queue.then(() => prove(req))
+    queue = run
+    void run.then((reply) => opened.postMessage(reply))
+  })
+  // A stopped worker drops the port; it is opened again when a new worker wakes this document,
+  // rather than at once, which would keep restarting the worker.
+  opened.onDisconnect.addListener(() => {
+    if (port === opened) port = null
+  })
+  port = opened
 }
 
-chrome.runtime.onMessage.addListener((msg: { target?: string }, sender, sendResponse) => {
-  if (msg?.target !== PROVE_TARGET || !fromExtension(sender)) return false
-  const run = queue.then(() => prove(msg as ProveRequest))
-  queue = run
-  void run.then(sendResponse)
-  return true
-})
+chrome.runtime.onMessage.addListener(
+  (msg: { target?: string }, sender: chrome.runtime.MessageSender) => {
+    if (msg?.target === PROVER_WAKE && sender.url === chrome.runtime.getURL('background.js')) {
+      connect()
+    }
+    return false
+  }
+)
+
+connect()

@@ -7,7 +7,14 @@ import type {
   TransactionWitness,
 } from '@cyphras/private'
 import { ensureOffscreen } from '../offscreenProver'
-import { PROVE_TARGET, fromWire, toWire, type ProveReply, type ProveRequest } from './wire'
+import {
+  PROVER_PORT,
+  PROVER_WAKE,
+  fromWire,
+  toWire,
+  type ProveReply,
+  type ProveRequest,
+} from './wire'
 
 // Package files read once and shared by every open wallet, so a second account does not hold
 // another copy of the zkey.
@@ -35,6 +42,48 @@ export function packagedArtifacts(paths: Readonly<Record<ArtifactName, string>>)
   }
 }
 
+const PORT_WAIT_MS = 15_000
+
+let proverPort: chrome.runtime.Port | null = null
+let portWaiters: ((port: chrome.runtime.Port) => void)[] = []
+const pending = new Map<number, (reply: ProveReply | undefined) => void>()
+let nextRequest = 1
+
+// Accepts the prover port, from the offscreen document only. Returns false for a port of another
+// kind.
+export function acceptProverPort(port: chrome.runtime.Port): boolean {
+  if (port.name !== PROVER_PORT) return false
+  if (port.sender?.url !== chrome.runtime.getURL('offscreen.html')) {
+    port.disconnect()
+    return true
+  }
+  proverPort = port
+  port.onMessage.addListener((reply: ProveReply) => {
+    pending.get(reply.id)?.(reply)
+    pending.delete(reply.id)
+  })
+  port.onDisconnect.addListener(() => {
+    if (proverPort === port) proverPort = null
+    for (const settle of pending.values()) settle(undefined)
+    pending.clear()
+  })
+  for (const waiter of portWaiters.splice(0)) waiter(port)
+  return true
+}
+
+async function connectedProver(): Promise<chrome.runtime.Port> {
+  await ensureOffscreen()
+  if (proverPort) return proverPort
+  return new Promise((resolve, reject) => {
+    portWaiters.push(resolve)
+    chrome.runtime.sendMessage({ target: PROVER_WAKE }).catch(() => undefined)
+    setTimeout(() => {
+      portWaiters = portWaiters.filter((w) => w !== resolve)
+      reject(new Error('the offscreen prover did not connect'))
+    }, PORT_WAIT_MS)
+  })
+}
+
 // snarkjs runs in the offscreen document, since it needs browser APIs the service worker lacks.
 // The document reads its own copy of the wasm and zkey from the package and checks it against the
 // same pins, which is far cheaper than passing megabytes through extension messaging.
@@ -44,14 +93,17 @@ export function offscreenProver(
 ): Prover {
   return {
     async prove(witness: TransactionWitness): Promise<Groth16Proof> {
-      await ensureOffscreen()
+      const port = await connectedProver()
       const request: ProveRequest = {
-        target: PROVE_TARGET,
+        id: nextRequest++,
         witness: toWire(witness),
         wasm: { path: paths.wasm, sha256: deployment.artifacts.wasm },
         zkey: { path: paths.zkey, sha256: deployment.artifacts.zkey },
       }
-      const reply = (await chrome.runtime.sendMessage(request)) as ProveReply | undefined
+      const reply = await new Promise<ProveReply | undefined>((settle) => {
+        pending.set(request.id, settle)
+        port.postMessage(request)
+      })
       if (!reply?.ok) throw new Error('the offscreen prover failed')
       return fromWire(reply.proof) as Groth16Proof
     },

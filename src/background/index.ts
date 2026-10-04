@@ -144,6 +144,7 @@ import {
 } from './shielded/wallet'
 import { errorView } from './shielded/errors'
 import { watchReviewPort } from './shielded/reviews'
+import { acceptProverPort } from './shielded/prover'
 import {
   trackInstall,
   trackDailyPing,
@@ -664,7 +665,7 @@ chrome.idle.onStateChanged.addListener((state) => {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (!port.sender || !isExtensionPage(port.sender)) return
-  if (watchReviewPort(port)) return
+  if (watchReviewPort(port) || acceptProverPort(port)) return
 
   if (port.name === 'wallet-popup') {
     port.onDisconnect.addListener(async () => {

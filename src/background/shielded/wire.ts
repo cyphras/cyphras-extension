@@ -17,8 +17,12 @@ export function fromWire(value: Wire): unknown {
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fromWire(v)]))
 }
 
-// The message the service worker sends the offscreen document for one proof.
-export const PROVE_TARGET = 'offscreen-prover'
+// The offscreen document opens a port of this name to the service worker, which posts proof
+// requests only on it: a port's messages reach the side that opened it alone, where a runtime
+// message reaches every extension page. The worker asks for the port with a wake message, which
+// carries nothing secret.
+export const PROVER_PORT = 'offscreen-prover'
+export const PROVER_WAKE = 'offscreen-prover-wake'
 
 export interface ProveArtifact {
   readonly path: string
@@ -26,10 +30,13 @@ export interface ProveArtifact {
 }
 
 export interface ProveRequest {
-  readonly target: typeof PROVE_TARGET
+  readonly id: number
   readonly witness: Wire
   readonly wasm: ProveArtifact
   readonly zkey: ProveArtifact
 }
 
-export type ProveReply = { readonly ok: true; readonly proof: Wire } | { readonly ok: false }
+export type ProveReply = { readonly id: number } & (
+  | { readonly ok: true; readonly proof: Wire }
+  | { readonly ok: false }
+)
