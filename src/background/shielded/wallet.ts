@@ -221,6 +221,7 @@ function planView(p: PlanView): ShieldedPlanView {
     createdAt: p.createdAt,
     payoutLeft: p.payoutLeft === undefined ? null : p.payoutLeft.toString(),
     exitConfirmed: orNull(p.exitConfirmed),
+    strandedExits: p.exitParts.filter((part) => part.stranded).map((part) => part.id),
     relayerStatus: orNull(p.relayerStatus),
     mustRetry: p.mustRetry,
     needsUserDecision: p.needsUserDecision,
@@ -357,6 +358,24 @@ export async function shieldedRetry(
   return startReviewed((confirm) =>
     watchingPlans(wallet, () => wallet.retry(planId, { confirm, ...route }))
   )
+}
+
+// The account signs these itself, as the depositor for a cancel and as any account for a refund or
+// a claim; each returns the transaction's hash.
+export async function shieldedAccountAction(
+  net: NetworkConfig,
+  poolId: string,
+  action: 'cancel' | 'refund' | 'claim',
+  id: number
+): Promise<string> {
+  const { wallet, signer } = await walletFor(net, poolId)
+  const run =
+    action === 'cancel'
+      ? wallet.cancelDeposit(id, signer)
+      : action === 'refund'
+        ? wallet.refundDeposit(id, signer)
+        : wallet.claimExit(id, signer)
+  return (await track(run)).txHash
 }
 
 export function shieldedDecide(reviewId: string, approve: boolean): Promise<ShieldedStep> {

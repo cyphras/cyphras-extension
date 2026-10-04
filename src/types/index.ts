@@ -177,6 +177,8 @@ export interface ShieldedPlanView {
   payoutLeft: string | null
   // False while the exit's state rests on the indexer's word alone; null for a plan with no exit.
   exitConfirmed: boolean | null
+  // Exits of this payout that the destination could not receive, each claimable on its own.
+  strandedExits: number[]
   relayerStatus: string | null
   // Paying again must go through a retry with the same notes, never through a new send.
   mustRetry: boolean

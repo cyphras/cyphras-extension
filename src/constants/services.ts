@@ -62,6 +62,11 @@ export const SERVICE_TYPES = {
   SHIELDED_SPEND: 'SHIELDED_SPEND',
   SHIELDED_RETRY: 'SHIELDED_RETRY',
   SHIELDED_DECIDE: 'SHIELDED_DECIDE',
+  // The account takes back a pending deposit, claims a flagged deposit's refund, or claims a
+  // stranded payout; id is the deposit ID or the exit ID.
+  SHIELDED_CANCEL: 'SHIELDED_CANCEL',
+  SHIELDED_REFUND: 'SHIELDED_REFUND',
+  SHIELDED_CLAIM: 'SHIELDED_CLAIM',
   // CCTP cross-chain USDC bridge (Stellar <-> Ethereum)
   CCTP_QUOTE: 'CCTP_QUOTE',
   CCTP_START: 'CCTP_START',

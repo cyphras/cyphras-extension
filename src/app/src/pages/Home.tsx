@@ -785,6 +785,8 @@ export default function Home() {
                   {shieldedStatus && (
                     <ShieldedActivity
                       status={shieldedStatus}
+                      poolId={poolId}
+                      onChanged={refreshShielded}
                       code={
                         selectedPool?.native ? 'XLM' : (selectedPool?.assetCode ?? shieldedLabel)
                       }

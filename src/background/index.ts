@@ -133,6 +133,7 @@ import {
 import {
   closeShieldedWallets,
   forgetShieldedAccounts,
+  shieldedAccountAction,
   settleShieldedWallets,
   shieldedDecide,
   shieldedReceiveAddress,
@@ -3398,6 +3399,34 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         const net = await getActiveNetwork()
         const step = await shieldedRetry(net, m.poolId, m.planId, m.selfRelay === true)
         sendResponse({ shieldedStep: step })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_CANCEL:
+    case SERVICE_TYPES.SHIELDED_REFUND:
+    case SERVICE_TYPES.SHIELDED_CLAIM: {
+      const m = message as unknown as { poolId?: string; id?: number }
+      if (
+        !isNonEmptyString(m.poolId) ||
+        typeof m.id !== 'number' ||
+        !Number.isSafeInteger(m.id) ||
+        m.id < 0
+      ) {
+        sendResponse({ error: 'poolId and id are required' })
+        return
+      }
+      const action =
+        message.type === SERVICE_TYPES.SHIELDED_CANCEL
+          ? 'cancel'
+          : message.type === SERVICE_TYPES.SHIELDED_REFUND
+            ? 'refund'
+            : 'claim'
+      try {
+        const net = await getActiveNetwork()
+        sendResponse({ txHash: await shieldedAccountAction(net, m.poolId, action, m.id) })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }

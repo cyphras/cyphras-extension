@@ -1,8 +1,10 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { ArrowDownToLine, ArrowUpFromLine, RotateCcw, Send } from 'lucide-react'
 import { formatUnits } from '@/lib/amount'
 import { shortAddress } from '@/lib/address'
+import { SERVICE_TYPES } from '@constants/services'
 import type {
+  ServiceResponse,
   ShieldedDepositView,
   ShieldedPlanView,
   ShieldedScreening,
@@ -41,17 +43,17 @@ const SCREENING: Record<ShieldedScreening, { label: string; tone: Tone; detail: 
   refused_by_reviewer: {
     label: 'Refused by a reviewer',
     tone: 'bad',
-    detail: 'The deposit goes back to your account.',
+    detail: 'It goes back to your account a day after the flag, or now if you cancel it.',
   },
   legal_hold: {
     label: 'Legal hold',
     tone: 'bad',
-    detail: "Held under an authority's order. You can still take it back yourself.",
+    detail: "Held under an authority's order. You can still cancel it to take it back.",
   },
   refused: {
     label: 'Refused by screening',
     tone: 'bad',
-    detail: 'The deposit goes back to your account.',
+    detail: 'It goes back to your account a day after the flag, or now if you cancel it.',
   },
   cancelled: { label: 'Cancelled', tone: 'muted', detail: 'You took the deposit back.' },
   unknown: {
@@ -60,6 +62,10 @@ const SCREENING: Record<ShieldedScreening, { label: string; tone: Tone; detail: 
     detail: 'This version does not know what this flag means.',
   },
 }
+
+// A cancel or refund sent early in a deposit's life settles only once the deposit's own proof can
+// no longer land, which takes a few minutes.
+const SENT_UNCONFIRMED = 'Sent. It counts once the network confirms it.'
 
 function depositStatus(d: ShieldedDepositView): RowStatus {
   const unconfirmed = d.confirmed === false ? ' (unconfirmed)' : ''
@@ -74,7 +80,12 @@ function depositStatus(d: ShieldedDepositView): RowStatus {
       if (d.flag) {
         const s = SCREENING[d.flag.kind]
         const code = d.flag.kind === 'unknown' ? ` (code ${d.flag.reason})` : ''
-        const refund = d.refundableAt ? ` Refundable from ${when(d.refundableAt)}.` : ''
+        const refund =
+          d.refundableAt === null
+            ? ''
+            : d.refundableAt * 1000 <= Date.now()
+              ? ' Refundable now.'
+              : ` Refundable from ${when(d.refundableAt)}.`
         return { label: s.label + code + unconfirmed, tone: s.tone, detail: s.detail + refund }
       }
       const at = d.earliestAdmission ? when(d.earliestAdmission) : null
@@ -98,12 +109,20 @@ function depositStatus(d: ShieldedDepositView): RowStatus {
     case 'admitted':
       return { label: `Admitted${unconfirmed}`, tone: 'ok' }
     case 'cancelled':
-      return { label: `Cancelled${unconfirmed}`, tone: 'muted' }
+      return {
+        label: `Cancelled${unconfirmed}`,
+        tone: 'muted',
+        detail: d.confirmed ? undefined : SENT_UNCONFIRMED,
+      }
     case 'refunded':
       return {
         label: `Refunded${unconfirmed}`,
         tone: 'muted',
-        detail: d.refundKind ? SCREENING[d.refundKind].label : undefined,
+        detail: d.confirmed
+          ? d.refundKind
+            ? SCREENING[d.refundKind].label
+            : undefined
+          : SENT_UNCONFIRMED,
       }
     case 'failed':
       return { label: 'Failed', tone: 'bad', detail: 'Nothing was deposited.' }
@@ -147,7 +166,7 @@ function planStatus(p: ShieldedPlanView): RowStatus {
       return {
         label: `Stranded${unconfirmed}`,
         tone: 'bad',
-        detail: 'The destination could not receive the payout; it waits for a claim.',
+        detail: 'The destination could not receive the payout. Claim it once it can.',
       }
     case 'superseded':
       return { label: 'Replaced by a retry', tone: 'muted' }
@@ -158,6 +177,55 @@ function planStatus(p: ShieldedPlanView): RowStatus {
         detail: 'Its deadline passed without it landing. A retry cannot pay twice.',
       }
   }
+}
+
+// What the account itself can do about a deposit or a payout, each a transaction it signs and pays
+// the network fee of.
+interface AccountAction {
+  key: string
+  type:
+    | typeof SERVICE_TYPES.SHIELDED_CANCEL
+    | typeof SERVICE_TYPES.SHIELDED_REFUND
+    | typeof SERVICE_TYPES.SHIELDED_CLAIM
+  id: number
+  label: string
+  explain: string
+}
+
+const FEE_NOTE = 'Your account pays a network fee of up to 1.01 XLM.'
+
+function depositActions(d: ShieldedDepositView, now: number): AccountAction[] {
+  if (d.state !== 'pending' || d.id === null) return []
+  const actions: AccountAction[] = [
+    {
+      key: `cancel:${d.id}`,
+      type: SERVICE_TYPES.SHIELDED_CANCEL,
+      id: d.id,
+      label: 'Cancel deposit',
+      explain: `The deposit goes back to your account. ${FEE_NOTE}`,
+    },
+  ]
+  if (d.flag && d.refundableAt !== null && d.refundableAt <= now) {
+    actions.push({
+      key: `refund:${d.id}`,
+      type: SERVICE_TYPES.SHIELDED_REFUND,
+      id: d.id,
+      label: 'Claim refund',
+      explain: `The refund goes to the account that deposited. ${FEE_NOTE}`,
+    })
+  }
+  return actions
+}
+
+function planActions(p: ShieldedPlanView): AccountAction[] {
+  if (p.state !== 'stranded') return []
+  return p.strandedExits.map((id) => ({
+    key: `claim:${id}`,
+    type: SERVICE_TYPES.SHIELDED_CLAIM,
+    id,
+    label: 'Claim payout',
+    explain: `The payout goes back into the exit queue and is paid once the destination can receive. Your account submits the claim and becomes publicly linked to this withdrawal. ${FEE_NOTE}`,
+  }))
 }
 
 function Row({
@@ -194,21 +262,92 @@ function Row({
 
 interface ShieldedActivityProps {
   status: ShieldedStatusView
+  poolId: string
   code: string
   decimals: number
   onRetry: (plan: ShieldedPlanView) => void
+  onChanged: () => void
 }
 
 // The account's deposits and payments with where each stands, newest first.
 export default function ShieldedActivity({
   status,
+  poolId,
   code,
   decimals,
   onRetry,
+  onChanged,
 }: ShieldedActivityProps) {
+  const [confirming, setConfirming] = useState<string | null>(null)
+  const [running, setRunning] = useState<string | null>(null)
+  const [outcomes, setOutcomes] = useState<Record<string, { ok: boolean; text: string }>>({})
   const plans = status.plans.filter((p) => p.state !== 'superseded')
   if (status.deposits.length === 0 && plans.length === 0) return null
   const amount = (units: string) => `${formatUnits(units, decimals)} ${code}`
+  const now = Math.floor(Date.now() / 1000)
+
+  function run(action: AccountAction) {
+    setConfirming(null)
+    setRunning(action.key)
+    chrome.runtime.sendMessage(
+      { type: action.type, poolId, id: action.id },
+      (r: ServiceResponse) => {
+        setRunning(null)
+        const failed = chrome.runtime.lastError ? 'Extension error' : r?.error
+        setOutcomes((prev) => ({
+          ...prev,
+          [action.key]: failed ? { ok: false, text: failed } : { ok: true, text: 'Sent.' },
+        }))
+        onChanged()
+      }
+    )
+  }
+
+  function actionsOf(actions: AccountAction[]): ReactNode {
+    if (actions.length === 0) return null
+    return (
+      <div className="mt-2 flex flex-col gap-2">
+        {actions.map((action) =>
+          confirming === action.key ? (
+            <div key={action.key} className="rounded-lg bg-muted px-3 py-2">
+              <p className="text-[11px] leading-snug text-muted-foreground">{action.explain}</p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  onClick={() => setConfirming(null)}
+                  className="cursor-pointer rounded-full px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-background"
+                >
+                  Keep
+                </button>
+                <button
+                  onClick={() => run(action)}
+                  className="cursor-pointer rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+                >
+                  {action.label}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div key={action.key}>
+              <button
+                onClick={() => setConfirming(action.key)}
+                disabled={running !== null}
+                className="inline-flex cursor-pointer items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-default disabled:opacity-50"
+              >
+                {running === action.key ? 'Sending...' : action.label}
+              </button>
+              {outcomes[action.key] && (
+                <p
+                  className={`mt-1 text-[11px] ${outcomes[action.key].ok ? 'text-muted-foreground' : 'text-destructive'}`}
+                >
+                  {outcomes[action.key].text}
+                </p>
+              )}
+            </div>
+          )
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -220,13 +359,15 @@ export default function ShieldedActivity({
           title={`${p.kind === 'send' ? 'Send' : 'Unshield'} ${amount(p.amount)} to ${shortAddress(p.to)}`}
           status={planStatus(p)}
           action={
-            needsRetry(p) && (
+            needsRetry(p) ? (
               <button
                 onClick={() => onRetry(p)}
                 className="mt-2 inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
               >
                 <RotateCcw size={12} /> Retry with the same notes
               </button>
+            ) : (
+              actionsOf(planActions(p))
             )
           }
         />
@@ -237,6 +378,7 @@ export default function ShieldedActivity({
           icon={<ArrowDownToLine size={14} />}
           title={`Shield ${amount(d.amount)}`}
           status={depositStatus(d)}
+          action={actionsOf(depositActions(d, now))}
         />
       ))}
     </div>

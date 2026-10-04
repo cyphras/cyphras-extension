@@ -16,8 +16,9 @@ function refuse(message: string): never {
   throw new CyphrasError('signer_mismatch', message)
 }
 
-// The account's key signs what the SDK builds as that account: a shield, or a self-relayed
-// unshield. It signs nothing but a call of this deployment's vault on this deployment's network.
+// The account's key signs what the SDK builds as that account: a shield, a self-relayed unshield
+// and the vault's cancel, refund and claim. It signs nothing but a call of this deployment's vault
+// on this deployment's network.
 export function vaultSigner(keypair: Keypair, deployment: Deployment): TransactionSigner {
   const publicKey = keypair.publicKey()
   return {
