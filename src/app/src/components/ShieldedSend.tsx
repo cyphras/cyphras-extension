@@ -761,7 +761,7 @@ export default function ShieldedSend({
         )
       case 'submitted':
         return result(
-          'Payment submitted',
+          a === 'unshield' ? 'Unshield submitted' : 'Payment submitted',
           'It counts once the pool shows it landed. Follow it under Private activity.',
           step.txHash
         )
