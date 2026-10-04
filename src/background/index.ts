@@ -143,6 +143,7 @@ import {
   shieldedStatus,
   shieldedSync,
 } from './shielded/wallet'
+import { SIGNATURE_MESSAGE } from '@cyphras/private'
 import { errorView } from './shielded/errors'
 import { watchReviewPort } from './shielded/reviews'
 import { acceptProverPort } from './shielded/prover'
@@ -1284,6 +1285,18 @@ async function handleExternalRequest(
         const msg = payload?.message as string
         if (!isNonEmptyString(msg)) {
           sendResponse({ error: { code: 'INVALID_PARAMS', message: 'message is required' } })
+          return
+        }
+        // A signature of this message is the seed of a private account that anyone holding it can
+        // spend, and the user's own private balance never needs it, so no site gets one.
+        if (msg === SIGNATURE_MESSAGE) {
+          sendResponse({
+            error: {
+              code: 'NOT_ALLOWED',
+              message:
+                'Cyphras does not sign the private account message: whoever holds that signature can spend the private balance it creates',
+            },
+          })
           return
         }
 
