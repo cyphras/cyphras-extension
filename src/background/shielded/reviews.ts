@@ -15,7 +15,8 @@ interface OpenReview {
 }
 
 const open = new Map<string, OpenReview>()
-// Moves on at every lock, so a spend that started before one cannot be confirmed after it.
+// Moves on whenever the wallets close, as at a lock, so a spend that started before cannot be
+// confirmed after.
 let generation = 0
 // Outcomes of reviews declined for the popup, as by a timeout. A late answer gets the outcome,
 // with the plan a repriced spend already saved, rather than a fresh start.

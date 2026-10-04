@@ -46,7 +46,20 @@ interface OpenWallet {
 
 // One SDK wallet per account and vault, holding the account's spending keys while the extension
 // is unlocked. The popup only ever sees what the views below carry.
-const wallets = new Map<string, Promise<OpenWallet>>()
+const wallets = new Map<
+  string,
+  { readonly walletId: string; readonly publicKey: string; readonly opening: Promise<OpenWallet> }
+>()
+
+// SDK operations still running; a reset waits for them so none writes records after it.
+const running = new Set<Promise<unknown>>()
+
+function track<T>(operation: Promise<T>): Promise<T> {
+  running.add(operation)
+  const done = () => running.delete(operation)
+  operation.then(done, done)
+  return operation
+}
 
 // The testnet proving key comes from a solo setup that can forge proofs, so private mode stays off
 // every other network until the mainnet key comes out of a multi-party ceremony.
@@ -135,16 +148,14 @@ async function walletFor(net: NetworkConfig, poolId: string | undefined): Promis
   const pool = poolOf(net, poolId)
   const { account, mnemonic } = await activeAccount()
   const key = [pool.deployment.id, account.walletId, account.index, account.publicKey].join('|')
-  let entry = wallets.get(key)
-  if (!entry) {
-    const opening = openWallet(pool, account, mnemonic)
-    opening.catch(() => {
-      if (wallets.get(key) === opening) wallets.delete(key)
-    })
-    wallets.set(key, opening)
-    entry = opening
-  }
-  return entry
+  const entry = wallets.get(key)
+  if (entry) return entry.opening
+  const opening = track(openWallet(pool, account, mnemonic))
+  opening.catch(() => {
+    if (wallets.get(key)?.opening === opening) wallets.delete(key)
+  })
+  wallets.set(key, { walletId: account.walletId, publicKey: account.publicKey, opening })
+  return opening
 }
 
 // Drops every open wallet and declines open reviews, so no spending key outlives the session.
@@ -153,10 +164,23 @@ export function closeShieldedWallets(): void {
   wallets.clear()
 }
 
+// Closes the wallets and waits for their operations still running, so that none writes records
+// after a reset deleted them.
+export async function settleShieldedWallets(): Promise<void> {
+  closeShieldedWallets()
+  await Promise.allSettled([...running])
+}
+
+// Drops the open wallets of accounts being removed, so their keys leave memory at once.
+export function forgetShieldedAccounts(
+  removed: (account: { readonly walletId: string; readonly publicKey: string }) => boolean
+): void {
+  for (const [key, entry] of wallets) if (removed(entry)) wallets.delete(key)
+}
+
 // Concurrent requests share one sync; its failure is kept for the status rather than thrown.
 function syncOnce(entry: OpenWallet): Promise<void> {
-  entry.sync ??= entry.wallet
-    .sync()
+  entry.sync ??= track(entry.wallet.sync())
     .then(
       () => {
         entry.syncedAt = Date.now()
@@ -265,7 +289,7 @@ export async function shieldedShield(
   const request = { amount, signer, whileSubmitting }
   const before = (await wallet.deposits()).length
   try {
-    const receipt = await wallet.shield(request)
+    const receipt = await track(wallet.shield(request))
     return { depositId: orNull(receipt.depositId), txHash: receipt.txHash }
   } catch (err) {
     // A deposit this shield saved and did not mark failed may still land.
@@ -292,7 +316,7 @@ async function watchingPlans(
 ): Promise<Submission> {
   const before = new Set((await wallet.plans()).map((p) => p.planId))
   try {
-    return await spend()
+    return await track(spend())
   } catch (err) {
     if ((await wallet.plans()).some((p) => !before.has(p.planId))) throw new MayStillLand(err)
     throw err

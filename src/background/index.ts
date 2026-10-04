@@ -132,6 +132,8 @@ import {
 } from './allowlistManager'
 import {
   closeShieldedWallets,
+  forgetShieldedAccounts,
+  settleShieldedWallets,
   shieldedDecide,
   shieldedReceiveAddress,
   shieldedRetry,
@@ -3039,7 +3041,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       await clearSessionMnemonic()
       await clearSessionExtraHDMnemonics()
       await clearSessionImportedSecrets()
-      closeShieldedWallets()
+      await settleShieldedWallets()
       await clearWallet()
       await chrome.storage.local.remove([
         FAILED_ATTEMPTS_KEY,
@@ -3943,6 +3945,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       store.accounts = store.accounts.filter((a) => a.publicKey !== removeTarget.publicKey)
       await saveAccountsStore(store)
+      forgetShieldedAccounts((a) => a.publicKey === removeTarget.publicKey)
 
       if (removeTarget.walletId?.startsWith('sk:')) {
         const importedKeys = await getImportedKeys()
@@ -4150,6 +4153,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       store.accounts = store.accounts.filter((a) => a.walletId !== message.walletId)
       await saveAccountsStore(store)
+      forgetShieldedAccounts((a) => a.walletId === message.walletId)
 
       if (message.walletId.startsWith('sk:')) {
         const importedKeys = await getImportedKeys()
