@@ -124,6 +124,9 @@ function sdkMessage(err: CyphrasError): string {
       return 'An earlier deposit is still being submitted and may yet land.'
     case 'not_found':
       return 'That payment is no longer known to this wallet.'
+    // Raised only once the payment is saved, so the error names its plan and it may still land.
+    case 'unexpected_error':
+      return 'An unexpected error stopped its submission after the payment was saved.'
     default:
       return sentence(err.message)
   }
