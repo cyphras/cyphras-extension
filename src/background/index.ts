@@ -143,7 +143,7 @@ import {
   shieldedStatus,
   shieldedSync,
 } from './shielded/wallet'
-import { SIGNATURE_MESSAGE } from '@cyphras/private'
+import { isKeyDerivationMessage } from '@cyphras/private'
 import { errorView } from './shielded/errors'
 import { watchReviewPort } from './shielded/reviews'
 import { acceptProverPort } from './shielded/prover'
@@ -1288,8 +1288,9 @@ async function handleExternalRequest(
           return
         }
         // A signature of this message is the seed of a private account that anyone holding it can
-        // spend, and the user's own private balance never needs it, so no site gets one.
-        if (msg === SIGNATURE_MESSAGE) {
+        // spend, and the user's own private balance never needs it, so no site gets one, whatever
+        // form the message comes in.
+        if (isKeyDerivationMessage(msg)) {
           sendResponse({
             error: {
               code: 'NOT_ALLOWED',
