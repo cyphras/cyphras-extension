@@ -1,4 +1,4 @@
-import type { Deployment, TransactionSigner } from '@cyphras/private'
+import { CyphrasError, type Deployment, type TransactionSigner } from '@cyphras/private'
 import { Address, type Keypair, Transaction, TransactionBuilder } from '@stellar/stellar-sdk'
 
 // True for a transaction from `source` whose one operation calls the vault.
@@ -10,6 +10,12 @@ function callsVault(tx: Transaction, source: string, vault: string): boolean {
   return Address.fromScAddress(op.func.invokeContract().contractAddress()).toString() === vault
 }
 
+// A refusal the SDK knows as its own, so a deposit whose signature is refused is voided rather
+// than left submitting.
+function refuse(message: string): never {
+  throw new CyphrasError('signer_mismatch', message)
+}
+
 // The account's key signs what the SDK builds as that account: a shield, or a self-relayed
 // unshield. It signs nothing but a call of this deployment's vault on this deployment's network.
 export function vaultSigner(keypair: Keypair, deployment: Deployment): TransactionSigner {
@@ -18,11 +24,16 @@ export function vaultSigner(keypair: Keypair, deployment: Deployment): Transacti
     publicKey,
     async signTransaction(envelope: string, networkPassphrase: string): Promise<string> {
       if (networkPassphrase !== deployment.networkPassphrase) {
-        throw new Error('refused to sign for another network')
+        refuse('refused to sign for another network')
       }
-      const tx = TransactionBuilder.fromXDR(envelope, networkPassphrase)
+      let tx: ReturnType<typeof TransactionBuilder.fromXDR>
+      try {
+        tx = TransactionBuilder.fromXDR(envelope, networkPassphrase)
+      } catch {
+        return refuse('the transaction to sign could not be read')
+      }
       if (!(tx instanceof Transaction) || !callsVault(tx, publicKey, deployment.vault)) {
-        throw new Error('refused to sign a transaction that is not a call of the vault')
+        refuse('refused to sign a transaction that is not a call of the vault')
       }
       tx.sign(keypair)
       return tx.toXDR()
