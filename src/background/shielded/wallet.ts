@@ -12,6 +12,7 @@ import { TESTNET_PASSPHRASE, type NetworkConfig } from '@constants/networks'
 import type {
   ShieldedDepositView,
   ShieldedErrorView,
+  ShieldedLimitsView,
   ShieldedPlanView,
   ShieldedQuoteView,
   ShieldedReceiptView,
@@ -312,6 +313,23 @@ export async function shieldedShield(
       throw new MayStillLand(err)
     }
     throw err
+  }
+}
+
+export async function shieldedLimits(
+  net: NetworkConfig,
+  poolId: string
+): Promise<ShieldedLimitsView> {
+  const { wallet, signer } = await walletFor(net, poolId)
+  const limits = await wallet.vaultLimits(signer.publicKey)
+  return {
+    minDeposit: limits.minDeposit.toString(),
+    depositRoom: limits.depositRoom.toString(),
+    largeDepositThreshold: limits.largeDepositThreshold.toString(),
+    delaySmall: limits.delaySmall,
+    delayLarge: limits.delayLarge,
+    depositsPaused: limits.depositsPaused,
+    haltedUntil: orNull(limits.haltedUntil),
   }
 }
 

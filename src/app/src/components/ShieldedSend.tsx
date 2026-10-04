@@ -25,6 +25,7 @@ import { shortAddress } from '@/lib/address'
 import { SERVICE_TYPES, SHIELDED_REVIEW_PORT } from '@constants/services'
 import type {
   ServiceResponse,
+  ShieldedLimitsView,
   ShieldedPlanView,
   ShieldedQuoteView,
   ShieldedReceiptView,
@@ -120,6 +121,13 @@ function ask<T>(message: object, pick: (r: ServiceResponse) => T | undefined): P
   })
 }
 
+// The pool's admission delays are minutes on testnet and can be hours elsewhere.
+function duration(seconds: number): string {
+  if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} min`
+  const hours = seconds / 3600
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} h`
+}
+
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4 py-2">
@@ -158,6 +166,9 @@ export default function ShieldedSend({
   // The fee a new send or unshield would pay now, or why the relayer could not say.
   const [quote, setQuote] = useState<ShieldedQuoteView | null>(null)
   const [quoteError, setQuoteError] = useState<string | null>(null)
+  // The pool's deposit limits for a shield, or why they could not be read.
+  const [limits, setLimits] = useState<ShieldedLimitsView | null>(null)
+  const [limitsError, setLimitsError] = useState<string | null>(null)
   const sheetRef = useRef<HTMLDivElement>(null)
   // Each opening of the sheet is a session; a reply from an older session, or one that arrives once
   // the sheet is closed, never paints.
@@ -307,6 +318,21 @@ export default function ShieldedSend({
     }
   }, [open, a, retryPlan, poolId, selfRelay, spendable])
 
+  useEffect(() => {
+    setLimits(null)
+    setLimitsError(null)
+    if (!open || a !== 'shield') return
+    let current = true
+    ask({ type: SERVICE_TYPES.SHIELDED_LIMITS, poolId }, (r) => r.shieldedLimits).then((reply) => {
+      if (!current) return
+      if (reply.ok) setLimits(reply.value)
+      else setLimitsError(reply.error)
+    })
+    return () => {
+      current = false
+    }
+  }, [open, a, poolId])
+
   // A payment request of this session. A reply that comes after the session ended is dropped; the
   // background declined any review in it when the session's port went.
   const requestStep = useCallback(async (message: object): Promise<Reply<ShieldedStep> | null> => {
@@ -354,6 +380,17 @@ export default function ShieldedSend({
   const maxAmount = a !== 'shield' && quote ? BigInt(quote.maxAmount) : null
   const exceedsOnePayment =
     !exceedsBalance && units !== null && maxAmount !== null && units > maxAmount
+  // Why the pool would refuse this deposit now, as far as its limits tell.
+  const depositRefusal =
+    a !== 'shield' || !limits || units === null || units <= 0n
+      ? null
+      : limits.depositsPaused || limits.haltedUntil !== null
+        ? 'The pool is not taking deposits now.'
+        : units < BigInt(limits.minDeposit)
+          ? `The smallest deposit the pool takes is ${unit(limits.minDeposit)}.`
+          : units > BigInt(limits.depositRoom)
+            ? `The pool takes at most ${unit(limits.depositRoom)} from this account now.`
+            : null
 
   // The address prefix of this network, taken from the account's own private address.
   const privatePrefix = status ? status.address.slice(0, status.address.indexOf('1') + 1) : 'cy'
@@ -368,6 +405,7 @@ export default function ShieldedSend({
     units > 0n &&
     !exceedsBalance &&
     !exceedsOnePayment &&
+    depositRefusal === null &&
     (a === 'shield' || to !== '') &&
     recipientValid
 
@@ -611,6 +649,7 @@ export default function ShieldedSend({
               One payment can move at most {unit(maxAmount)} after the fee
             </p>
           )}
+          {depositRefusal && <p className="text-xs text-destructive">{depositRefusal}</p>}
         </div>
 
         {recipientField()}
@@ -659,11 +698,32 @@ export default function ShieldedSend({
             </span>
           </Row>
           <Row label="Network fee">Up to {unit(NETWORK_FEE_CAP_STROOPS)}, from your account</Row>
+          {limits && (
+            <>
+              <Row label="Pool takes">
+                {unit(limits.minDeposit)} to {unit(limits.depositRoom)} now
+              </Row>
+              <Row label="Usable after">
+                Screening and{' '}
+                {duration(
+                  units >= BigInt(limits.largeDepositThreshold)
+                    ? limits.delayLarge
+                    : limits.delaySmall
+                )}
+              </Row>
+            </>
+          )}
         </div>
         <p className="px-1 text-[11px] leading-snug text-muted-foreground">
-          Deposits are screened and wait out the pool's delay before they can be spent; the pending
-          deposit shows when. Your account is public as the depositor.
+          {limits
+            ? `Deposits are screened, then wait ${duration(limits.delaySmall)} before they can be spent, or ${duration(limits.delayLarge)} from ${unit(limits.largeDepositThreshold)}; the pending deposit shows when. Your account is public as the depositor.`
+            : "Deposits are screened and wait out the pool's delay before they can be spent; the pending deposit shows when. Your account is public as the depositor."}
         </p>
+        {limitsError && (
+          <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+            The pool's limits could not be read: {limitsError}
+          </p>
+        )}
         {submittingDeposit && (
           <label className="flex cursor-pointer items-start gap-3 rounded-xl bg-amber-500/10 px-4 py-3">
             <input
@@ -688,7 +748,7 @@ export default function ShieldedSend({
           </Button>
           <Button
             className="flex-1"
-            disabled={submittingDeposit && !shieldAnyway}
+            disabled={(submittingDeposit && !shieldAnyway) || depositRefusal !== null}
             onClick={approveShield}
           >
             Approve

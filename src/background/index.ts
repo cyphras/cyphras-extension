@@ -136,6 +136,7 @@ import {
   shieldedAccountAction,
   settleShieldedWallets,
   shieldedDecide,
+  shieldedLimits,
   shieldedQuote,
   shieldedReceiveAddress,
   shieldedRetry,
@@ -3359,6 +3360,21 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           m.whileSubmitting === true
         )
         sendResponse({ shieldedReceipt: receipt })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_LIMITS: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      try {
+        const net = await getActiveNetwork()
+        sendResponse({ shieldedLimits: await shieldedLimits(net, m.poolId) })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }

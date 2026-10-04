@@ -64,6 +64,8 @@ export const SERVICE_TYPES = {
   SHIELDED_DECIDE: 'SHIELDED_DECIDE',
   // The fee a send or unshield would pay now, and the most one payment can move with it.
   SHIELDED_QUOTE: 'SHIELDED_QUOTE',
+  // The pool's deposit limits and admission delays, for the active account as the depositor.
+  SHIELDED_LIMITS: 'SHIELDED_LIMITS',
   // The account takes back a pending deposit, claims a flagged deposit's refund, or claims a
   // stranded payout; id is the deposit ID or the exit ID.
   SHIELDED_CANCEL: 'SHIELDED_CANCEL',

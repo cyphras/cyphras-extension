@@ -212,6 +212,21 @@ export interface ShieldedQuoteView {
   maxAmount: string
 }
 
+// The pool's deposit limits as the chain shows them now, for the active account as the depositor.
+export interface ShieldedLimitsView {
+  minDeposit: string
+  // The largest deposit the pool takes now: within its maximum, its room before the TVL cap and
+  // what is left of the account's daily allowance.
+  depositRoom: string
+  // A deposit of at least this waits delayLarge seconds before it can be admitted, a smaller one
+  // delaySmall.
+  largeDepositThreshold: string
+  delaySmall: number
+  delayLarge: number
+  depositsPaused: boolean
+  haltedUntil: number | null // Unix seconds
+}
+
 export interface ShieldedReceiptView {
   depositId: number | null // null until a sync finds the ID
   txHash: string
@@ -304,6 +319,7 @@ export interface ServiceResponse {
   shieldedReceipt?: ShieldedReceiptView
   shieldedStep?: ShieldedStep
   shieldedQuote?: ShieldedQuoteView
+  shieldedLimits?: ShieldedLimitsView
   jobId?: string
   jobs?: CctpJobInfo[]
   maxFee?: string
