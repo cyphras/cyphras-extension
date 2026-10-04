@@ -28,6 +28,7 @@ import ShieldedSend, { type ShieldedAction } from '@/components/ShieldedSend'
 import ShieldedTokenPicker, { type ShieldedTokenRow } from '@/components/ShieldedTokenPicker'
 import ShieldedTokenSheet from '@/components/ShieldedTokenSheet'
 import ShieldedActivity from '@/components/ShieldedActivity'
+import { ShieldedStartFresh } from '@/components/ShieldedStartFresh'
 import { PrivateModeHint } from '@/components/PrivateModeHint'
 import { WhatsNewSheet } from '@/components/WhatsNewSheet'
 import { AnnouncementCarousel } from '@/components/AnnouncementCarousel'
@@ -536,7 +537,9 @@ export default function Home() {
   const shieldedNotice =
     shieldedStatus?.services === 'mismatch'
       ? 'A private pool service does not match this wallet, so shields and payments are paused.'
-      : (shieldedStatus?.stateReset ?? shieldedStatus?.syncError?.message ?? shieldedRequestError)
+      : (shieldedStatus?.stateReset ??
+        shieldedStatus?.syncError?.message ??
+        shieldedRequestError?.message)
 
   return (
     <>
@@ -774,12 +777,20 @@ export default function Home() {
                     ))}
                   </div>
 
-                  {shieldedNotice && (
-                    <Alert
-                      message={shieldedNotice}
-                      onRetry={refreshShielded}
-                      retrying={shieldedSyncing}
+                  {shieldedRequestError?.code === 'state_unassigned' ? (
+                    <ShieldedStartFresh
+                      poolId={shieldedRequestError.poolId}
+                      message={shieldedRequestError.message}
+                      onStarted={refreshShielded}
                     />
+                  ) : (
+                    shieldedNotice && (
+                      <Alert
+                        message={shieldedNotice}
+                        onRetry={refreshShielded}
+                        retrying={shieldedSyncing}
+                      />
+                    )
                   )}
 
                   {shieldedStatus && (

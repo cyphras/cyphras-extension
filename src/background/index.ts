@@ -142,6 +142,7 @@ import {
   shieldedRetry,
   shieldedShield,
   shieldedSpend,
+  shieldedStartFresh,
   shieldedStatus,
   shieldedSync,
 } from './shielded/wallet'
@@ -3360,6 +3361,21 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           m.whileSubmitting === true
         )
         sendResponse({ shieldedReceipt: receipt })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_START_FRESH: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      try {
+        const net = await getActiveNetwork()
+        sendResponse({ shieldedStatus: await shieldedStartFresh(net, m.poolId) })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }

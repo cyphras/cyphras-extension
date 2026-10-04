@@ -73,6 +73,8 @@ function sdkMessage(err: CyphrasError): string {
       return 'The proof did not verify, so nothing was sent. Try again.'
     case 'storage_unreadable':
       return 'The saved private balance could not be read.'
+    case 'state_unassigned':
+      return 'The private records stored for this account cannot be told apart from those of another pool, so this pool cannot open them.'
     case 'state_conflict':
       return 'The private balance changed while this ran. Try again.'
     case 'service_unavailable':

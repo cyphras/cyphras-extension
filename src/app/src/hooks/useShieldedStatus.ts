@@ -13,13 +13,20 @@ interface ShieldedPoolState {
   change24h: number | null
 }
 
+// Why a pool's status could not be read; code is the background's, as state_unassigned.
+export interface ShieldedStatusError {
+  poolId: string
+  message: string
+  code: string | null
+}
+
 interface ShieldedStatusState {
   byPool: Record<string, ShieldedPoolState>
   privateTotalUsd: number | null
   privateChangeUsd: number | null
   privateChangePct: number | null
   syncing: boolean
-  error: string | null
+  error: ShieldedStatusError | null
   // Syncs every pool with the chain; reload only rereads what the background holds.
   refresh: () => void
   reload: () => void
@@ -35,12 +42,17 @@ type StatusRequest = typeof SERVICE_TYPES.SHIELDED_STATUS | typeof SERVICE_TYPES
 function readStatus(
   type: StatusRequest,
   poolId: string
-): Promise<{ status: ShieldedStatusView | null; error: string | null }> {
+): Promise<{ status: ShieldedStatusView | null; error: ShieldedStatusError | null }> {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ type, poolId }, (r: ServiceResponse) => {
-      if (chrome.runtime.lastError) resolve({ status: null, error: 'Extension error' })
-      else if (r?.shieldedStatus) resolve({ status: r.shieldedStatus, error: null })
-      else resolve({ status: null, error: r?.error ?? 'Private mode is unavailable' })
+      if (chrome.runtime.lastError) {
+        resolve({ status: null, error: { poolId, message: 'Extension error', code: null } })
+      } else if (r?.shieldedStatus) {
+        resolve({ status: r.shieldedStatus, error: null })
+      } else {
+        const message = r?.error ?? 'Private mode is unavailable'
+        resolve({ status: null, error: { poolId, message, code: r?.shieldedError?.code ?? null } })
+      }
     })
   })
 }
@@ -76,7 +88,7 @@ export function useShieldedStatus(
     Record<string, { price: number | null; change: number | null }>
   >({})
   const [syncing, setSyncing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ShieldedStatusError | null>(null)
 
   // Drops replies from a previous account or network so they never paint after a switch. Syncs of
   // the current scope can overlap, so syncing stays on until the last one ends.

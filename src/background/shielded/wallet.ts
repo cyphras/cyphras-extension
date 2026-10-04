@@ -124,7 +124,8 @@ async function accountKeypair(account: AccountInfo, mnemonic: string): Promise<K
 async function openWallet(
   pool: ShieldedDeployment,
   account: AccountInfo,
-  mnemonic: string
+  mnemonic: string,
+  startFresh: boolean
 ): Promise<OpenWallet> {
   const keypair = await accountKeypair(account, mnemonic)
   const wallet = await PrivateWallet.open({
@@ -137,6 +138,7 @@ async function openWallet(
     // Stored state that does not decrypt cannot be recovered, so the wallet starts fresh: the
     // chain rebuilds the notes and stateReset() says what was lost.
     resetUnreadableState: true,
+    resetUnassignedState: startFresh,
   })
   return {
     wallet,
@@ -148,14 +150,18 @@ async function openWallet(
   }
 }
 
-async function walletFor(net: NetworkConfig, poolId: string | undefined): Promise<OpenWallet> {
+async function walletFor(
+  net: NetworkConfig,
+  poolId: string | undefined,
+  startFresh = false
+): Promise<OpenWallet> {
   assertShieldedAllowed(net)
   const pool = poolOf(net, poolId)
   const { account, mnemonic } = await activeAccount()
   const key = [pool.deployment.id, account.walletId, account.index, account.publicKey].join('|')
   const entry = wallets.get(key)
   if (entry) return entry.opening
-  const opening = track(openWallet(pool, account, mnemonic))
+  const opening = track(openWallet(pool, account, mnemonic, startFresh))
   opening.catch(() => {
     if (wallets.get(key)?.opening === opening) wallets.delete(key)
   })
@@ -284,6 +290,21 @@ export async function shieldedStatus(
   poolId: string
 ): Promise<ShieldedStatusView> {
   return statusOf(await walletFor(net, poolId))
+}
+
+// A stored state that every vault of the network shares and that cannot be assigned to this one
+// keeps the pool from opening. On the user's word the pool opens on a fresh state instead, which the
+// SDK does only when asked, leaving those records stored; any other open is left as it is.
+export async function shieldedStartFresh(
+  net: NetworkConfig,
+  poolId: string
+): Promise<ShieldedStatusView> {
+  try {
+    return await statusOf(await walletFor(net, poolId))
+  } catch (err) {
+    if (!(err instanceof CyphrasError && err.code === 'state_unassigned')) throw err
+  }
+  return statusOf(await walletFor(net, poolId, true))
 }
 
 export async function shieldedSync(
