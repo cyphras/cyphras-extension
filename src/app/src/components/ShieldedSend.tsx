@@ -621,8 +621,9 @@ export default function ShieldedSend({
               className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--primary)]"
             />
             <span className="text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-              An earlier deposit is still being submitted and may yet land. Shielding again could
-              deposit twice. Shield anyway.
+              An earlier deposit is still being submitted and may yet land. One whose transaction
+              never reached the network can stay this way for good, so shielding again is allowed,
+              but if the earlier one lands both are deposited. Shield anyway.
             </span>
           </label>
         )}

@@ -150,8 +150,9 @@ export interface ShieldedDepositView {
   flag: { reason: number; kind: ShieldedScreening } | null
   refundableAt: number | null // Unix seconds
   refundKind: ShieldedScreening | null
-  // False while the state rests on the indexer's word alone; null when the SDK does not say.
-  confirmed: boolean | null
+  // False while the state rests on the indexer's word alone, or on the wallet's own cancel or
+  // refund that not every RPC provider reports a success yet.
+  confirmed: boolean
 }
 
 export type ShieldedPlanState =
@@ -174,7 +175,7 @@ export interface ShieldedPlanView {
   txHash: string | null
   createdAt: number
   payoutLeft: string | null
-  // False while the exit's state rests on the indexer's word alone; null when the SDK does not say.
+  // False while the exit's state rests on the indexer's word alone; null for a plan with no exit.
   exitConfirmed: boolean | null
   relayerStatus: string | null
   // Paying again must go through a retry with the same notes, never through a new send.

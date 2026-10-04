@@ -59,7 +59,7 @@ function transactionFailedMessage(d: Details, fallback: string): string {
 
 function sdkMessage(err: CyphrasError): string {
   const d = err.details
-  switch (err.code as string) {
+  switch (err.code) {
     case 'invalid_address':
       return 'That is not a valid testnet private address (cyt1...).'
     case 'deployment_not_pinned':

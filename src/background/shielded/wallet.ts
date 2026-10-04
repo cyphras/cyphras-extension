@@ -31,10 +31,6 @@ import { declineAllReviews, decideReview, startReviewed } from './reviews'
 import { vaultSigner } from './signer'
 import { chromeStore } from './store'
 
-// Whether an exit or a deposit rests on checked chain events; undefined where the SDK does not say.
-type PlanFields = PlanView & { readonly exitConfirmed?: boolean }
-type DepositFields = DepositInfo & { readonly confirmed?: boolean }
-
 interface OpenWallet {
   readonly wallet: PrivateWallet
   readonly pool: ShieldedDeployment
@@ -198,7 +194,7 @@ function syncOnce(entry: OpenWallet): Promise<void> {
 
 const orNull = <T>(value: T | undefined): T | null => (value === undefined ? null : value)
 
-function depositView(d: DepositFields): ShieldedDepositView {
+function depositView(d: DepositInfo): ShieldedDepositView {
   return {
     id: orNull(d.id),
     amount: d.amount.toString(),
@@ -209,11 +205,11 @@ function depositView(d: DepositFields): ShieldedDepositView {
     flag: d.flag ? { reason: d.flag.reason, kind: d.flag.kind } : null,
     refundableAt: orNull(d.refundableAt),
     refundKind: orNull(d.refundKind),
-    confirmed: orNull(d.confirmed),
+    confirmed: d.confirmed,
   }
 }
 
-function planView(p: PlanFields): ShieldedPlanView {
+function planView(p: PlanView): ShieldedPlanView {
   return {
     planId: p.planId,
     kind: p.kind,
@@ -285,11 +281,9 @@ export async function shieldedShield(
   whileSubmitting: boolean
 ): Promise<ShieldedReceiptView> {
   const { wallet, signer } = await walletFor(net, poolId)
-  // whileSubmitting lets a shield go while an earlier deposit, which may yet land, is submitting.
-  const request = { amount, signer, whileSubmitting }
   const before = (await wallet.deposits()).length
   try {
-    const receipt = await track(wallet.shield(request))
+    const receipt = await track(wallet.shield({ amount, signer, whileSubmitting }))
     return { depositId: orNull(receipt.depositId), txHash: receipt.txHash }
   } catch (err) {
     // A deposit this shield saved and did not mark failed may still land.
