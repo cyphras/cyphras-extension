@@ -58,8 +58,10 @@ async function prove(req: ProveRequest): Promise<ProveReply> {
 // from this document alone; nothing else in the extension receives what is posted on it.
 let port: chrome.runtime.Port | null = null
 
+// A wake means the worker holds no port of this document, even if another extension page keeps
+// the old one open, so every wake replaces it.
 function connect(): void {
-  if (port) return
+  port?.disconnect()
   const opened = chrome.runtime.connect({ name: PROVER_PORT })
   opened.onMessage.addListener((req: ProveRequest) => {
     const run = queue.then(() => prove(req))
@@ -67,7 +69,8 @@ function connect(): void {
     void run.then((reply) => opened.postMessage(reply))
   })
   // A stopped worker drops the port; it is opened again when a new worker wakes this document,
-  // rather than at once, which would keep restarting the worker.
+  // rather than at once, which would keep restarting the worker. A reply that finds its port
+  // closed is lost, and the worker fails that proof.
   opened.onDisconnect.addListener(() => {
     if (port === opened) port = null
   })

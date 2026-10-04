@@ -46,7 +46,11 @@ const PORT_WAIT_MS = 15_000
 
 let proverPort: chrome.runtime.Port | null = null
 let portWaiters: ((port: chrome.runtime.Port) => void)[] = []
-const pending = new Map<number, (reply: ProveReply | undefined) => void>()
+// Requests by ID, with the port each went out on: a port that closes fails only its own.
+const pending = new Map<
+  number,
+  { readonly port: chrome.runtime.Port; readonly settle: (reply: ProveReply | undefined) => void }
+>()
 let nextRequest = 1
 
 // Accepts the prover port, from the offscreen document only. Returns false for a port of another
@@ -59,13 +63,18 @@ export function acceptProverPort(port: chrome.runtime.Port): boolean {
   }
   proverPort = port
   port.onMessage.addListener((reply: ProveReply) => {
-    pending.get(reply.id)?.(reply)
+    const request = pending.get(reply.id)
+    if (request?.port !== port) return
     pending.delete(reply.id)
+    request.settle(reply)
   })
   port.onDisconnect.addListener(() => {
     if (proverPort === port) proverPort = null
-    for (const settle of pending.values()) settle(undefined)
-    pending.clear()
+    for (const [id, request] of pending) {
+      if (request.port !== port) continue
+      pending.delete(id)
+      request.settle(undefined)
+    }
   })
   for (const waiter of portWaiters.splice(0)) waiter(port)
   return true
@@ -101,7 +110,7 @@ export function offscreenProver(
         zkey: { path: paths.zkey, sha256: deployment.artifacts.zkey },
       }
       const reply = await new Promise<ProveReply | undefined>((settle) => {
-        pending.set(request.id, settle)
+        pending.set(request.id, { port, settle })
         port.postMessage(request)
       })
       if (!reply?.ok) throw new Error('the offscreen prover failed')
