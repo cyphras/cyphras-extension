@@ -24,7 +24,7 @@ import {
   type AccountInfo,
 } from '../keyManager'
 import { SHIELDED_DEPLOYMENTS, type ShieldedDeployment } from './deployments'
-import { ShieldedRefusal, errorView } from './errors'
+import { MayStillLand, ShieldedRefusal, errorView } from './errors'
 import { offscreenProver, packagedArtifacts } from './prover'
 import { declineAllReviews, decideReview, startReviewed } from './reviews'
 import { vaultSigner } from './signer'
@@ -260,11 +260,21 @@ export async function shieldedShield(
   amount: bigint,
   whileSubmitting: boolean
 ): Promise<ShieldedReceiptView> {
-  const entry = await walletFor(net, poolId)
+  const { wallet, signer } = await walletFor(net, poolId)
   // whileSubmitting lets a shield go while an earlier deposit, which may yet land, is submitting.
-  const request = { amount, signer: entry.signer, whileSubmitting }
-  const receipt = await entry.wallet.shield(request)
-  return { depositId: orNull(receipt.depositId), txHash: receipt.txHash }
+  const request = { amount, signer, whileSubmitting }
+  const before = (await wallet.deposits()).length
+  try {
+    const receipt = await wallet.shield(request)
+    return { depositId: orNull(receipt.depositId), txHash: receipt.txHash }
+  } catch (err) {
+    // A deposit this shield saved and did not mark failed may still land.
+    const made = (await wallet.deposits()).slice(before)
+    if (made.some((d) => d.state === 'submitting' || d.state === 'pending')) {
+      throw new MayStillLand(err)
+    }
+    throw err
+  }
 }
 
 export interface SpendRequest {

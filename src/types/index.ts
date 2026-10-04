@@ -108,8 +108,9 @@ export interface CctpFeeBreakdown {
 export interface ShieldedErrorView {
   code: string
   message: string
-  // Set when the failure came after a payment was saved: it may still land, so paying again
-  // must go through a retry of this plan.
+  // The failure came after the deposit or payment was saved or sent, so it may still land: a
+  // payment is paid again only through a retry of planId, never through a new one.
+  mayLand?: boolean
   planId?: string
 }
 

@@ -1,6 +1,13 @@
 import { CyphrasError } from '@cyphras/private'
 import type { ShieldedErrorView } from '@ext-types/index'
 
+// A failure after the transaction was sent: the deposit or payment it carries may still land.
+export class MayStillLand extends Error {
+  constructor(cause: unknown) {
+    super('the transaction may still land', { cause })
+  }
+}
+
 // Errors the background raises itself before the SDK runs; their text is written for the user.
 export class ShieldedRefusal extends Error {
   readonly code: string
@@ -122,12 +129,13 @@ function sdkMessage(err: CyphrasError): string {
 }
 
 export function errorView(err: unknown): ShieldedErrorView {
+  if (err instanceof MayStillLand) return { ...errorView(err.cause), mayLand: true }
   if (err instanceof CyphrasError) {
     const { planId } = err.details
     return {
       code: err.code,
       message: sdkMessage(err),
-      ...(typeof planId === 'string' ? { planId } : {}),
+      ...(typeof planId === 'string' ? { planId, mayLand: true } : {}),
     }
   }
   if (err instanceof ShieldedRefusal) return { code: err.code, message: err.message }

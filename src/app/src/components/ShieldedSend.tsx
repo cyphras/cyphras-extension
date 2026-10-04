@@ -113,7 +113,7 @@ function ask<T>(message: object, pick: (r: ServiceResponse) => T | undefined): P
         ok: false,
         error: r?.error ?? 'Request failed',
         code: r?.shieldedError?.code,
-        mayLand: r?.shieldedError?.planId !== undefined,
+        mayLand: r?.shieldedError?.mayLand === true,
       })
     })
   })
