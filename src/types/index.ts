@@ -103,6 +103,115 @@ export interface CctpFeeBreakdown {
   destination: CctpFeeLeg
 }
 
+// Private mode views. Amounts are stroops as decimal strings; times are Unix milliseconds unless a
+// field says seconds.
+export interface ShieldedErrorView {
+  code: string
+  message: string
+  // Set when the failure came after a payment was saved: it may still land, so paying again
+  // must go through a retry of this plan.
+  planId?: string
+}
+
+export interface ShieldedBalanceView {
+  spendable: string
+  pendingDeposits: string
+  locked: string // inputs of payments not yet confirmed or dead
+  awaitingPayout: string // unshields waiting in the vault's exit queue
+}
+
+export type ShieldedDepositState =
+  | 'submitting'
+  | 'pending'
+  | 'admitted'
+  | 'cancelled'
+  | 'refunded'
+  | 'failed'
+
+// What a screening reason code means; 'unknown' says nothing about whether the deposit may still
+// be admitted.
+export type ShieldedScreening =
+  | 'held_for_review'
+  | 'refused_by_reviewer'
+  | 'legal_hold'
+  | 'refused'
+  | 'cancelled'
+  | 'unknown'
+
+export interface ShieldedDepositView {
+  id: number | null // null until the deposit's ID is known
+  amount: string
+  state: ShieldedDepositState
+  txHash: string | null
+  // Passed screening, so only the pool's delay remains; null while the wallet cannot tell.
+  attested: boolean | null
+  earliestAdmission: number | null // Unix seconds
+  flag: { reason: number; kind: ShieldedScreening } | null
+  refundableAt: number | null // Unix seconds
+  refundKind: ShieldedScreening | null
+  // False while the state rests on the indexer's word alone; null when the SDK does not say.
+  confirmed: boolean | null
+}
+
+export type ShieldedPlanState =
+  | 'prepared'
+  | 'submitted'
+  | 'confirmed'
+  | 'queued'
+  | 'settled'
+  | 'stranded'
+  | 'superseded'
+  | 'dead'
+
+export interface ShieldedPlanView {
+  planId: string
+  kind: 'send' | 'unshield'
+  amount: string
+  fee: string
+  to: string
+  state: ShieldedPlanState
+  txHash: string | null
+  createdAt: number
+  payoutLeft: string | null
+  // False while the exit's state rests on the indexer's word alone; null when the SDK does not say.
+  exitConfirmed: boolean | null
+  relayerStatus: string | null
+  // Paying again must go through a retry with the same notes, never through a new send.
+  mustRetry: boolean
+  needsUserDecision: boolean
+}
+
+export interface ShieldedStatusView {
+  address: string
+  balance: ShieldedBalanceView
+  deposits: ShieldedDepositView[]
+  plans: ShieldedPlanView[]
+  syncedAt: number | null
+  syncError: ShieldedErrorView | null
+  // 'mismatch': a service or the vault points elsewhere, so shields and spends are refused.
+  services: 'verified' | 'unverified' | 'mismatch'
+  stateReset: string | null
+}
+
+export interface ShieldedReceiptView {
+  depositId: number | null // null until a sync finds the ID
+  txHash: string
+}
+
+export interface ShieldedReviewView {
+  reviewId: string
+  kind: 'send' | 'unshield'
+  amount: string
+  fee: string
+  to: string
+  selfRelay: boolean
+  warnings: { code: string; message: string }[]
+}
+
+export type ShieldedStep =
+  | { kind: 'review'; review: ShieldedReviewView }
+  | { kind: 'submitted'; planId: string; txHash: string | null; fee: string }
+
 export interface ServicePayload {
   type: ServiceType
   password?: string
@@ -166,24 +275,12 @@ export interface ServiceResponse {
   subentryCount?: number
   secretKey?: string
   timeoutSeconds?: number
-  // Private mode (shielded). Amounts are stringified stroops to stay JSON-safe.
+  // Private mode (shielded); set beside `error` when a shielded request fails.
+  shieldedError?: ShieldedErrorView
   shieldedAddress?: string
-  shieldedBalance?: string
-  // Max movable in one relayed 2-note spend; decides single-tx vs auto-split loop
-  shieldedMaxSpendable?: string
-  // Unspent note count; sizes the auto-split loop (ceil(noteCount/2) chunks)
-  shieldedNoteCount?: string
-  shieldedScan?: { added: number; balance: string; maxSpendable: string; noteCount: string }
-  shieldedSend?: { hash: string; balance: string }
-  // One relayed chunk of an auto-split spend; UI loops until done is true
-  shieldedSpendChunk?: { done: boolean; remaining: string; sent: string; balance: string }
-  shieldedQuote?: {
-    fee: string
-    netCost: string
-    margin: string
-    marginBps: string
-    calibrated: boolean
-  }
+  shieldedStatus?: ShieldedStatusView
+  shieldedReceipt?: ShieldedReceiptView
+  shieldedStep?: ShieldedStep
   jobId?: string
   jobs?: CctpJobInfo[]
   maxFee?: string

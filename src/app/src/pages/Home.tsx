@@ -11,7 +11,7 @@ import { useBalances, groupBalances } from '@/hooks/useBalances'
 import { useHiddenAssets } from '@/hooks/useHiddenAssets'
 import { usePullToPrivate } from '@/hooks/usePullToPrivate'
 import { useShieldedAvailable } from '@/hooks/useShieldedAvailable'
-import { useShieldedBalances } from '@/hooks/useShieldedBalances'
+import { useShieldedStatus } from '@/hooks/useShieldedStatus'
 import { SectionMenu } from '@/components/SectionMenu'
 import { AssetIcon } from '@/components/token/AssetIcon'
 import { TokenRow } from '@/components/token/TokenRow'
@@ -27,6 +27,7 @@ import ShieldedReceive from '@/components/ShieldedReceive'
 import ShieldedSend, { type ShieldedAction } from '@/components/ShieldedSend'
 import ShieldedTokenPicker, { type ShieldedTokenRow } from '@/components/ShieldedTokenPicker'
 import ShieldedTokenSheet from '@/components/ShieldedTokenSheet'
+import ShieldedActivity from '@/components/ShieldedActivity'
 import { PrivateModeHint } from '@/components/PrivateModeHint'
 import { WhatsNewSheet } from '@/components/WhatsNewSheet'
 import { AnnouncementCarousel } from '@/components/AnnouncementCarousel'
@@ -47,8 +48,8 @@ import {
 } from '@/components/NetworkFilterSheet'
 import { Alert } from '@/components/Alert'
 import type { AssetBalance } from '@/hooks/useBalances'
-import { SERVICE_TYPES } from '@constants/services'
-import type { ServiceResponse } from '@ext-types/index'
+import type { ShieldedBalanceView, ShieldedPlanView } from '@ext-types/index'
+import { formatUnits } from '@/lib/amount'
 import {
   RefreshCw,
   Send,
@@ -119,6 +120,18 @@ function BalanceSkeleton() {
 }
 
 const HIDE_ZERO_KEY = 'cyphras_hide_zero_balances'
+
+// The part of a private balance that is not spendable yet, as short phrases for its token row.
+function pendingParts(b: ShieldedBalanceView, decimals: number, code: string): string[] {
+  const parts: [string, string][] = [
+    [b.pendingDeposits, 'pending'],
+    [b.locked, 'locked in payments'],
+    [b.awaitingPayout, 'awaiting payout'],
+  ]
+  return parts
+    .filter(([units]) => units !== '0')
+    .map(([units, label]) => `${formatUnits(units, decimals)} ${code} ${label}`)
+}
 
 function ActionButton({
   icon: Icon,
@@ -215,19 +228,20 @@ export default function Home() {
   const selectedPool =
     shieldedPools.find((p) => p.poolId === selectedPoolId) ?? shieldedPools[0] ?? null
   const poolId = selectedPool?.poolId ?? 'xlm'
-  // Scan up front while private mode is merely available so entering it is instant.
+  // Sync up front while private mode is merely available so entering it is instant.
   const {
     byPool: shieldedByPool,
     privateTotalUsd,
     privateChangeUsd,
     privateChangePct,
+    syncing: shieldedSyncing,
+    error: shieldedRequestError,
     refresh: refreshShielded,
-  } = useShieldedBalances(shieldedAvailable, activePublicKey, activeNetwork.id, shieldedPools)
-  const shieldedBalance = shieldedByPool[poolId]?.balance ?? null
-  const shieldedMaxSpendable = shieldedByPool[poolId]?.maxSpendable ?? null
-  const shieldedNoteCount = shieldedByPool[poolId]?.noteCount ?? null
+  } = useShieldedStatus(shieldedAvailable, active, activePublicKey, activeNetwork.id, shieldedPools)
+  const shieldedStatus = shieldedByPool[poolId]?.status ?? null
   const [shieldedReceiveOpen, setShieldedReceiveOpen] = useState(false)
   const [shieldedAction, setShieldedAction] = useState<ShieldedAction | null>(null)
+  const [retryPlan, setRetryPlan] = useState<ShieldedPlanView | null>(null)
   // Picker drives send/shield/unshield; tappedPoolId opens the per-token sheet.
   const [pickerAction, setPickerAction] = useState<ShieldedAction | null>(null)
   const [tappedPoolId, setTappedPoolId] = useState<string | null>(null)
@@ -334,7 +348,7 @@ export default function Home() {
   const shieldedMenuRef = useRef<HTMLDivElement>(null)
   const [shieldedMenuOpen, setShieldedMenuOpen] = useState(false)
   const [copiedCy1, setCopiedCy1] = useState(false)
-  const [shieldedAddr, setShieldedAddr] = useState<string | null>(null)
+  const shieldedAddr = shieldedStatus?.address ?? null
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -345,38 +359,6 @@ export default function Home() {
     if (shieldedMenuOpen) document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [shieldedMenuOpen])
-
-  // Prefetch the cy1 address so the kebab copy writes to the clipboard within the user gesture.
-  useEffect(() => {
-    if (!shieldedAvailable) {
-      setShieldedAddr(null)
-      return
-    }
-    let live = true
-    chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_RECEIVE_ADDRESS },
-      (r: ServiceResponse) => {
-        if (!live || chrome.runtime.lastError || r?.error) return
-        if (r?.shieldedAddress) setShieldedAddr(r.shieldedAddress)
-      }
-    )
-    return () => {
-      live = false
-    }
-  }, [shieldedAvailable, activePublicKey])
-
-  useEffect(() => {
-    // Repaint the private balance when a background spend or scan changes any shielded note store.
-    if (!shieldedAvailable || !active) return
-    const onChanged = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
-      if (area !== 'local') return
-      if (Object.keys(changes).some((k) => k.startsWith('cyphras_shielded_notes_'))) {
-        refreshShielded()
-      }
-    }
-    chrome.storage.onChanged.addListener(onChanged)
-    return () => chrome.storage.onChanged.removeListener(onChanged)
-  }, [shieldedAvailable, active, refreshShielded])
 
   useEffect(() => {
     // Same issuer-icon source as the public list so private surfaces show the real logo.
@@ -401,6 +383,7 @@ export default function Home() {
     shieldedScopeGuard.current = scope
     setShieldedReceiveOpen(false)
     setShieldedAction(null)
+    setRetryPlan(null)
     setPickerAction(null)
     setTappedPoolId(null)
     setSelectedPoolId(shieldedPools[0]?.poolId ?? 'xlm')
@@ -447,18 +430,6 @@ export default function Home() {
 
   const shieldedDecimals = selectedPool?.decimals ?? 7
   const shieldedLabel = selectedPool?.label ?? 'XLM'
-  // Unshield to a classic asset needs a trustline, proven by a matching balance entry.
-  const shieldedHasTrustline =
-    !selectedPool ||
-    selectedPool.native ||
-    balances.some((b) => b.code === selectedPool.assetCode && b.issuer === selectedPool.assetIssuer)
-
-  function stroopsToDisplay(stroops: string, decimals: number): string {
-    const base = 10n ** BigInt(decimals)
-    const v = BigInt(stroops)
-    const frac = (v % base).toString().padStart(decimals, '0').replace(/0+$/, '')
-    return frac ? `${v / base}.${frac}` : (v / base).toString()
-  }
 
   // Native pools use the inline XLM glyph; others reuse the public list's issuer icon.
   function poolIcon(pool: (typeof shieldedPools)[number]): string | undefined {
@@ -466,7 +437,8 @@ export default function Home() {
     return pool.icon ?? shieldedIcons.get(`${pool.assetCode}:${pool.assetIssuer}`)
   }
 
-  // Per-pool rows for the list and send/unshield pickers, built from the shielded scan.
+  // Per-pool rows for the list and send/unshield pickers: the spendable balance, with what
+  // waits in deposits, unconfirmed payments and the exit queue beside it.
   const shieldedTokenRows: ShieldedTokenRow[] = shieldedPools.map((pool) => {
     const pb = shieldedByPool[pool.poolId]
     const code = pool.native ? 'XLM' : (pool.assetCode ?? pool.label)
@@ -474,7 +446,8 @@ export default function Home() {
       poolId: pool.poolId,
       code,
       label: pool.label,
-      balance: pb?.balance != null ? stroopsToDisplay(pb.balance, pool.decimals) : '0',
+      balance: pb?.status ? formatUnits(pb.status.balance.spendable, pool.decimals) : '0',
+      pending: pb?.status ? pendingParts(pb.status.balance, pool.decimals, code) : [],
       usdValue: pb?.usdValue ?? null,
       usdPrice: pb?.usdPrice ?? null,
       icon: poolIcon(pool),
@@ -558,6 +531,12 @@ export default function Home() {
       ? filteredStats.changePct
       : dailyChangePct
   const cardChangeMasked = inPrivateCard ? hideBalance : masked
+
+  // Why the private balance may be stale or blocked, most serious first.
+  const shieldedNotice =
+    shieldedStatus?.services === 'mismatch'
+      ? 'A private pool service does not match this wallet, so shields and payments are paused.'
+      : (shieldedStatus?.stateReset ?? shieldedStatus?.syncError?.message ?? shieldedRequestError)
 
   return (
     <>
@@ -768,6 +747,11 @@ export default function Home() {
                             <p className="text-xs text-muted-foreground tracking-wider">
                               {hideBalance ? <PixelMask count={4} size="sm" /> : t.balance}
                             </p>
+                            {!hideBalance && t.pending && t.pending.length > 0 && (
+                              <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                                {t.pending.join(' · ')}
+                              </p>
+                            )}
                           </div>
                         </div>
                         <div className="text-right">
@@ -789,6 +773,25 @@ export default function Home() {
                       </button>
                     ))}
                   </div>
+
+                  {shieldedNotice && (
+                    <Alert
+                      message={shieldedNotice}
+                      onRetry={refreshShielded}
+                      retrying={shieldedSyncing}
+                    />
+                  )}
+
+                  {shieldedStatus && (
+                    <ShieldedActivity
+                      status={shieldedStatus}
+                      code={
+                        selectedPool?.native ? 'XLM' : (selectedPool?.assetCode ?? shieldedLabel)
+                      }
+                      decimals={shieldedDecimals}
+                      onRetry={(plan) => setRetryPlan(plan)}
+                    />
+                  )}
                 </>
               )}
 
@@ -1112,17 +1115,16 @@ export default function Home() {
       />
 
       <ShieldedSend
-        action={shieldedAction}
-        shieldedBalance={shieldedBalance}
-        maxSpendable={shieldedMaxSpendable}
-        noteCount={shieldedNoteCount}
+        action={retryPlan ? retryPlan.kind : shieldedAction}
+        retryPlan={retryPlan}
+        status={shieldedStatus}
         poolId={poolId}
         assetLabel={shieldedLabel}
         decimals={shieldedDecimals}
         assetCode={selectedPool?.assetCode}
-        assetIssuer={selectedPool?.assetIssuer}
         assetIcon={selectedPool ? poolIcon(selectedPool) : undefined}
         native={!!selectedPool?.native}
+        accountPk={activePublicKey}
         publicBalance={
           // Pools are Stellar-only while `balances` spans every chain; match on the
           // Stellar chain so the native pool reads XLM, not an EVM native such as ETH.
@@ -1137,16 +1139,15 @@ export default function Home() {
           )?.balance ?? null
         }
         subentryCount={subentryCount}
-        hasTrustline={shieldedHasTrustline}
-        horizonUrl={activeNetwork.horizonUrl}
-        networkPassphrase={activeNetwork.passphrase}
-        onTrustlineAdded={refresh}
         onChangeAsset={() => {
           // Reopen the picker for the current action so the chip switches pools.
           if (shieldedAction) setPickerAction(shieldedAction)
           setShieldedAction(null)
         }}
-        onClose={() => setShieldedAction(null)}
+        onClose={() => {
+          setShieldedAction(null)
+          setRetryPlan(null)
+        }}
         onDone={refreshShielded}
       />
 

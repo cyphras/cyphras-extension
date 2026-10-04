@@ -53,16 +53,15 @@ export const SERVICE_TYPES = {
   FETCH_BTC_ACTIVITY: 'FETCH_BTC_ACTIVITY',
   SIGN_AND_SUBMIT_EVM_PAYMENT: 'SIGN_AND_SUBMIT_EVM_PAYMENT',
   EVM_TX_STATUS: 'EVM_TX_STATUS',
-  // Shielded pool; poolId selects the per-pool vault/indexer/note store (optional for RECEIVE_ADDRESS)
+  // Private mode; poolId selects the pool (optional for RECEIVE_ADDRESS). Sends, unshields and
+  // retries return a review that SHIELDED_DECIDE answers.
   SHIELDED_RECEIVE_ADDRESS: 'SHIELDED_RECEIVE_ADDRESS',
-  SHIELDED_GET_BALANCE: 'SHIELDED_GET_BALANCE',
-  SHIELDED_SCAN: 'SHIELDED_SCAN',
-  SHIELDED_QUOTE: 'SHIELDED_QUOTE',
+  SHIELDED_STATUS: 'SHIELDED_STATUS',
+  SHIELDED_SYNC: 'SHIELDED_SYNC',
   SHIELDED_SHIELD: 'SHIELDED_SHIELD',
-  SHIELDED_SEND: 'SHIELDED_SEND',
-  SHIELDED_UNSHIELD: 'SHIELDED_UNSHIELD',
-  // One chunk of an auto-split spend, looped by the UI since the circuit spends at most two notes per tx
-  SHIELDED_SPEND_CHUNK: 'SHIELDED_SPEND_CHUNK',
+  SHIELDED_SPEND: 'SHIELDED_SPEND',
+  SHIELDED_RETRY: 'SHIELDED_RETRY',
+  SHIELDED_DECIDE: 'SHIELDED_DECIDE',
   // CCTP cross-chain USDC bridge (Stellar <-> Ethereum)
   CCTP_QUOTE: 'CCTP_QUOTE',
   CCTP_START: 'CCTP_START',

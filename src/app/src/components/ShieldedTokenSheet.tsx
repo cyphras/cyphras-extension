@@ -134,6 +134,11 @@ export default function ShieldedTokenSheet({
                 {t.usdValue !== null && (
                   <p className="mt-1 text-sm text-muted-foreground">{formatValue(t.usdValue)}</p>
                 )}
+                {t.pending && t.pending.length > 0 && (
+                  <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                    Not spendable yet: {t.pending.join(', ')}
+                  </p>
+                )}
               </div>
             </div>
 

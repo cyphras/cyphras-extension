@@ -11,7 +11,7 @@ interface ShieldedReceiveProps {
   onClose: () => void
 }
 
-// Shielded cy1 receive address plus QR; spend keys never leave the background.
+// The account's default private address with its QR; the keys behind it stay in the background.
 export default function ShieldedReceive({ open, onClose }: ShieldedReceiveProps) {
   const { activePublicKey } = useWallet()
   const [address, setAddress] = useState<string | null>(null)
@@ -23,7 +23,8 @@ export default function ShieldedReceive({ open, onClose }: ShieldedReceiveProps)
   // Drops a slow address response from a prior account so it cannot paint after a switch.
   const runIdRef = useRef(0)
 
-  // Re-derives the cy1 on account change, clearing the stale one first so it never shows for the wrong account.
+  // Reads the address again on account change, clearing the old one first so it never shows for
+  // the wrong account.
   useEffect(() => {
     if (!open) return
     const runId = ++runIdRef.current
@@ -149,8 +150,12 @@ export default function ShieldedReceive({ open, onClose }: ShieldedReceiveProps)
 
               <div className="rounded-xl bg-muted px-4 py-3 w-full">
                 <p className="text-xs text-muted-foreground text-center leading-relaxed">
-                  Share this private address to receive XLM or USDC. Senders and amounts stay
-                  hidden on-chain.
+                  Share this private address to receive XLM. Senders and amounts stay hidden
+                  on-chain.
+                </p>
+                <p className="mt-2 text-xs text-amber-600 dark:text-amber-400 text-center leading-relaxed">
+                  Testnet preview. The testnet pool can be reset, and its balances do not carry
+                  over.
                 </p>
               </div>
             </div>

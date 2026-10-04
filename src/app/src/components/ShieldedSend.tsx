@@ -1,51 +1,74 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { X, ArrowDownToLine, ArrowUpFromLine, Send as SendIcon, ChevronDown } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react'
+import {
+  X,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Send as SendIcon,
+  ChevronDown,
+  TriangleAlert,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { AddTrustlineSheet, type PendingAsset } from '@/components/AddTrustlineSheet'
 import { Cy1Avatar } from '@/components/Cy1Avatar'
+import { StellarAvatar } from '@/components/StellarAvatar'
 import { TokenStatusIcon } from '@/components/TxDetailParts'
+import { AssetIcon } from '@/components/token/AssetIcon'
 import { useStellarChain } from '@/hooks/useStellarChain'
+import { useAvatarKey } from '@/hooks/useAvatarKey'
+import {
+  formatUnits,
+  fractionUnits,
+  parseUnits,
+  sanitizeAmountInput,
+  spendableUnits,
+} from '@/lib/amount'
+import { shortAddress } from '@/lib/address'
 import { SERVICE_TYPES } from '@constants/services'
-import type { ServiceResponse } from '@ext-types/index'
+import type {
+  ServiceResponse,
+  ShieldedPlanView,
+  ShieldedReceiptView,
+  ShieldedReviewView,
+  ShieldedStatusView,
+  ShieldedStep,
+} from '@ext-types/index'
 
 export type ShieldedAction = 'send' | 'shield' | 'unshield'
 
 interface ShieldedSendProps {
   action: ShieldedAction | null
-  shieldedBalance: string | null
-  // Sum of the two largest unspent notes; amount over (maxSpendable - fee) auto-splits into 2-note chunks.
-  maxSpendable?: string | null
-  // Unspent note count; full balance moves in ceil(noteCount/2) relayed chunks. null when unknown.
-  noteCount?: string | null
+  // A stalled payment to pay again with its own notes, never with new ones.
+  retryPlan: ShieldedPlanView | null
+  status: ShieldedStatusView | null
   poolId: string
   assetLabel: string
   decimals: number
   assetCode?: string
-  assetIssuer?: string
   assetIcon?: string
   native?: boolean
+  accountPk: string
   publicBalance?: string | null
   subentryCount?: number
-  hasTrustline: boolean
-  horizonUrl: string
-  networkPassphrase: string
-  onTrustlineAdded: () => void
   onChangeAsset?: () => void
   onClose: () => void
   onDone: () => void
 }
 
+type Step =
+  | { kind: 'form' }
+  | { kind: 'retry' }
+  | { kind: 'shield-review' }
+  | { kind: 'preparing' }
+  | { kind: 'review'; review: ShieldedReviewView; repriced: boolean }
+  | { kind: 'working' }
+  | { kind: 'shielded'; receipt: ShieldedReceiptView }
+  | { kind: 'submitted'; txHash: string | null }
+  // A deposit or payment failed in a way that may still let it land.
+  | { kind: 'stopped'; message: string }
+
 const TITLES: Record<ShieldedAction, string> = {
   send: 'Private send',
   shield: 'Shield',
   unshield: 'Unshield',
-}
-
-// In-progress button labels per action.
-const BUSY: Record<ShieldedAction, string> = {
-  send: 'Sending...',
-  shield: 'Shielding...',
-  unshield: 'Unshielding...',
 }
 
 const ACTION_ICONS: Record<ShieldedAction, typeof SendIcon> = {
@@ -54,185 +77,166 @@ const ACTION_ICONS: Record<ShieldedAction, typeof SendIcon> = {
   unshield: ArrowUpFromLine,
 }
 
-// Fee reserve kept back on a native Shield max/fraction: a shield is a Soroban call that
-// verifies a ZK proof, far pricier than a classic payment, so 1 XLM keeps Max from
-// failing at submit. Whatever the fee does not use stays in the account.
-const SHIELD_FEE_HEADROOM_STROOPS = 10_000_000n
+// The most a transaction the account submits itself may pay the network: the SDK's caps of
+// 0.01 XLM to get included and 1 XLM of resources. Shield Max keeps it back, with the account's
+// minimum balance.
+const NETWORK_FEE_CAP_STROOPS = 10_100_000n
+const BASE_RESERVE_STROOPS = 5_000_000n
 
-// Sentinel doneHash for an auto-split spend, which has no single tx hash to show.
-const SPLIT_DONE = 'split-done'
+// Destinations an unshield can pay: an account, a muxed account or a contract.
+const STELLAR_DESTINATION = /^([GC][A-Z2-7]{55}|M[A-Z2-7]{68})$/
 
-function XlmIcon({ size }: { size: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="76 34 238 238"
-      xmlns="http://www.w3.org/2000/svg"
-      className="shrink-0"
-    >
-      <circle cx="195.1" cy="153.1" r="118.9" fill="black" />
-      <path
-        fill="white"
-        d="M164.1,92.3c22.9-11.7,50.4-9.5,71.1,5.6l-1.7,0.9l-11.1,5.7c-17.3-9.7-38.4-9.4-55.5,0.6c-17.1,10-27.6,28.3-27.6,48.2c0,2.4,0.2,4.9,0.5,7.3l93.9-47.8l19.4-9.9l22.8-11.6v13.9l-23,11.7l-11.1,5.7l-99,50.4l-5.5,2.8l-5.6,2.9l-17.3,8.8v-13.9l5.9-3c4.5-2.3,7.1-7,6.7-12c-0.1-1.7-0.2-3.5-0.2-5.2C126.9,127.5,141.3,104,164.1,92.3z"
-      />
-      <path
-        fill="white"
-        d="M275.9,119v13.9l-5.9,3c-4.5,2.3-7.1,7-6.7,12c0.1,1.7,0.2,3.5,0.2,5.2c0,25.7-14.4,49.2-37.3,60.8s-50.4,9.5-71.1-5.6l12.1-6.2l0.7-0.4c17.3,9.7,38.5,9.5,55.6-0.5c17.1-10,27.7-28.4,27.7-48.2c0-2.5-0.2-4.9-0.5-7.3l-94,47.9l-19.4,9.9l-22.7,11.6v-13.9l22.9-11.7l11.1-5.7L275.9,119z"
-      />
-    </svg>
-  )
+// mayLand marks a failure after which the deposit or payment may still land: it was saved
+// before it failed, or the extension restarted while it ran.
+type Reply<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; code?: string; mayLand: boolean }
+
+function ask<T>(message: object, pick: (r: ServiceResponse) => T | undefined): Promise<Reply<T>> {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(message, (r: ServiceResponse) => {
+      if (chrome.runtime.lastError) {
+        resolve({
+          ok: false,
+          error: 'The extension restarted. Check Private activity before trying again.',
+          mayLand: true,
+        })
+        return
+      }
+      const value = r ? pick(r) : undefined
+      if (value !== undefined) {
+        resolve({ ok: true, value })
+        return
+      }
+      resolve({
+        ok: false,
+        error: r?.error ?? 'Request failed',
+        code: r?.shieldedError?.code,
+        mayLand: r?.shieldedError?.planId !== undefined,
+      })
+    })
+  })
 }
 
-function AssetIcon({ icon, code, size = 22 }: { icon?: string; code: string; size?: number }) {
-  const [err, setErr] = useState(false)
-  if (code === 'XLM') {
-    return (
-      <div
-        style={{ width: size, height: size }}
-        className="rounded-full overflow-hidden bg-black shrink-0 flex items-center justify-center"
-      >
-        <XlmIcon size={size} />
-      </div>
-    )
-  }
-  if (icon && !err) {
-    return (
-      <img
-        src={icon}
-        alt={code}
-        style={{ width: size, height: size }}
-        className="rounded-full object-cover shrink-0"
-        onError={() => setErr(true)}
-      />
-    )
-  }
+function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div
-      style={{ width: size, height: size }}
-      className="rounded-full bg-muted shrink-0 flex items-center justify-center"
-    >
-      <span className="text-xs font-bold text-muted-foreground">{code.slice(0, 2)}</span>
+    <div className="flex items-center justify-between gap-4 py-2">
+      <span className="shrink-0 text-xs text-muted-foreground">{label}</span>
+      <div className="min-w-0 text-right text-xs text-foreground">{children}</div>
     </div>
   )
 }
 
-function toStroops(amount: string, decimals: number): bigint | null {
-  if (!/^\d*\.?\d*$/.test(amount) || amount === '' || amount === '.') return null
-  const [whole, frac = ''] = amount.split('.')
-  if (frac.length > decimals) return null
-  const padded = frac.padEnd(decimals, '0')
-  try {
-    const v = BigInt(whole || '0') * 10n ** BigInt(decimals) + BigInt(padded || '0')
-    return v > 0n ? v : null
-  } catch {
-    return null
-  }
-}
-
-function fromStroops(stroops: string, decimals: number): string {
-  const base = 10n ** BigInt(decimals)
-  const v = BigInt(stroops)
-  const frac = (v % base).toString().padStart(decimals, '0').replace(/0+$/, '')
-  return frac ? `${v / base}.${frac}` : (v / base).toString()
-}
-
-// Decimal string -> stroops for a display balance; accepts zero and returns 0n when unparseable.
-function decimalToStroops(amount: string, decimals: number): bigint {
-  if (!/^\d*\.?\d*$/.test(amount) || amount === '' || amount === '.') return 0n
-  const [whole, frac = ''] = amount.split('.')
-  try {
-    return (
-      BigInt(whole || '0') * 10n ** BigInt(decimals) +
-      BigInt(frac.slice(0, decimals).padEnd(decimals, '0') || '0')
-    )
-  } catch {
-    return 0n
-  }
-}
-
 export default function ShieldedSend({
   action,
-  shieldedBalance,
-  maxSpendable = null,
-  noteCount = null,
+  retryPlan,
+  status,
   poolId,
   assetLabel,
   decimals,
   assetCode,
-  assetIssuer,
   assetIcon,
   native = false,
+  accountPk,
   publicBalance = null,
   subentryCount = 0,
-  hasTrustline,
-  horizonUrl,
-  networkPassphrase,
-  onTrustlineAdded,
   onChangeAsset,
   onClose,
   onDone,
 }: ShieldedSendProps) {
-  const subtitles: Record<ShieldedAction, string> = {
-    send: `Send shielded ${assetLabel} to a private address`,
-    shield: `Move public ${assetLabel} into your private balance`,
-    unshield: `Move private ${assetLabel} back to your public balance`,
-  }
-
   const [recipient, setRecipient] = useState('')
   const [recipientFocused, setRecipientFocused] = useState(false)
   const [amount, setAmount] = useState('')
-  const [fee, setFee] = useState<string | null>(null)
-  const [submitting, setSubmitting] = useState(false)
+  const [selfRelay, setSelfRelay] = useState(false)
+  const [shieldAnyway, setShieldAnyway] = useState(false)
+  const [step, setStep] = useState<Step>({ kind: 'form' })
   const [error, setError] = useState<string | null>(null)
-  const [doneHash, setDoneHash] = useState<string | null>(null)
-  // Cumulative stroops delivered across auto-split chunks for the "X/Y" progress; null on single-tx spends.
-  const [sentProgress, setSentProgress] = useState<string | null>(null)
-  const [trustlineSheetOpen, setTrustlineSheetOpen] = useState(false)
   const sheetRef = useRef<HTMLDivElement>(null)
+  // The review the background holds open, declined if the sheet closes on it.
+  const openReviewRef = useRef<string | null>(null)
+  const stellarChain = useStellarChain()
+  const avatarKey = useAvatarKey()
 
   // Keep the last non-null action so content stays visible during the close slide.
   const lastActionRef = useRef<ShieldedAction | null>(null)
   if (action) lastActionRef.current = action
   const a = action ?? lastActionRef.current
   const open = action !== null
+  const chipCode = native ? 'XLM' : (assetCode ?? assetLabel)
+  const unit = (units: string | bigint) => `${formatUnits(units, decimals)} ${chipCode}`
+
+  const decline = useCallback(() => {
+    const reviewId = openReviewRef.current
+    openReviewRef.current = null
+    if (reviewId) {
+      chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_DECIDE, reviewId, approve: false })
+    }
+  }, [])
+
+  const close = useCallback(() => {
+    decline()
+    onClose()
+  }, [decline, onClose])
+
+  // The parent can close the sheet too, as on an account or network switch.
+  useEffect(() => {
+    if (!open) decline()
+  }, [open, decline])
+
+  // A service worker that gets no event for 30 seconds may stop, and the open review with it, so
+  // a cheap status read keeps it awake while the user reads the review.
+  useEffect(() => {
+    if (step.kind !== 'review') return
+    const timer = setInterval(() => {
+      chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_STATUS, poolId })
+    }, 20_000)
+    return () => clearInterval(timer)
+  }, [step.kind, poolId])
+
+  // A review comes back from the background either as the first step of a spend or after a
+  // relayer raised its fee; anything else ends the spend.
+  const followStep = useCallback(
+    (reply: Reply<ShieldedStep>, repriced: boolean) => {
+      if (!reply.ok) {
+        openReviewRef.current = null
+        if (reply.mayLand) {
+          setStep({ kind: 'stopped', message: reply.error })
+          onDone()
+          return
+        }
+        setError(reply.error)
+        setStep({ kind: retryPlan ? 'retry' : 'form' })
+        return
+      }
+      if (reply.value.kind === 'review') {
+        openReviewRef.current = reply.value.review.reviewId
+        setStep({ kind: 'review', review: reply.value.review, repriced })
+        return
+      }
+      openReviewRef.current = null
+      setStep({ kind: 'submitted', txHash: reply.value.txHash })
+      onDone()
+    },
+    [onDone, retryPlan]
+  )
 
   useEffect(() => {
     if (!open) return
-    setRecipient('')
+    setRecipient(retryPlan?.to ?? '')
     setRecipientFocused(false)
-    setAmount('')
+    setAmount(retryPlan ? formatUnits(retryPlan.amount, decimals) : '')
+    setSelfRelay(false)
+    setShieldAnyway(false)
     setError(null)
-    setDoneHash(null)
-    setSubmitting(false)
-    setSentProgress(null)
-    setTrustlineSheetOpen(false)
-  }, [open, action])
-
-  // The relayer fee applies to relayed spends (send + unshield); a shield is self-signed and free.
-  useEffect(() => {
-    if (!open || a === 'shield') {
-      setFee(null)
-      return
-    }
-    chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_QUOTE, poolId },
-      (r: ServiceResponse) => {
-        if (chrome.runtime.lastError || r?.error) return
-        if (r?.shieldedQuote) setFee(r.shieldedQuote.fee)
-      }
-    )
-  }, [open, a, poolId])
+    setStep({ kind: retryPlan ? 'retry' : 'form' })
+  }, [open, action, retryPlan, decimals])
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      // The trustline sheet layers above this one, so its clicks land outside sheetRef; ignore them.
-      if (trustlineSheetOpen) return
-      if (sheetRef.current && !sheetRef.current.contains(e.target as Node)) onClose()
+      if (sheetRef.current && !sheetRef.current.contains(e.target as Node)) close()
     }
     function handleKey(e: KeyboardEvent) {
-      if (trustlineSheetOpen) return
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') close()
     }
     if (open) {
       document.addEventListener('mousedown', handleClickOutside)
@@ -242,422 +246,574 @@ export default function ShieldedSend({
       document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('keydown', handleKey)
     }
-  }, [open, onClose, trustlineSheetOpen])
+  }, [open, close])
 
-  const stellarChain = useStellarChain()
-  const chipCode = native ? 'XLM' : (assetCode ?? assetLabel)
-
-  // Shield spends the public balance; send/unshield spend the private balance.
-  const balanceStr =
+  // Shield spends the public balance; send and unshield spend the private one.
+  const balanceUnits =
     a === 'shield'
-      ? publicBalance
-      : shieldedBalance !== null
-        ? fromStroops(shieldedBalance, decimals)
+      ? publicBalance === null
+        ? null
+        : spendableUnits(
+            publicBalance,
+            decimals,
+            undefined,
+            native
+              ? (2n + BigInt(subentryCount)) * BASE_RESERVE_STROOPS + NETWORK_FEE_CAP_STROOPS
+              : 0n
+          )
+      : status
+        ? BigInt(status.balance.spendable)
         : null
-  const hasBalance = balanceStr !== null
+  const units = parseUnits(amount, decimals)
+  const exceedsBalance = units !== null && balanceUnits !== null && units > balanceUnits
 
-  // Spendable stroops for the active action, used by the % buttons and the exceeds gate.
-  const spendableStroops = (() => {
-    if (a === 'shield') {
-      if (publicBalance === null) return 0n
-      const bal = decimalToStroops(publicBalance, decimals)
-      if (!native) return bal
-      const reserve = (2n + BigInt(subentryCount)) * 5_000_000n
-      const headroom = reserve + SHIELD_FEE_HEADROOM_STROOPS
-      return bal > headroom ? bal - headroom : 0n
-    }
-    // Send/unshield reserve one fee per relayed 2-note chunk; Max is balance minus that, floored at 0.
-    if (shieldedBalance === null) return 0n
-    const bal = BigInt(shieldedBalance)
-    const feeStroops = fee !== null ? BigInt(fee) : 0n
-    const notes = noteCount !== null ? BigInt(noteCount) : 1n
-    const chunks = notes > 0n ? (notes + 1n) / 2n : 1n
-    const feeReserve = feeStroops * chunks
-    return bal > feeReserve ? bal - feeReserve : 0n
-  })()
+  // The address prefix of this network, taken from the account's own private address.
+  const privatePrefix = status ? status.address.slice(0, status.address.indexOf('1') + 1) : 'cy'
+  const to = recipient.trim()
+  const recipientValid =
+    a === 'shield' || (a === 'send' ? to.startsWith(privatePrefix) : STELLAR_DESTINATION.test(to))
+  const submittingDeposit = status?.deposits.some((d) => d.state === 'submitting') ?? false
+  const canReview =
+    step.kind === 'form' &&
+    units !== null &&
+    units > 0n &&
+    !exceedsBalance &&
+    (a === 'shield' || to !== '') &&
+    recipientValid
 
-  function fillFraction(fraction: number) {
-    const portion = (spendableStroops * BigInt(Math.round(fraction * 100))) / 100n
-    setAmount(portion > 0n ? fromStroops(portion.toString(), decimals) : '0')
+  function fill(fraction: number) {
+    if (balanceUnits === null) return
+    const portion = fraction === 1 ? balanceUnits : fractionUnits(balanceUnits, fraction)
+    setAmount(portion > 0n ? formatUnits(portion, decimals) : '0')
   }
 
-  function fillMax() {
-    setAmount(spendableStroops > 0n ? fromStroops(spendableStroops.toString(), decimals) : '0')
-  }
-
-  const stroops = toStroops(amount, decimals)
-  const exceedsBalance = stroops !== null && stroops > spendableStroops
-
-  const recipientValid = a !== 'send' || recipient.trim().toLowerCase().startsWith('cy1')
-  // Unshield lands on the user's public account, so a non-native pool needs its trustline first.
-  const needsTrustline = a === 'unshield' && !!assetCode && !hasTrustline
-  const canSubmit =
-    !submitting && stroops !== null && !exceedsBalance && recipientValid && !needsTrustline
-
-  // Open the shared confirmation sheet only when both asset code and issuer exist.
-  const trustlineAsset: PendingAsset | null =
-    trustlineSheetOpen && assetCode && assetIssuer ? { code: assetCode, issuer: assetIssuer } : null
-
-  // Signs change_trust via the same background handler the public Add-Asset flow uses.
-  const confirmTrustline = useCallback(
-    (): Promise<{ txHash?: string; error?: string }> =>
-      new Promise((resolve) => {
-        chrome.runtime.sendMessage(
-          {
-            type: SERVICE_TYPES.ADD_TRUSTLINE,
-            trustline: { assetCode, assetIssuer },
-            horizonUrl,
-            networkPassphrase,
-          },
-          (r: ServiceResponse) => {
-            if (chrome.runtime.lastError) {
-              resolve({ error: 'Extension error' })
-              return
-            }
-            resolve({ txHash: r?.txHash, error: r?.error })
-          }
-        )
-      }),
-    [assetCode, assetIssuer, horizonUrl, networkPassphrase]
-  )
-
-  // One relayed chunk of the auto-split loop; resolves with the chunk result or an error string.
-  const spendChunk = useCallback(
-    (
-      chunkAction: 'send' | 'unshield',
-      remaining: bigint
-    ): Promise<{ done: boolean; remaining: string; sent: string } | { error: string }> =>
-      new Promise((resolve) => {
-        chrome.runtime.sendMessage(
-          {
-            type: SERVICE_TYPES.SHIELDED_SPEND_CHUNK,
-            poolId,
-            action: chunkAction,
-            recipient: chunkAction === 'send' ? recipient.trim() : null,
-            remaining: remaining.toString(),
-          },
-          (r: ServiceResponse) => {
-            if (chrome.runtime.lastError) {
-              resolve({ error: 'Extension error' })
-              return
-            }
-            if (r?.error) {
-              resolve({ error: r.error })
-              return
-            }
-            if (r?.shieldedSpendChunk) {
-              resolve(r.shieldedSpendChunk)
-              return
-            }
-            resolve({ error: 'Chunk failed' })
-          }
-        )
-      }),
-    [poolId, recipient]
-  )
-
-  const submit = useCallback(() => {
-    // Guard against a concurrent submit starting a parallel auto-split loop that double-spends notes.
-    if (submitting || !a || stroops === null) return
-    setSubmitting(true)
+  function reviewRetry() {
+    if (!retryPlan) return
     setError(null)
+    setStep({ kind: 'preparing' })
+    ask(
+      {
+        type: SERVICE_TYPES.SHIELDED_RETRY,
+        poolId,
+        planId: retryPlan.planId,
+        selfRelay: retryPlan.kind === 'unshield' && selfRelay,
+      },
+      (r) => r.shieldedStep
+    ).then((reply) => followStep(reply, false))
+  }
 
-    // Shield and any send/unshield within (maxSpendable - fee) clear in one tx; larger falls to auto-split.
-    const feeStroops = fee !== null ? BigInt(fee) : 0n
-    const singleCap = maxSpendable !== null ? BigInt(maxSpendable) - feeStroops : spendableStroops
-    const singleTx = a === 'shield' || stroops <= singleCap
-
-    if (singleTx) {
-      const msg =
-        a === 'send'
-          ? {
-              type: SERVICE_TYPES.SHIELDED_SEND,
-              poolId,
-              recipient: recipient.trim(),
-              amount: stroops.toString(),
-            }
-          : a === 'shield'
-            ? { type: SERVICE_TYPES.SHIELDED_SHIELD, poolId, amount: stroops.toString() }
-            : { type: SERVICE_TYPES.SHIELDED_UNSHIELD, poolId, amount: stroops.toString() }
-      chrome.runtime.sendMessage(msg, (r: ServiceResponse) => {
-        setSubmitting(false)
-        if (chrome.runtime.lastError) {
-          setError('Extension error')
-          return
-        }
-        if (r?.error) {
-          setError(r.error)
-          return
-        }
-        if (r?.shieldedSend) {
-          setDoneHash(r.shieldedSend.hash)
-          onDone()
-        }
-      })
+  function review() {
+    if (!a || units === null) return
+    setError(null)
+    if (a === 'shield') {
+      setShieldAnyway(false)
+      setStep({ kind: 'shield-review' })
       return
     }
+    setStep({ kind: 'preparing' })
+    ask(
+      {
+        type: SERVICE_TYPES.SHIELDED_SPEND,
+        poolId,
+        kind: a,
+        to,
+        amount: units.toString(),
+        selfRelay: a === 'unshield' && selfRelay,
+      },
+      (r) => r.shieldedStep
+    ).then((reply) => followStep(reply, false))
+  }
 
-    // Auto-split: deliver the amount in successive relayed 2-note chunks until the backend reports done.
-    const total = stroops
-    setSentProgress('0')
-    const run = async () => {
-      let remaining = total
-      const chunkAction = a === 'send' ? 'send' : 'unshield'
-      while (remaining > 0n) {
-        const res = await spendChunk(chunkAction, remaining)
-        if ('error' in res) {
-          setSubmitting(false)
-          setSentProgress(null)
-          setError(res.error)
+  function confirmReview(reviewId: string) {
+    openReviewRef.current = null
+    setStep({ kind: 'working' })
+    ask(
+      { type: SERVICE_TYPES.SHIELDED_DECIDE, reviewId, approve: true },
+      (r) => r.shieldedStep
+    ).then((reply) => followStep(reply, true))
+  }
+
+  function cancelReview() {
+    decline()
+    setStep({ kind: retryPlan ? 'retry' : 'form' })
+  }
+
+  function approveShield() {
+    if (units === null) return
+    setStep({ kind: 'working' })
+    ask(
+      {
+        type: SERVICE_TYPES.SHIELDED_SHIELD,
+        poolId,
+        amount: units.toString(),
+        whileSubmitting: submittingDeposit && shieldAnyway,
+      },
+      (r) => r.shieldedReceipt
+    ).then((reply) => {
+      // A failed shield may have left its deposit submitting, which the next review must show.
+      onDone()
+      if (!reply.ok) {
+        if (reply.mayLand) {
+          setStep({ kind: 'stopped', message: reply.error })
           return
         }
-        remaining = BigInt(res.remaining)
-        setSentProgress((total - remaining).toString())
-        if (res.done) break
+        // An earlier deposit started submitting meanwhile; the review asks again.
+        if (reply.code === 'deposit_submitting') {
+          setShieldAnyway(false)
+          setStep({ kind: 'shield-review' })
+        } else {
+          setStep({ kind: 'form' })
+        }
+        setError(reply.error)
+        return
       }
-      setSubmitting(false)
-      setSentProgress(null)
-      // No single tx hash spans the split; SPLIT_DONE tells the success screen to omit the hash line.
-      setDoneHash(SPLIT_DONE)
+      setStep({ kind: 'shielded', receipt: reply.value })
       onDone()
-    }
-    run()
-  }, [
-    submitting,
-    a,
-    stroops,
-    recipient,
-    poolId,
-    onDone,
-    fee,
-    maxSpendable,
-    spendableStroops,
-    spendChunk,
-  ])
+    })
+  }
 
   const Icon = a ? ACTION_ICONS[a] : SendIcon
+  const subtitles: Record<ShieldedAction, string> = {
+    send: `Send shielded ${assetLabel} to a private address`,
+    shield: `Move public ${assetLabel} into your private balance`,
+    unshield: `Move private ${assetLabel} to any Stellar address`,
+  }
 
-  // During auto-split the button shows chunk progress; otherwise the single-tx gerund or action title.
-  const submitLabel = (() => {
-    if (!a) return ''
-    if (submitting && sentProgress !== null) {
-      if (a === 'unshield') return 'Unshielding chunk...'
-      const total = stroops !== null ? fromStroops(stroops.toString(), decimals) : '0'
-      return `Sending ${fromStroops(sentProgress, decimals)}/${total}`
+  function recipientField() {
+    if (a === 'shield') return null
+    const showChip = recipientValid && to.length >= 20 && !recipientFocused
+    return (
+      <div className="flex flex-col gap-1.5 rounded-xl bg-card px-4 py-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">To</p>
+          {a === 'unshield' && to !== accountPk && (
+            <button
+              type="button"
+              onClick={() => setRecipient(accountPk)}
+              className="cursor-pointer text-xs font-medium text-primary hover:underline"
+            >
+              My account
+            </button>
+          )}
+        </div>
+        {showChip ? (
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setRecipientFocused(true)}
+              className="flex min-w-0 cursor-pointer items-center gap-2"
+            >
+              {a === 'send' ? (
+                <Cy1Avatar address={to} size={22} />
+              ) : (
+                <StellarAvatar publicKey={avatarKey(to)} size={22} />
+              )}
+              <span className="font-mono text-sm text-foreground">
+                {`${to.slice(0, 8)}...${to.slice(-6)}`}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setRecipient('')
+                setRecipientFocused(true)
+              }}
+              aria-label="Clear recipient"
+              className="ml-2 shrink-0 cursor-pointer p-1 text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ) : (
+          <input
+            value={recipient}
+            onChange={(e) => setRecipient(e.target.value)}
+            onFocus={() => setRecipientFocused(true)}
+            onBlur={() => setRecipientFocused(false)}
+            placeholder={a === 'send' ? `${privatePrefix}...` : 'G...'}
+            spellCheck={false}
+            autoCapitalize="none"
+            className="w-full bg-transparent font-mono text-sm text-foreground outline-none placeholder:text-muted-foreground"
+          />
+        )}
+        {to !== '' && !recipientValid && (
+          <p className="text-xs text-destructive">
+            {a === 'send'
+              ? `Private addresses on this network start with ${privatePrefix}`
+              : 'Enter a Stellar address (G..., M... or C...)'}
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  function selfRelayOption() {
+    return (
+      <label className="flex cursor-pointer items-start gap-3 rounded-xl bg-card px-4 py-3">
+        <input
+          type="checkbox"
+          checked={selfRelay}
+          onChange={(e) => setSelfRelay(e.target.checked)}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--primary)]"
+        />
+        <span className="flex flex-col gap-0.5">
+          <span className="text-sm text-foreground">Submit without a relayer</span>
+          <span className="text-[11px] leading-snug text-muted-foreground">
+            Your account {shortAddress(accountPk)} pays the network fee and becomes publicly linked
+            to this withdrawal. Use it when relayers are unavailable.
+          </span>
+        </span>
+      </label>
+    )
+  }
+
+  function form() {
+    if (!a) return null
+    const showChips = balanceUnits !== null
+    return (
+      <>
+        <div
+          className={`flex flex-col gap-3 rounded-xl bg-card p-4 transition-colors ${exceedsBalance ? 'ring-1 ring-destructive/60' : ''}`}
+        >
+          <button
+            onClick={onChangeAsset}
+            aria-label="Change asset"
+            className="flex cursor-pointer items-center gap-2 self-start rounded-xl bg-muted px-3 py-2 transition-colors hover:bg-muted/70"
+          >
+            <AssetIcon icon={assetIcon} code={chipCode} />
+            <span className="text-sm font-semibold text-foreground">{chipCode}</span>
+            <ChevronDown size={14} className="text-muted-foreground" />
+          </button>
+
+          <input
+            inputMode="decimal"
+            placeholder="0.00"
+            value={amount}
+            onChange={(e) => {
+              const v = sanitizeAmountInput(e.target.value)
+              if (v !== null) setAmount(v)
+            }}
+            className="w-full border-none bg-transparent text-4xl font-bold text-foreground outline-none placeholder:text-muted-foreground/40"
+          />
+
+          <div className="flex items-center justify-between gap-2">
+            <p className="min-w-0 truncate text-xs text-muted-foreground">
+              {balanceUnits !== null
+                ? `${a === 'shield' ? 'Available' : 'Private balance'}: ${unit(balanceUnits)}`
+                : 'Balance: -'}
+            </p>
+            {showChips && (
+              <div className="flex shrink-0 items-center gap-1">
+                {([0.25, 0.5, 1] as const).map((f) =>
+                  // The relayer fee is only known at review, so a private Max cannot leave room
+                  // for it; shield keeps its fee back from the public balance instead.
+                  f === 1 && a !== 'shield' ? null : (
+                    <button
+                      key={f}
+                      onClick={() => fill(f)}
+                      className="cursor-pointer rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-muted/70"
+                    >
+                      {f === 1 ? 'Max' : `${f * 100}%`}
+                    </button>
+                  )
+                )}
+              </div>
+            )}
+          </div>
+          {exceedsBalance && <p className="text-xs text-destructive">Exceeds balance</p>}
+        </div>
+
+        {recipientField()}
+
+        {a === 'unshield' && selfRelayOption()}
+
+        {a !== 'shield' && (
+          <p className="px-1 text-[11px] text-muted-foreground">
+            {a === 'unshield' && selfRelay
+              ? `No relayer fee; your account pays the network fee, at most ${unit(NETWORK_FEE_CAP_STROOPS)}.`
+              : 'The relayer fee is quoted on the next step, before anything is sent.'}
+          </p>
+        )}
+
+        {error && (
+          <p className="rounded-xl bg-destructive/10 px-4 py-3 text-xs text-destructive">{error}</p>
+        )}
+
+        <Button className="w-full" disabled={!canReview} onClick={review}>
+          Review
+        </Button>
+      </>
+    )
+  }
+
+  function shieldReview() {
+    if (units === null) return null
+    return (
+      <>
+        <div className="rounded-xl bg-card px-4 py-2">
+          <Row label="You shield">{unit(units)}</Row>
+          <Row label="From">
+            <span className="inline-flex items-center gap-1.5 font-mono">
+              <StellarAvatar publicKey={avatarKey(accountPk)} size={14} />
+              {shortAddress(accountPk)}
+            </span>
+          </Row>
+          <Row label="To">
+            <span className="inline-flex items-center gap-1.5 font-mono">
+              {status && <Cy1Avatar address={status.address} size={14} />}
+              Your private balance
+            </span>
+          </Row>
+          <Row label="Network fee">Up to {unit(NETWORK_FEE_CAP_STROOPS)}, from your account</Row>
+        </div>
+        <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+          Deposits are screened and wait out the pool's delay before they can be spent; the pending
+          deposit shows when. Your account is public as the depositor.
+        </p>
+        {submittingDeposit && (
+          <label className="flex cursor-pointer items-start gap-3 rounded-xl bg-amber-500/10 px-4 py-3">
+            <input
+              type="checkbox"
+              checked={shieldAnyway}
+              onChange={(e) => setShieldAnyway(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--primary)]"
+            />
+            <span className="text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+              An earlier deposit is still being submitted and may yet land. Shielding again could
+              deposit twice. Shield anyway.
+            </span>
+          </label>
+        )}
+        {error && (
+          <p className="rounded-xl bg-destructive/10 px-4 py-3 text-xs text-destructive">{error}</p>
+        )}
+        <div className="flex gap-3">
+          <Button variant="outline" className="flex-1" onClick={() => setStep({ kind: 'form' })}>
+            Back
+          </Button>
+          <Button
+            className="flex-1"
+            disabled={submittingDeposit && !shieldAnyway}
+            onClick={approveShield}
+          >
+            Approve
+          </Button>
+        </div>
+      </>
+    )
+  }
+
+  function spendReview(r: ShieldedReviewView, repriced: boolean) {
+    const total = BigInt(r.amount) + BigInt(r.fee)
+    return (
+      <>
+        {repriced && (
+          <p className="rounded-xl bg-amber-500/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
+            The relayer changed its fee. Review the new fee before it proves again.
+          </p>
+        )}
+        <div className="rounded-xl bg-card px-4 py-2">
+          <Row label={r.kind === 'send' ? 'You send' : 'You unshield'}>{unit(r.amount)}</Row>
+          <Row label="To">
+            <span className="inline-flex items-center gap-1.5 font-mono">
+              {r.kind === 'send' ? (
+                <Cy1Avatar address={r.to} size={14} />
+              ) : (
+                <StellarAvatar publicKey={avatarKey(r.to)} size={14} />
+              )}
+              {shortAddress(r.to)}
+            </span>
+          </Row>
+          {r.selfRelay ? (
+            <Row label="Network fee">Up to {unit(NETWORK_FEE_CAP_STROOPS)}, from your account</Row>
+          ) : (
+            <Row label="Relayer fee">{unit(r.fee)}</Row>
+          )}
+          <Row label="From private balance">{unit(total)}</Row>
+        </div>
+        {r.warnings.length > 0 && (
+          <div className="flex flex-col gap-2 rounded-xl bg-amber-500/10 px-4 py-3">
+            {r.warnings.map((w) => (
+              <p
+                key={w.code}
+                className="flex gap-2 text-[11px] leading-snug text-amber-700 dark:text-amber-400"
+              >
+                <TriangleAlert size={12} className="mt-0.5 shrink-0" />
+                {w.message}
+              </p>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-3">
+          <Button variant="outline" className="flex-1" onClick={cancelReview}>
+            Cancel
+          </Button>
+          <Button className="flex-1" onClick={() => confirmReview(r.reviewId)}>
+            Confirm
+          </Button>
+        </div>
+      </>
+    )
+  }
+
+  function progress(text: string) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-8 text-center">
+        <TokenStatusIcon
+          state="pending"
+          code={chipCode}
+          icon={assetIcon}
+          chainIcon={stellarChain.icon}
+        />
+        <p className="text-xs leading-snug text-muted-foreground">{text}</p>
+      </div>
+    )
+  }
+
+  function result(title: string, note: string, hash: string | null) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-6 text-center">
+        <TokenStatusIcon
+          state="success"
+          code={chipCode}
+          icon={assetIcon}
+          chainIcon={stellarChain.icon}
+        />
+        <p className="text-sm font-medium text-foreground">{title}</p>
+        <p className="text-xs leading-snug text-muted-foreground">{note}</p>
+        {hash && <p className="break-all font-mono text-xs text-muted-foreground">{hash}</p>}
+        <Button className="mt-2 w-full" onClick={close}>
+          Done
+        </Button>
+      </div>
+    )
+  }
+
+  function retrySummary() {
+    if (!retryPlan) return null
+    return (
+      <>
+        <div className="rounded-xl bg-card px-4 py-2">
+          <Row label={retryPlan.kind === 'send' ? 'Send' : 'Unshield'}>
+            {unit(retryPlan.amount)}
+          </Row>
+          <Row label="To">
+            <span className="font-mono">{shortAddress(retryPlan.to)}</span>
+          </Row>
+        </div>
+        <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+          The retry spends the same notes as the stalled payment, so at most one of them can land.
+          Any fee is shown on the next step, before anything is sent.
+        </p>
+        {retryPlan.kind === 'unshield' && selfRelayOption()}
+        {error && (
+          <p className="rounded-xl bg-destructive/10 px-4 py-3 text-xs text-destructive">{error}</p>
+        )}
+        <Button className="w-full" onClick={reviewRetry}>
+          Review retry
+        </Button>
+      </>
+    )
+  }
+
+  function body() {
+    switch (step.kind) {
+      case 'form':
+        return form()
+      case 'retry':
+        return retrySummary()
+      case 'stopped':
+        return (
+          <div className="flex flex-col gap-3 py-4 text-center">
+            <p className="text-sm font-medium text-foreground">
+              {a === 'shield' ? 'The deposit may still land' : 'The payment may still land'}
+            </p>
+            <p className="rounded-xl bg-destructive/10 px-4 py-3 text-xs text-destructive">
+              {step.message}
+            </p>
+            <p className="text-xs leading-snug text-muted-foreground">
+              {a === 'shield'
+                ? 'Check Private activity before shielding again.'
+                : 'Do not send it again. If its deadline passes without it landing, Private activity offers a retry with the same notes.'}
+            </p>
+            <Button className="mt-2 w-full" onClick={close}>
+              Done
+            </Button>
+          </div>
+        )
+      case 'shield-review':
+        return shieldReview()
+      case 'preparing':
+        return progress('Syncing the pool and asking the relayer for a quote...')
+      case 'review':
+        return spendReview(step.review, step.repriced)
+      case 'working':
+        return progress('Proving on this device and submitting. This can take a minute.')
+      case 'shielded':
+        return result(
+          step.receipt.depositId === null
+            ? 'Deposit submitted'
+            : `Deposit #${step.receipt.depositId} submitted`,
+          step.receipt.depositId === null
+            ? 'Its deposit ID appears once the network confirms it. It can be spent after screening.'
+            : 'It can be spent once screening admits it. Follow it under Private activity.',
+          step.receipt.txHash
+        )
+      case 'submitted':
+        return result(
+          'Payment submitted',
+          'It counts once the pool shows it landed. Follow it under Private activity.',
+          step.txHash
+        )
     }
-    if (submitting) return BUSY[a]
-    return TITLES[a]
-  })()
+  }
 
   return (
     <>
       <div
-        className={`fixed inset-0 z-40 bg-black/50 transition-opacity duration-200 ${open ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 z-40 bg-black/50 transition-opacity duration-200 ${open ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
       />
       <div
         ref={sheetRef}
-        className={`fixed bottom-0 left-0 right-0 z-50 rounded-t-2xl bg-background shadow-2xl transition-transform duration-300 ease-out max-h-[85vh] flex flex-col ${open ? 'translate-y-0' : 'translate-y-full'}`}
+        className={`fixed bottom-0 left-0 right-0 z-50 flex max-h-[85vh] flex-col rounded-t-2xl bg-background shadow-2xl transition-transform duration-300 ease-out ${open ? 'translate-y-0' : 'translate-y-full'}`}
       >
         {a && (
           <>
-            <div className="flex justify-center pt-3 pb-1 shrink-0">
+            <div className="flex shrink-0 justify-center pt-3 pb-1">
               <div className="h-1 w-10 rounded-full bg-muted" />
             </div>
 
-            <div className="flex items-center justify-between px-5 py-3 shrink-0">
+            <div className="flex shrink-0 items-center justify-between px-5 py-3">
               <div className="flex items-center gap-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15">
                   <Icon size={16} className="text-primary" />
                 </div>
                 <div className="flex flex-col">
-                  <p className="text-lg font-bold text-foreground leading-tight">{TITLES[a]}</p>
-                  <p className="text-xs text-muted-foreground">{subtitles[a]}</p>
+                  <p className="text-lg font-bold leading-tight text-foreground">
+                    {retryPlan ? 'Retry payment' : TITLES[a]}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {retryPlan
+                      ? 'Pays again with the same notes, so only one can land'
+                      : subtitles[a]}
+                  </p>
                 </div>
               </div>
               <button
-                onClick={onClose}
+                onClick={close}
                 aria-label="Close"
-                className="cursor-pointer rounded-full p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                className="cursor-pointer rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
                 <X size={16} />
               </button>
             </div>
 
-            <div className="overflow-y-auto flex-1 px-5 pb-5 flex flex-col gap-4 [&>*]:shrink-0">
-              {doneHash ? (
-                <div className="flex flex-col items-center gap-3 py-6 text-center">
-                  <TokenStatusIcon
-                    state="success"
-                    code={chipCode}
-                    icon={assetIcon}
-                    chainIcon={stellarChain.icon}
-                  />
-                  <p className="text-sm font-medium text-foreground">
-                    {a === 'send'
-                      ? 'Private send submitted'
-                      : a === 'shield'
-                        ? 'Shielded into your private balance'
-                        : 'Unshielded to your public balance'}
-                  </p>
-                  {doneHash !== SPLIT_DONE && (
-                    <p className="break-all font-mono text-xs text-muted-foreground">{doneHash}</p>
-                  )}
-                  <Button className="mt-2 w-full" onClick={onClose}>
-                    Done
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <div
-                    className={`rounded-xl bg-card p-4 flex flex-col gap-3 transition-colors ${exceedsBalance ? 'ring-1 ring-destructive/60' : ''}`}
-                  >
-                    <button
-                      onClick={onChangeAsset}
-                      aria-label="Change asset"
-                      className="cursor-pointer self-start flex items-center gap-2 rounded-xl bg-muted px-3 py-2 hover:bg-muted/70 transition-colors"
-                    >
-                      <AssetIcon icon={assetIcon} code={chipCode} size={22} />
-                      <span className="text-sm font-semibold text-foreground">{chipCode}</span>
-                      <ChevronDown size={14} className="text-muted-foreground" />
-                    </button>
-
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      placeholder="0.00"
-                      value={amount}
-                      onChange={(e) => setAmount(e.target.value)}
-                      className="text-4xl font-bold bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground/40 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                    />
-
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs text-muted-foreground min-w-0 truncate">
-                        {hasBalance ? `Balance: ${balanceStr} ${chipCode}` : 'Balance: -'}
-                      </p>
-                      {hasBalance && (
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            onClick={() => fillFraction(0.25)}
-                            aria-label="Set amount to 25 percent of balance"
-                            className="cursor-pointer rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-primary hover:bg-muted/70 transition-colors"
-                          >
-                            25%
-                          </button>
-                          <button
-                            onClick={() => fillFraction(0.5)}
-                            aria-label="Set amount to 50 percent of balance"
-                            className="cursor-pointer rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-primary hover:bg-muted/70 transition-colors"
-                          >
-                            50%
-                          </button>
-                          <button
-                            onClick={fillMax}
-                            aria-label="Set amount to maximum spendable balance"
-                            className="cursor-pointer rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-primary hover:bg-muted/70 transition-colors"
-                          >
-                            Max
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    {exceedsBalance && <p className="text-xs text-destructive">Exceeds balance</p>}
-                  </div>
-
-                  {a === 'send' && (
-                    <div className="rounded-xl bg-card px-4 py-3 flex flex-col gap-1.5">
-                      <p className="text-xs text-muted-foreground">To</p>
-                      {recipientValid && recipient.trim().length >= 20 && !recipientFocused ? (
-                        <div className="flex items-center justify-between">
-                          <button
-                            type="button"
-                            onClick={() => setRecipientFocused(true)}
-                            className="cursor-pointer flex items-center gap-2 min-w-0"
-                          >
-                            <Cy1Avatar address={recipient.trim()} size={22} />
-                            <span className="text-sm font-mono text-foreground">
-                              {`${recipient.trim().slice(0, 8)}...${recipient.trim().slice(-6)}`}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setRecipient('')
-                              setRecipientFocused(true)
-                            }}
-                            aria-label="Clear recipient"
-                            className="cursor-pointer shrink-0 p-1 ml-2 text-muted-foreground hover:text-foreground transition-colors"
-                          >
-                            <X size={14} />
-                          </button>
-                        </div>
-                      ) : (
-                        <input
-                          value={recipient}
-                          onChange={(e) => setRecipient(e.target.value)}
-                          onFocus={() => setRecipientFocused(true)}
-                          onBlur={() => setRecipientFocused(false)}
-                          placeholder="cy1..."
-                          spellCheck={false}
-                          autoCapitalize="none"
-                          className="bg-transparent text-sm font-mono text-foreground placeholder:text-muted-foreground outline-none w-full"
-                        />
-                      )}
-                      {recipient.trim() !== '' && !recipientValid && (
-                        <p className="text-xs text-destructive">Private addresses start with cy1</p>
-                      )}
-                    </div>
-                  )}
-
-                  {a !== 'shield' && (
-                    <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3">
-                      <span className="text-sm text-muted-foreground">Fee</span>
-                      <span className="text-sm font-medium text-foreground tabular-nums">
-                        {fee !== null ? `${fromStroops(fee, decimals)} ${assetLabel}` : '...'}
-                      </span>
-                    </div>
-                  )}
-
-                  {needsTrustline && (
-                    <div className="flex flex-col gap-2 rounded-xl bg-card px-4 py-3">
-                      <p className="text-xs text-muted-foreground">
-                        Your account needs a {assetLabel} trustline to unshield.
-                      </p>
-                      <Button
-                        variant="outline"
-                        className="w-full"
-                        onClick={() => setTrustlineSheetOpen(true)}
-                      >
-                        {`Add ${assetLabel} trustline`}
-                      </Button>
-                    </div>
-                  )}
-
-                  {error && (
-                    <p className="rounded-xl bg-destructive/10 px-4 py-3 text-xs text-destructive">
-                      {error}
-                    </p>
-                  )}
-
-                  <Button className="w-full" disabled={!canSubmit} onClick={submit}>
-                    {submitLabel}
-                  </Button>
-                </>
-              )}
+            <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-5 pb-5 [&>*]:shrink-0">
+              {body()}
             </div>
           </>
         )}
       </div>
-
-      <AddTrustlineSheet
-        asset={trustlineAsset}
-        onConfirm={confirmTrustline}
-        onClose={() => setTrustlineSheetOpen(false)}
-        onDone={() => {
-          setTrustlineSheetOpen(false)
-          // Balances refresh upstream flips hasTrustline, which re-enables the submit.
-          onTrustlineAdded()
-        }}
-      />
     </>
   )
 }

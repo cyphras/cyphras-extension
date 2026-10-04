@@ -10,6 +10,8 @@ export interface ShieldedTokenRow {
   label: string
   // Pre-decimalized display string per pool.decimals, not raw units.
   balance: string
+  // What of a private balance is not spendable yet, as short phrases.
+  pending?: string[]
   usdValue: number | null
   usdPrice?: number | null
   icon?: string
