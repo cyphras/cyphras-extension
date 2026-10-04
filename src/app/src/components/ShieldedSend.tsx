@@ -22,7 +22,7 @@ import {
   spendableUnits,
 } from '@/lib/amount'
 import { shortAddress } from '@/lib/address'
-import { SERVICE_TYPES } from '@constants/services'
+import { SERVICE_TYPES, SHIELDED_REVIEW_PORT } from '@constants/services'
 import type {
   ServiceResponse,
   ShieldedPlanView,
@@ -153,9 +153,13 @@ export default function ShieldedSend({
   const [step, setStep] = useState<Step>({ kind: 'form' })
   const [error, setError] = useState<string | null>(null)
   const sheetRef = useRef<HTMLDivElement>(null)
-  // The review the background holds open, declined if the sheet closes on it, and the last review
-  // shown, which the next reply answers.
-  const openReviewRef = useRef<string | null>(null)
+  // Each opening of the sheet is a session. A reply from an older session, or one that arrives
+  // once the sheet is closed, never paints, and a review it carries is declined.
+  const sessionRef = useRef(0)
+  const openRef = useRef(false)
+  // The port that keeps the shown review open in the background, which declines the review when
+  // the port goes, and the last review shown, which the next reply answers.
+  const reviewPortRef = useRef<chrome.runtime.Port | null>(null)
   const lastReviewRef = useRef<ShieldedReviewView | null>(null)
   const stellarChain = useStellarChain()
   const avatarKey = useAvatarKey()
@@ -165,26 +169,26 @@ export default function ShieldedSend({
   if (action) lastActionRef.current = action
   const a = action ?? lastActionRef.current
   const open = action !== null
+  openRef.current = open
   const chipCode = native ? 'XLM' : (assetCode ?? assetLabel)
   const unit = (units: string | bigint) => `${formatUnits(units, decimals)} ${chipCode}`
 
-  const decline = useCallback(() => {
-    const reviewId = openReviewRef.current
-    openReviewRef.current = null
-    if (reviewId) {
-      chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_DECIDE, reviewId, approve: false })
-    }
+  const releaseReview = useCallback(() => {
+    reviewPortRef.current?.disconnect()
+    reviewPortRef.current = null
   }, [])
 
-  const close = useCallback(() => {
-    decline()
-    onClose()
-  }, [decline, onClose])
+  // Proving and submitting go on in the background whatever the sheet does, so the sheet stays
+  // until they report back rather than lose their result.
+  const busy = step.kind === 'preparing' || step.kind === 'working' || step.kind === 'cancelling'
 
-  // The parent can close the sheet too, as on an account or network switch.
-  useEffect(() => {
-    if (!open) decline()
-  }, [open, decline])
+  const close = useCallback(() => {
+    if (busy) return
+    releaseReview()
+    onClose()
+  }, [busy, releaseReview, onClose])
+
+  useEffect(() => releaseReview, [releaseReview])
 
   // A service worker that gets no event for 30 seconds may stop, and the open review with it, so
   // a cheap status read keeps it awake while the user reads the review.
@@ -202,10 +206,7 @@ export default function ShieldedSend({
   const followStep = useCallback(
     (reply: Reply<ShieldedStep>) => {
       const answered = lastReviewRef.current
-      if (!reply.ok || reply.value.kind !== 'review') {
-        openReviewRef.current = null
-        lastReviewRef.current = null
-      }
+      if (!reply.ok || reply.value.kind !== 'review') lastReviewRef.current = null
       if (!reply.ok) {
         if (reply.mayLand || answered?.repriced) {
           setStep({ kind: 'stopped', message: reply.error })
@@ -217,9 +218,25 @@ export default function ShieldedSend({
         return
       }
       if (reply.value.kind === 'review') {
-        openReviewRef.current = reply.value.review.reviewId
-        lastReviewRef.current = reply.value.review
-        setStep({ kind: 'review', review: reply.value.review })
+        const review = reply.value.review
+        const port = chrome.runtime.connect({ name: SHIELDED_REVIEW_PORT + review.reviewId })
+        // The port only drops from the background's side when the service worker stopped, which
+        // takes the review with it.
+        port.onDisconnect.addListener(() => {
+          if (reviewPortRef.current !== port) return
+          reviewPortRef.current = null
+          lastReviewRef.current = null
+          if (review.repriced) {
+            setStep({ kind: 'stopped', message: 'The extension restarted during the review.' })
+            onDone()
+          } else {
+            setError('The review closed before it was answered. Review again.')
+            setStep({ kind: retryPlan ? 'retry' : 'form' })
+          }
+        })
+        reviewPortRef.current = port
+        lastReviewRef.current = review
+        setStep({ kind: 'review', review })
         return
       }
       setStep({ kind: 'submitted', txHash: reply.value.txHash })
@@ -228,8 +245,14 @@ export default function ShieldedSend({
     [onDone, retryPlan]
   )
 
+  // Opening starts a session. Closing ends it, from here or from the parent as on an account or
+  // network switch, and declines any review it left open.
   useEffect(() => {
-    if (!open) return
+    sessionRef.current++
+    if (!open) {
+      releaseReview()
+      return
+    }
     setRecipient(retryPlan?.to ?? '')
     setRecipientFocused(false)
     setAmount(retryPlan ? formatUnits(retryPlan.amount, decimals) : '')
@@ -237,7 +260,23 @@ export default function ShieldedSend({
     setShieldAnyway(false)
     setError(null)
     setStep({ kind: retryPlan ? 'retry' : 'form' })
-  }, [open, action, retryPlan, decimals])
+  }, [open, action, retryPlan, decimals, releaseReview])
+
+  // A spend request of this session. A reply that comes after the session ended is dropped, and
+  // a review in it is declined.
+  const requestStep = useCallback(async (message: object): Promise<Reply<ShieldedStep> | null> => {
+    const session = sessionRef.current
+    const reply = await ask(message, (r) => r.shieldedStep)
+    if (session === sessionRef.current && openRef.current) return reply
+    if (reply.ok && reply.value.kind === 'review') {
+      chrome.runtime.sendMessage({
+        type: SERVICE_TYPES.SHIELDED_DECIDE,
+        reviewId: reply.value.review.reviewId,
+        approve: false,
+      })
+    }
+    return null
+  }, [])
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -299,15 +338,12 @@ export default function ShieldedSend({
     if (!retryPlan) return
     setError(null)
     setStep({ kind: 'preparing' })
-    ask(
-      {
-        type: SERVICE_TYPES.SHIELDED_RETRY,
-        poolId,
-        planId: retryPlan.planId,
-        selfRelay: retryPlan.kind === 'unshield' && selfRelay,
-      },
-      (r) => r.shieldedStep
-    ).then(followStep)
+    requestStep({
+      type: SERVICE_TYPES.SHIELDED_RETRY,
+      poolId,
+      planId: retryPlan.planId,
+      selfRelay: retryPlan.kind === 'unshield' && selfRelay,
+    }).then((reply) => reply && followStep(reply))
   }
 
   function review() {
@@ -319,31 +355,31 @@ export default function ShieldedSend({
       return
     }
     setStep({ kind: 'preparing' })
-    ask(
-      {
-        type: SERVICE_TYPES.SHIELDED_SPEND,
-        poolId,
-        kind: a,
-        to,
-        amount: units.toString(),
-        selfRelay: a === 'unshield' && selfRelay,
-      },
-      (r) => r.shieldedStep
-    ).then(followStep)
+    requestStep({
+      type: SERVICE_TYPES.SHIELDED_SPEND,
+      poolId,
+      kind: a,
+      to,
+      amount: units.toString(),
+      selfRelay: a === 'unshield' && selfRelay,
+    }).then((reply) => reply && followStep(reply))
   }
 
   // Both answers wait for what the SDK made of them: declining a repriced review still leaves its
   // saved payment, which may land.
   function answerReview(reviewId: string, approve: boolean) {
-    openReviewRef.current = null
     setStep({ kind: approve ? 'working' : 'cancelling' })
-    ask({ type: SERVICE_TYPES.SHIELDED_DECIDE, reviewId, approve }, (r) => r.shieldedStep).then(
-      followStep
-    )
+    requestStep({ type: SERVICE_TYPES.SHIELDED_DECIDE, reviewId, approve }).then((reply) => {
+      if (!reply) return
+      // The answered review is closed in the background, so its port has nothing left to decline.
+      releaseReview()
+      followStep(reply)
+    })
   }
 
   function approveShield() {
     if (units === null) return
+    const session = sessionRef.current
     setStep({ kind: 'working' })
     ask(
       {
@@ -356,6 +392,7 @@ export default function ShieldedSend({
     ).then((reply) => {
       // A failed shield may have left its deposit submitting, which the next review must show.
       onDone()
+      if (session !== sessionRef.current || !openRef.current) return
       if (!reply.ok) {
         if (reply.mayLand) {
           setStep({ kind: 'stopped', message: reply.error })
@@ -812,8 +849,9 @@ export default function ShieldedSend({
               </div>
               <button
                 onClick={close}
+                disabled={busy}
                 aria-label="Close"
-                className="cursor-pointer rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className="cursor-pointer rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-default disabled:opacity-40"
               >
                 <X size={16} />
               </button>

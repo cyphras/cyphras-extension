@@ -75,6 +75,10 @@ export const SERVICE_TYPES = {
 
 export type ServiceType = (typeof SERVICE_TYPES)[keyof typeof SERVICE_TYPES]
 
+// The popup holds a port named this plus the review ID while it shows a private payment review;
+// the background declines the review if the port goes before an answer.
+export const SHIELDED_REVIEW_PORT = 'shielded-review:'
+
 export const PASSWORD_RULES = {
   MIN_LENGTH: 8,
   MAX_ATTEMPTS: 5,

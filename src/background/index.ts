@@ -140,6 +140,7 @@ import {
   shieldedSync,
 } from './shielded/wallet'
 import { errorView } from './shielded/errors'
+import { watchReviewPort } from './shielded/reviews'
 import { SHIELDED_DEPLOYMENTS } from './shielded/deployments'
 import { removeRetiredShieldedData } from './shielded/store'
 import {
@@ -661,6 +662,7 @@ chrome.idle.onStateChanged.addListener((state) => {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (!port.sender || !isExtensionPage(port.sender)) return
+  if (watchReviewPort(port)) return
 
   if (port.name === 'wallet-popup') {
     port.onDisconnect.addListener(async () => {

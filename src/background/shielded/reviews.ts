@@ -1,4 +1,5 @@
 import type { ConfirmSpend, SpendReview, Submission } from '@cyphras/private'
+import { SHIELDED_REVIEW_PORT } from '@constants/services'
 import type { ShieldedReviewView, ShieldedStep } from '@ext-types/index'
 import { ShieldedRefusal } from './errors'
 
@@ -83,6 +84,15 @@ export function decideReview(reviewId: string, approve: boolean): Promise<Shield
   const outcome = closed.get(reviewId)
   if (outcome) return outcome
   throw new ShieldedRefusal('review_expired', 'This review is no longer open.')
+}
+
+// A review's port is held by the popup that shows it; the popup closing, or leaving the review,
+// declines it. Returns false for a port of another kind.
+export function watchReviewPort(port: chrome.runtime.Port): boolean {
+  if (!port.name.startsWith(SHIELDED_REVIEW_PORT)) return false
+  const reviewId = port.name.slice(SHIELDED_REVIEW_PORT.length)
+  port.onDisconnect.addListener(() => open.get(reviewId)?.decline())
+  return true
 }
 
 export function declineAllReviews(): void {
