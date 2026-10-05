@@ -521,19 +521,22 @@ export async function shieldedLimits(
   }
 }
 
-// A quote reads the vault as the last sync left it, which a worker that just started has not run.
+// The fee a form shows, from the relayer's quote the wallet still holds when it is good for another
+// minute; before the worker's first sync only the fee is known.
 export async function shieldedQuote(
   net: NetworkConfig,
   poolId: string,
   kind: 'send' | 'unshield',
   selfRelay: boolean
 ): Promise<ShieldedQuoteView> {
-  const entry = await walletFor(net, poolId)
-  if (entry.syncedAt === null) await syncOnce(entry)
-  const quote = await entry.wallet.quote(
-    selfRelay ? { kind, selfRelay } : { kind, maxFee: entry.pool.maxRelayerFee }
+  const { wallet, pool } = await walletFor(net, poolId)
+  const quote = await wallet.quote(
+    selfRelay ? { kind, selfRelay } : { kind, maxFee: pool.maxRelayerFee }
   )
-  return { fee: quote.fee.toString(), maxAmount: quote.maxAmount.toString() }
+  return {
+    fee: quote.fee.toString(),
+    maxAmount: quote.maxAmount === undefined ? null : quote.maxAmount.toString(),
+  }
 }
 
 interface SpendRequest {

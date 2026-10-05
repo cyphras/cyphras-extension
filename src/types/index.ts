@@ -231,8 +231,8 @@ export interface ShieldedStatusView {
 export interface ShieldedQuoteView {
   fee: string
   // The most one payment can move after the fee: from the two largest notes, and for an unshield
-  // within the pool's cap for one withdrawal.
-  maxAmount: string
+  // within the pool's cap for one withdrawal. Null before the wallet's first sync.
+  maxAmount: string | null
 }
 
 // The pool's deposit limits as the chain shows them now, for the active account as the depositor.

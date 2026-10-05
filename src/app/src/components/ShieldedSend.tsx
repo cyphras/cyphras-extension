@@ -440,7 +440,7 @@ export default function ShieldedSend({
   const units = parseUnits(amount, decimals)
   const exceedsBalance = units !== null && balanceUnits !== null && units > balanceUnits
   // What the notes cannot pay in one payment once the fee is taken.
-  const maxAmount = a !== 'shield' && quote ? BigInt(quote.maxAmount) : null
+  const maxAmount = a !== 'shield' && quote?.maxAmount ? BigInt(quote.maxAmount) : null
   const exceedsOnePayment =
     !exceedsBalance && units !== null && maxAmount !== null && units > maxAmount
   // Why the pool would refuse this deposit now, as far as its limits tell.
