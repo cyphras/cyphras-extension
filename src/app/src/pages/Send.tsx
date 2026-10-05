@@ -67,6 +67,9 @@ interface TxPreview {
   fee: string
   feeUsd: string | null
   amountUsd: string | null
+  // The payment built into xdr: what the review shows and Confirm signs.
+  payment: PaymentParams & { fee: string }
+  xlmPrice: number | null
 }
 
 interface HorizonTxDetails {
@@ -514,6 +517,8 @@ export default function Send() {
   const [memoRequired, setMemoRequired] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  // Settings saved from the review rebuild the payment before it can be confirmed.
+  const [previewing, setPreviewing] = useState(false)
   const [txHash, setTxHash] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [showAssetPicker, setShowAssetPicker] = useState(false)
@@ -754,9 +759,8 @@ export default function Send() {
     const { prices } = await fetchPrices([{ code: 'XLM' }, selectedPriceAsset], activeNetwork.id)
     const xlmPrice = prices['XLM'] ?? null
     const assetPrice = prices[priceKey(selectedPriceAsset)] ?? null
-    const feeUsd = xlmPrice !== null ? formatValue(parseFloat(activeFeeXlm) * xlmPrice) : null
     const amountUsd = assetPrice !== null ? formatValue(amountNum * assetPrice) : null
-    const payment: PaymentParams = {
+    const payment = {
       destination,
       amount,
       assetCode: selectedAssetObj.code,
@@ -766,6 +770,19 @@ export default function Send() {
       fee: activeFeeStroops,
       timeout: txTimeout,
     }
+    buildPreview(payment, xlmPrice, amountUsd, () => {
+      setConfirmXdrOpen(false)
+      setStep('confirm')
+    })
+  }
+
+  function buildPreview(
+    payment: TxPreview['payment'],
+    xlmPrice: number | null,
+    amountUsd: string | null,
+    onBuilt: () => void
+  ) {
+    const fee = stroopsToXlm(payment.fee)
     chrome.runtime.sendMessage(
       {
         type: SERVICE_TYPES.BUILD_PAYMENT_XDR,
@@ -775,30 +792,45 @@ export default function Send() {
       },
       (response) => {
         setLoading(false)
+        setPreviewing(false)
         if (response?.error) {
           setError(response.error)
           return
         }
-        setTxPreview({ xdr: response.xdr, fee: activeFeeXlm, feeUsd, amountUsd })
-        setConfirmXdrOpen(false)
-        setStep('confirm')
+        setTxPreview({
+          xdr: response.xdr,
+          fee,
+          feeUsd: xlmPrice !== null ? formatValue(parseFloat(fee) * xlmPrice) : null,
+          amountUsd,
+          payment,
+          xlmPrice,
+        })
+        onBuilt()
       }
     )
   }
 
+  // A fee or timeout saved from the review makes a new transaction, so the review shows it before
+  // Confirm can sign it.
+  function rebuildPreview(fee: string, timeout: number) {
+    if (step !== 'confirm' || !txPreview) return
+    setLoading(true)
+    setPreviewing(true)
+    setError('')
+    buildPreview(
+      { ...txPreview.payment, fee, timeout },
+      txPreview.xlmPrice,
+      txPreview.amountUsd,
+      () => setConfirmXdrOpen(false)
+    )
+  }
+
   async function handleConfirm() {
+    // The payment the review shows, as built, whatever the form or the settings say since.
+    if (!txPreview) return
+    const { payment } = txPreview
     setLoading(true)
     setError('')
-    const payment: PaymentParams = {
-      destination,
-      amount,
-      assetCode: selectedAssetObj.code,
-      assetIssuer: selectedAssetObj.issuer,
-      memo: memo || undefined,
-      memoType: memo ? memoType : undefined,
-      fee: activeFeeStroops,
-      timeout: txTimeout,
-    }
     chrome.runtime.sendMessage(
       {
         type: SERVICE_TYPES.SIGN_AND_SUBMIT_PAYMENT,
@@ -1426,7 +1458,9 @@ export default function Send() {
                   </Reveal>
                   <Reveal show={loading} gap={12}>
                     <p className="text-center text-xs text-muted-foreground">
-                      Signing and submitting to {stellarChain.name}...
+                      {previewing
+                        ? 'Building the payment with the new settings...'
+                        : `Signing and submitting to ${stellarChain.name}...`}
                     </p>
                   </Reveal>
                 </div>
@@ -1443,7 +1477,11 @@ export default function Send() {
                     Cancel
                   </Button>
                   <Button className="flex-1" onClick={handleConfirm} disabled={loading}>
-                    {loading ? 'Sending...' : `Send ${amount} ${selectedAssetObj.code}`}
+                    {previewing
+                      ? 'Updating...'
+                      : loading
+                        ? 'Sending...'
+                        : `Send ${amount} ${selectedAssetObj.code}`}
                   </Button>
                 </div>
               </>
@@ -1473,6 +1511,7 @@ export default function Send() {
             setCustomFee(fee)
             setTxTimeout(t)
             setShowSettings(false)
+            rebuildPreview(fee, t)
           }}
           onCancel={() => setShowSettings(false)}
         />
