@@ -1222,7 +1222,7 @@ export default function ShieldedSend({
           <div
             className={`flex min-h-0 flex-1 flex-col bg-background transition-transform duration-300 ease-out ${shown ? 'translate-x-0' : 'translate-x-full'}`}
           >
-            {stage === 'recipient' && !retryPlan ? (
+            {stage === 'recipient' && !retryPlan && a !== 'shield' ? (
               recipientStep()
             ) : (
               <>
