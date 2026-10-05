@@ -175,7 +175,9 @@ export function stepsOf(entry: PrivateEntry): Step[] {
         ? { label: 'Sending the deposit', state: 'active' }
         : deposit.state === 'failed'
           ? { label: 'The deposit did not go through', state: 'error' }
-          : { label: 'Deposited from your account', state: 'done' },
+          : deposit.state === 'unresolved'
+            ? { label: 'Whether the deposit landed is not known yet', state: 'error' }
+            : { label: 'Deposited from your account', state: 'done' },
       held
         ? { label: 'Held by screening', state: 'error' }
         : admitted || deposit.attested
