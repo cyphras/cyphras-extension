@@ -9,7 +9,8 @@ import { Copy, Check, ChevronLeft, ExternalLink, QrCode } from 'lucide-react'
 import WalletNavbar from '@/components/WalletNavbar'
 import { useState, useEffect, useMemo, type ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import QRCode from 'qrcode'
+import { AddressQr, FullAddress } from '@/components/AddressQr'
+import { useCopy } from '@/hooks/useCopy'
 import { BUILTIN_CHAINS, explorerUrl, type ChainEntry } from '@constants/chains'
 import { getRegistryChains } from '@bg/chainRegistry'
 import { getChainIcons } from '@/lib/chainInfo'
@@ -18,36 +19,6 @@ type ReceiveChain = 'stellar' | 'evm' | 'bitcoin'
 
 function shortAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-6)}`
-}
-
-// The whole address in one run (it must copy without spaces), with the first
-// and last four characters emphasized: those are what people actually compare,
-// and what address-poisoning fakes. "0x" is a prefix, not part of the key.
-function FullAddress({ address }: { address: string }) {
-  const prefix = address.startsWith('0x') ? '0x' : ''
-  const body = address.slice(prefix.length)
-  return (
-    <p className="w-full break-all text-center font-mono text-[12px] leading-relaxed text-muted-foreground">
-      {prefix}
-      <span className="font-semibold text-foreground">{body.slice(0, 4)}</span>
-      {body.slice(4, -4)}
-      <span className="inline-block font-semibold text-foreground">{body.slice(-4)}</span>
-    </p>
-  )
-}
-
-function useCopy() {
-  const [copied, setCopied] = useState<string | null>(null)
-  async function copy(key: string, text: string) {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(key)
-      setTimeout(() => setCopied((c) => (c === key ? null : c)), 2000)
-    } catch {
-      // clipboard denied; the address stays visible to copy by hand
-    }
-  }
-  return { copied, copy }
 }
 
 export default function Receive() {
@@ -60,7 +31,6 @@ export default function Receive() {
   const [qrFor, setQrFor] = useState<ReceiveChain | null>(
     (location.state as { chain?: ReceiveChain } | null)?.chain ?? null
   )
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [chains, setChains] = useState<ChainEntry[]>(BUILTIN_CHAINS)
   const [chainIcons, setChainIcons] = useState<Map<string, string>>(new Map())
   const { copied, copy } = useCopy()
@@ -132,21 +102,6 @@ export default function Receive() {
       : qrFor === 'bitcoin'
         ? btcChain && chainIcons.get(btcChain.id)
         : evmChains[0] && chainIcons.get(evmChains[0].id)
-
-  useEffect(() => {
-    setQrDataUrl(null)
-    if (!qrAddress) return
-    QRCode.toDataURL(qrAddress, {
-      width: 220,
-      margin: 1,
-      color: { dark: '#000000', light: '#ffffff' },
-      // Q recovers about a quarter of the code, far more than the chain logo
-      // in the middle covers, so the QR still scans with it.
-      errorCorrectionLevel: 'Q',
-    })
-      .then(setQrDataUrl)
-      .catch(() => {})
-  }, [qrAddress])
 
   const derivedUnavailable =
     account && account.index < 0
@@ -223,28 +178,7 @@ export default function Receive() {
       >
         {qrAddress && (
           <div className="flex flex-col items-center gap-4">
-            <div className="relative rounded-2xl bg-white p-3 shadow-sm">
-              {qrDataUrl ? (
-                <img
-                  src={qrDataUrl}
-                  alt="Address QR code"
-                  width={188}
-                  height={188}
-                  className="block"
-                />
-              ) : (
-                <div className="h-[188px] w-[188px] animate-pulse rounded-lg bg-neutral-200" />
-              )}
-              {qrDataUrl && qrChainIcon && (
-                <span className="pop-enter absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white p-1 shadow-sm">
-                  <img
-                    src={qrChainIcon}
-                    alt=""
-                    className="h-full w-full rounded-full object-cover"
-                  />
-                </span>
-              )}
-            </div>
+            <AddressQr address={qrAddress} icon={qrChainIcon} />
 
             <FullAddress address={qrAddress} />
 
