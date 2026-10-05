@@ -87,7 +87,11 @@ export function privateEntries(
   return items.map((item) => {
     const plan = (item.planId && status.plans.find((p) => p.planId === item.planId)) || null
     const deposit =
-      (item.depositTx && status.deposits.find((d) => d.txHash === item.depositTx)) || null
+      (item.depositTx
+        ? status.deposits.find((d) => d.txHash === item.depositTx)
+        : item.depositId !== null
+          ? status.deposits.find((d) => d.txHash === null && d.id === item.depositId)
+          : undefined) ?? null
     const s = statusOf(item, plan, deposit, status, unit)
     const view: RowView = {
       label: labelOf(item, s),

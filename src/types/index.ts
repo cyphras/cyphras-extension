@@ -206,7 +206,10 @@ export interface ShieldedHistoryItem {
   ledger: number | null
   time: number | null // Unix milliseconds
   planId: string | null
-  depositTx: string | null // the shield transaction of a deposit
+  // The deposit an entry is about: its shield transaction, or its ID when the wallet knows no
+  // transaction, as for a deposit recovered from the chain.
+  depositTx: string | null
+  depositId: number | null
 }
 
 // A payment another account sent to this one, found in the pool's notes.

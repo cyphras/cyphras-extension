@@ -389,6 +389,7 @@ export async function shieldedHistory(
     time: null,
     planId: null,
     depositTx: null,
+    depositId: null,
     ...fields,
   })
   const items: ShieldedHistoryItem[] = []
@@ -418,6 +419,7 @@ export async function shieldedHistory(
       amount: d.amount.toString(),
       counterparty: d.depositor,
       depositTx: orNull(d.txHash),
+      depositId: orNull(d.id),
     }
     items.push(
       item({

@@ -1161,7 +1161,10 @@ export default function Home() {
           const entry = entries?.find((e) =>
             item.kind === 'plan'
               ? e.item.planId === item.plan.planId
-              : e.item.kind === 'shield' && e.item.depositTx === item.deposit.txHash
+              : e.item.kind === 'shield' &&
+                (item.deposit.txHash !== null
+                  ? e.item.depositTx === item.deposit.txHash
+                  : item.deposit.id !== null && e.item.depositId === item.deposit.id)
           )
           if (entry) setEntryId(entry.item.id)
         }}
