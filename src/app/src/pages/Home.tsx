@@ -12,7 +12,7 @@ import { usePullToPrivate } from '@/hooks/usePullToPrivate'
 import { useShieldedAvailable } from '@/hooks/useShieldedAvailable'
 import { useShieldedStatus } from '@/hooks/useShieldedStatus'
 import { SectionMenu } from '@/components/SectionMenu'
-import { TokenRow } from '@/components/token/TokenRow'
+import { TokenRow, TokenRowSkeleton } from '@/components/token/TokenRow'
 import { SuggestedAssets } from '@/components/SuggestedAssets'
 import { useCctpJobs } from '@/hooks/useCctpJobs'
 import { usePreferences } from '@/context/PreferencesContext'
@@ -105,22 +105,7 @@ function BalanceSkeleton() {
 
       <div className="flex flex-col gap-2">
         {[1, 2, 3].map((i) => (
-          <div key={i} className="flex items-center justify-between rounded-xl bg-card px-4 py-3">
-            <div className="flex items-center gap-3">
-              <div className="relative">
-                <Skeleton className="h-10 w-10 rounded-full" />
-                <span className="absolute -bottom-1 -right-0.5 h-[21px] w-[21px] rounded-full border-[1.5px] border-card bg-muted" />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Skeleton className="h-3.5 w-14 rounded" />
-                <Skeleton className="h-3 w-20 rounded" />
-              </div>
-            </div>
-            <div className="flex flex-col items-end gap-1.5">
-              <Skeleton className="h-3.5 w-16 rounded" />
-              <Skeleton className="h-3 w-24 rounded" />
-            </div>
-          </div>
+          <TokenRowSkeleton key={i} />
         ))}
       </div>
     </div>
@@ -477,7 +462,7 @@ export default function Home() {
       poolId: pool.poolId,
       code,
       label: pool.label,
-      balance: model ? formatBalance(formatUnits(model.total, pool.decimals)) : '0',
+      balance: model ? formatBalance(formatUnits(model.total, pool.decimals)) : null,
       detail:
         inFlight.length > 0
           ? inFlight
@@ -794,21 +779,26 @@ export default function Home() {
                         className="row-enter"
                         style={{ animationDelay: `${Math.min(i, 8) * 35}ms` }}
                       >
-                        <TokenRow
-                          code={t.code}
-                          verified
-                          icon={t.icon}
-                          chainIcons={[chainIcons.get(stellarChainId)]}
-                          masked={hideBalance}
-                          balanceText={t.balance}
-                          detail={t.detail}
-                          valueText={t.usdValue !== null ? formatSmall(t.usdValue) : null}
-                          priceText={t.usdPrice != null ? formatPrice(t.usdPrice) : null}
-                          onClick={() => {
-                            setSelectedPoolId(t.poolId)
-                            setTappedPoolId(t.poolId)
-                          }}
-                        />
+                        {/* An unknown balance is never shown as 0: it loads, or says it could not. */}
+                        {t.balance === null && shieldedRequestError?.poolId !== t.poolId ? (
+                          <TokenRowSkeleton />
+                        ) : (
+                          <TokenRow
+                            code={t.code}
+                            verified
+                            icon={t.icon}
+                            chainIcons={[chainIcons.get(stellarChainId)]}
+                            masked={hideBalance}
+                            balanceText={t.balance ?? '-'}
+                            detail={t.detail}
+                            valueText={t.usdValue !== null ? formatSmall(t.usdValue) : null}
+                            priceText={t.usdPrice != null ? formatPrice(t.usdPrice) : null}
+                            onClick={() => {
+                              setSelectedPoolId(t.poolId)
+                              setTappedPoolId(t.poolId)
+                            }}
+                          />
+                        )}
                       </div>
                     ))}
                   </div>
