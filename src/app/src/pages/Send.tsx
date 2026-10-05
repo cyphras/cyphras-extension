@@ -28,6 +28,7 @@ import {
 } from '@/lib/amount'
 import { SideCard, AmountInput, QuickFillChips } from '@/components/PairCard'
 import { RecipientRow } from '@/components/RecipientRow'
+import { ConfirmSheet } from '@/components/ConfirmSheet'
 import type { PaymentParams } from '@ext-types/index'
 import { fetchPrices, priceKey } from '@/lib/api'
 import type { AssetBalance } from '@/hooks/useBalances'
@@ -1214,243 +1215,215 @@ export default function Send() {
       </div>
 
       {/* Confirm / Success sheet */}
-      <div
-        className={`fixed inset-0 z-[70] transition-all duration-300 ${sheetOpen ? '' : 'pointer-events-none'}`}
+      <ConfirmSheet
+        open={sheetOpen}
+        title={step === 'success' ? 'Payment sent' : 'Confirm send'}
+        actions={
+          step === 'confirm' && (
+            <button
+              onClick={() => setShowSettings(true)}
+              aria-label="Open send settings"
+              className="cursor-pointer rounded-lg p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            >
+              <Settings size={16} />
+            </button>
+          )
+        }
+        closeDisabled={loading}
+        stepKey={step}
+        onClose={() => {
+          if (loading) return
+          if (step === 'success') {
+            navigate('/')
+          } else {
+            setStep('form')
+            setError('')
+          }
+        }}
+        onBackdrop={() => {
+          if (loading) return
+          if (step === 'confirm') {
+            setStep('form')
+            setError('')
+          }
+        }}
       >
-        <div
-          className={`absolute inset-0 bg-black/60 transition-opacity duration-300 ${sheetOpen ? 'opacity-100' : 'opacity-0'}`}
-          onClick={() => {
-            if (loading) return
-            if (step === 'confirm') {
-              setStep('form')
-              setError('')
-            }
-          }}
-        />
-        <div
-          className={`absolute bottom-0 left-0 right-0 bg-background rounded-t-2xl flex flex-col max-h-[92vh] transition-transform duration-300 ease-out ${sheetOpen ? 'translate-y-0' : 'translate-y-full'}`}
-        >
-          <div className="flex justify-center pt-3 pb-1 shrink-0">
-            <div className="h-1 w-10 rounded-full bg-muted-foreground/20" />
-          </div>
-          <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-            <p className="text-sm font-semibold text-foreground">
-              {step === 'success' ? 'Payment sent' : 'Confirm send'}
-            </p>
-            <div className="flex items-center gap-1">
-              {step === 'confirm' && (
-                <button
-                  onClick={() => setShowSettings(true)}
-                  aria-label="Open send settings"
-                  className="cursor-pointer rounded-lg p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        {step === 'success' ? (
+          <>
+            <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
+              <TxResultHero
+                state="success"
+                amountText={`-${amount}`}
+                code={selectedAssetObj.code}
+                issuer={selectedAssetObj.issuer || undefined}
+                icon={selectedAssetObj.icon}
+                chainIcon={stellarChain.icon}
+                subtitle={`to ${ownLabelFor(lastDestRef.current) ?? shortDest}`}
+              />
+              <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
+                <DetailRow label="Network">
+                  <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                </DetailRow>
+                <DetailRow label="To">
+                  <AddressValue address={lastDestRef.current} />
+                </DetailRow>
+                <DetailRow label="Network fee">
+                  <span className="tabular-nums">
+                    {sendTxDetails?.fee_charged
+                      ? `${trimZeros(stroopsToXlm(sendTxDetails.fee_charged))} XLM`
+                      : '...'}
+                  </span>
+                </DetailRow>
+                {memo && (
+                  <DetailRow label="Memo">
+                    <span className="break-all">{memo}</span>
+                  </DetailRow>
+                )}
+                <DetailRow label="Transaction">
+                  <CopyValue value={txHash} />
+                </DetailRow>
+              </div>
+              <AdvancedDetails open={successXdrOpen} onToggle={() => setSuccessXdrOpen((p) => !p)}>
+                {sendTxDetails && (
+                  <DetailRow label="Ledger">#{sendTxDetails.ledger.toLocaleString()}</DetailRow>
+                )}
+                {sendTxDetails?.created_at && (
+                  <DetailRow label="Confirmed at">
+                    {new Date(sendTxDetails.created_at).toLocaleString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </DetailRow>
+                )}
+                {memo && <DetailRow label="Memo type">{memoType}</DetailRow>}
+                {sendTxDetails?.envelope_xdr && (
+                  <DetailRow label="Envelope XDR">
+                    <CopyValue value={sendTxDetails.envelope_xdr} />
+                  </DetailRow>
+                )}
+              </AdvancedDetails>
+            </div>
+            <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
+              <Button variant="outline" className="flex-1" asChild>
+                <a
+                  href={getExplorerTxUrl(txHash, activeNetwork.id)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5"
                 >
-                  <Settings size={16} />
-                </button>
+                  View on explorer <ExternalLink size={14} />
+                </a>
+              </Button>
+              <Button variant="outline" className="flex-1" onClick={handleSendAgain}>
+                Send again
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3 [&>*]:shrink-0">
+              <div className="flex items-center gap-3 rounded-xl bg-card px-4 py-4">
+                <TokenAssetIcon
+                  code={selectedAssetObj.code}
+                  icon={selectedAssetObj.icon}
+                  chainIcons={[stellarChain.icon]}
+                />
+                <div className="min-w-0">
+                  <p className="text-2xl font-bold tabular-nums text-foreground">
+                    {amount}{' '}
+                    <span className="text-base font-medium text-muted-foreground">
+                      {selectedAssetObj.code}
+                    </span>
+                    <VerifiedMark
+                      code={selectedAssetObj.code}
+                      issuer={selectedAssetObj.issuer || undefined}
+                      className="ml-1 h-4 w-4"
+                    />
+                  </p>
+                  {lastPreviewRef.current?.amountUsd && (
+                    <p className="text-xs text-muted-foreground">
+                      {lastPreviewRef.current.amountUsd}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
+                <DetailRow label="From">
+                  <AddressValue address={status.publicKey ?? undefined} />
+                </DetailRow>
+                <DetailRow label="To">
+                  <span className="inline-flex flex-col items-end">
+                    {ownLabelFor(destination) && (
+                      <span className="font-medium">{ownLabelFor(destination)}</span>
+                    )}
+                    <AddressValue address={destination} />
+                  </span>
+                </DetailRow>
+                {memo && (
+                  <DetailRow label="Memo">
+                    <span className="break-all">{memo}</span>
+                  </DetailRow>
+                )}
+                <DetailRow label="Network">
+                  <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                </DetailRow>
+                <DetailRow label="Max fee">
+                  <span className="tabular-nums">
+                    {trimZeros(String(lastPreviewRef.current?.fee ?? activeFeeXlm))} XLM
+                    {lastPreviewRef.current?.feeUsd && (
+                      <span className="ml-1 text-muted-foreground">
+                        {lastPreviewRef.current.feeUsd}
+                      </span>
+                    )}
+                  </span>
+                </DetailRow>
+              </div>
+
+              {lastPreviewRef.current?.xdr && (
+                <AdvancedDetails
+                  open={confirmXdrOpen}
+                  onToggle={() => setConfirmXdrOpen((p) => !p)}
+                >
+                  {memo && <DetailRow label="Memo type">{memoType}</DetailRow>}
+                  <DetailRow label="Unsigned XDR">
+                    <CopyValue value={lastPreviewRef.current.xdr} />
+                  </DetailRow>
+                </AdvancedDetails>
               )}
-              <button
+
+              <Reveal show={!!error} gap={12}>
+                <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2.5">
+                  <p className="text-xs text-destructive">{error}</p>
+                </div>
+              </Reveal>
+              <Reveal show={loading} gap={12}>
+                <p className="text-center text-xs text-muted-foreground">
+                  Signing and submitting to {stellarChain.name}...
+                </p>
+              </Reveal>
+            </div>
+            <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
+              <Button
+                variant="outline"
+                className="flex-1"
                 onClick={() => {
-                  if (loading) return
-                  if (step === 'success') {
-                    navigate('/')
-                  } else {
-                    setStep('form')
-                    setError('')
-                  }
+                  setStep('form')
+                  setError('')
                 }}
                 disabled={loading}
-                aria-label="Close"
-                className="cursor-pointer rounded-lg p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
               >
-                <X size={16} />
-              </button>
+                Cancel
+              </Button>
+              <Button className="flex-1" onClick={handleConfirm} disabled={loading}>
+                {loading ? 'Sending...' : `Send ${amount} ${selectedAssetObj.code}`}
+              </Button>
             </div>
-          </div>
-
-          <div
-            key={step}
-            className="flex flex-1 flex-col min-h-0 animate-in fade-in-0 slide-in-from-bottom-2 duration-200"
-          >
-            {step === 'success' ? (
-              <>
-                <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4 [&>*]:shrink-0">
-                  <TxResultHero
-                    state="success"
-                    amountText={`-${amount}`}
-                    code={selectedAssetObj.code}
-                    issuer={selectedAssetObj.issuer || undefined}
-                    icon={selectedAssetObj.icon}
-                    chainIcon={stellarChain.icon}
-                    subtitle={`to ${ownLabelFor(lastDestRef.current) ?? shortDest}`}
-                  />
-                  <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
-                    <DetailRow label="Network">
-                      <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
-                    </DetailRow>
-                    <DetailRow label="To">
-                      <AddressValue address={lastDestRef.current} />
-                    </DetailRow>
-                    <DetailRow label="Network fee">
-                      <span className="tabular-nums">
-                        {sendTxDetails?.fee_charged
-                          ? `${trimZeros(stroopsToXlm(sendTxDetails.fee_charged))} XLM`
-                          : '...'}
-                      </span>
-                    </DetailRow>
-                    {memo && (
-                      <DetailRow label="Memo">
-                        <span className="break-all">{memo}</span>
-                      </DetailRow>
-                    )}
-                    <DetailRow label="Transaction">
-                      <CopyValue value={txHash} />
-                    </DetailRow>
-                  </div>
-                  <AdvancedDetails
-                    open={successXdrOpen}
-                    onToggle={() => setSuccessXdrOpen((p) => !p)}
-                  >
-                    {sendTxDetails && (
-                      <DetailRow label="Ledger">#{sendTxDetails.ledger.toLocaleString()}</DetailRow>
-                    )}
-                    {sendTxDetails?.created_at && (
-                      <DetailRow label="Confirmed at">
-                        {new Date(sendTxDetails.created_at).toLocaleString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </DetailRow>
-                    )}
-                    {memo && <DetailRow label="Memo type">{memoType}</DetailRow>}
-                    {sendTxDetails?.envelope_xdr && (
-                      <DetailRow label="Envelope XDR">
-                        <CopyValue value={sendTxDetails.envelope_xdr} />
-                      </DetailRow>
-                    )}
-                  </AdvancedDetails>
-                </div>
-                <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
-                  <Button variant="outline" className="flex-1" asChild>
-                    <a
-                      href={getExplorerTxUrl(txHash, activeNetwork.id)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1.5"
-                    >
-                      View on explorer <ExternalLink size={14} />
-                    </a>
-                  </Button>
-                  <Button variant="outline" className="flex-1" onClick={handleSendAgain}>
-                    Send again
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3 [&>*]:shrink-0">
-                  <div className="flex items-center gap-3 rounded-xl bg-card px-4 py-4">
-                    <TokenAssetIcon
-                      code={selectedAssetObj.code}
-                      icon={selectedAssetObj.icon}
-                      chainIcons={[stellarChain.icon]}
-                    />
-                    <div className="min-w-0">
-                      <p className="text-2xl font-bold tabular-nums text-foreground">
-                        {amount}{' '}
-                        <span className="text-base font-medium text-muted-foreground">
-                          {selectedAssetObj.code}
-                        </span>
-                        <VerifiedMark
-                          code={selectedAssetObj.code}
-                          issuer={selectedAssetObj.issuer || undefined}
-                          className="ml-1 h-4 w-4"
-                        />
-                      </p>
-                      {lastPreviewRef.current?.amountUsd && (
-                        <p className="text-xs text-muted-foreground">
-                          {lastPreviewRef.current.amountUsd}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
-                    <DetailRow label="From">
-                      <AddressValue address={status.publicKey ?? undefined} />
-                    </DetailRow>
-                    <DetailRow label="To">
-                      <span className="inline-flex flex-col items-end">
-                        {ownLabelFor(destination) && (
-                          <span className="font-medium">{ownLabelFor(destination)}</span>
-                        )}
-                        <AddressValue address={destination} />
-                      </span>
-                    </DetailRow>
-                    {memo && (
-                      <DetailRow label="Memo">
-                        <span className="break-all">{memo}</span>
-                      </DetailRow>
-                    )}
-                    <DetailRow label="Network">
-                      <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
-                    </DetailRow>
-                    <DetailRow label="Max fee">
-                      <span className="tabular-nums">
-                        {trimZeros(String(lastPreviewRef.current?.fee ?? activeFeeXlm))} XLM
-                        {lastPreviewRef.current?.feeUsd && (
-                          <span className="ml-1 text-muted-foreground">
-                            {lastPreviewRef.current.feeUsd}
-                          </span>
-                        )}
-                      </span>
-                    </DetailRow>
-                  </div>
-
-                  {lastPreviewRef.current?.xdr && (
-                    <AdvancedDetails
-                      open={confirmXdrOpen}
-                      onToggle={() => setConfirmXdrOpen((p) => !p)}
-                    >
-                      {memo && <DetailRow label="Memo type">{memoType}</DetailRow>}
-                      <DetailRow label="Unsigned XDR">
-                        <CopyValue value={lastPreviewRef.current.xdr} />
-                      </DetailRow>
-                    </AdvancedDetails>
-                  )}
-
-                  <Reveal show={!!error} gap={12}>
-                    <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2.5">
-                      <p className="text-xs text-destructive">{error}</p>
-                    </div>
-                  </Reveal>
-                  <Reveal show={loading} gap={12}>
-                    <p className="text-center text-xs text-muted-foreground">
-                      Signing and submitting to {stellarChain.name}...
-                    </p>
-                  </Reveal>
-                </div>
-                <div className="flex gap-3 border-t border-border px-5 py-4 shrink-0">
-                  <Button
-                    variant="outline"
-                    className="flex-1"
-                    onClick={() => {
-                      setStep('form')
-                      setError('')
-                    }}
-                    disabled={loading}
-                  >
-                    Cancel
-                  </Button>
-                  <Button className="flex-1" onClick={handleConfirm} disabled={loading}>
-                    {loading ? 'Sending...' : `Send ${amount} ${selectedAssetObj.code}`}
-                  </Button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
+          </>
+        )}
+      </ConfirmSheet>
 
       {showAssetPicker && (
         <AssetPickerSheet
