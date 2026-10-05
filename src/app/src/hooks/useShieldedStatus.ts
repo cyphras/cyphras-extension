@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchPrices, priceKey, type PriceAsset } from '@/lib/api'
 import { formatUnits } from '@/lib/amount'
+import { privateBalance } from '@/lib/privateBalance'
 import { SERVICE_TYPES } from '@constants/services'
 import type { ServiceResponse, ShieldedStatusView } from '@ext-types/index'
 import type { ShieldedPoolOption } from './useShieldedAvailable'
 
 interface ShieldedPoolState {
   status: ShieldedStatusView | null
-  // The spendable balance in USD, with the asset's price and 24h change.
+  // The whole private balance, payments and deposits in flight included, in USD, with the asset's
+  // price and 24h change.
   usdValue: number | null
   usdPrice: number | null
   change24h: number | null
@@ -178,12 +180,12 @@ export function useShieldedStatus(
   for (const pool of pools) {
     const status = statuses[pool.poolId] ?? null
     const price = prices[pool.poolId]?.price ?? null
-    const spendable = status
-      ? parseFloat(formatUnits(status.balance.spendable, pool.decimals))
+    const total = status
+      ? parseFloat(formatUnits(privateBalance(status).total, pool.decimals))
       : null
     byPool[pool.poolId] = {
       status,
-      usdValue: spendable !== null && price !== null ? spendable * price : null,
+      usdValue: total !== null && price !== null ? total * price : null,
       usdPrice: price,
       change24h: prices[pool.poolId]?.change ?? null,
     }

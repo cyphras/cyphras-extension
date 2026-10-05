@@ -15,6 +15,8 @@ export interface TokenRowProps {
   changePct?: number | null
   // Replaces the balance line, e.g. "Not activated".
   note?: string
+  // Under the balance line, e.g. what of a private balance is still in flight.
+  detail?: string
   className?: string
   onClick: () => void
 }
@@ -30,6 +32,7 @@ export function TokenRow({
   priceText,
   changePct = null,
   note,
+  detail,
   className,
   onClick,
 }: TokenRowProps) {
@@ -54,6 +57,9 @@ export function TokenRow({
             <p className="text-[13px] text-muted-foreground tracking-wider tabular-nums">
               {masked ? <PixelMask count={4} size="sm" /> : balanceText}
             </p>
+          )}
+          {detail && !masked && (
+            <p className="truncate text-[11px] text-amber-600 dark:text-amber-400">{detail}</p>
           )}
         </div>
       </div>

@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, type ComponentType } from 'react'
-import { VerifiedBadge } from '@/components/token/VerifiedBadge'
 import { NumberTicker } from '@/components/NumberTicker'
 import { PixelMask, PixelProgress } from '@/components/Pixel'
 import { statusMeta, bridgeSteps } from '@/lib/cctp'
@@ -13,7 +12,6 @@ import { usePullToPrivate } from '@/hooks/usePullToPrivate'
 import { useShieldedAvailable } from '@/hooks/useShieldedAvailable'
 import { useShieldedStatus } from '@/hooks/useShieldedStatus'
 import { SectionMenu } from '@/components/SectionMenu'
-import { AssetIcon } from '@/components/token/AssetIcon'
 import { TokenRow } from '@/components/token/TokenRow'
 import { SuggestedAssets } from '@/components/SuggestedAssets'
 import { useCctpJobs } from '@/hooks/useCctpJobs'
@@ -49,9 +47,12 @@ import {
   type NetworkFilterOption,
 } from '@/components/NetworkFilterSheet'
 import { Alert } from '@/components/Alert'
+import { Reveal } from '@/components/Collapse'
+import { PrivateBreakdown, PrivatePartSheet } from '@/components/PrivateBalance'
 import type { AssetBalance } from '@/hooks/useBalances'
-import type { ShieldedBalanceView, ShieldedPlanView } from '@ext-types/index'
+import type { ShieldedPlanView } from '@ext-types/index'
 import { formatUnits } from '@/lib/amount'
+import { PART_LABELS, privateBalance, type BalancePartKey } from '@/lib/privateBalance'
 import {
   RefreshCw,
   Send,
@@ -122,18 +123,6 @@ function BalanceSkeleton() {
 }
 
 const HIDE_ZERO_KEY = 'cyphras_hide_zero_balances'
-
-// The part of a private balance that is not spendable yet, as short phrases for its token row.
-function pendingParts(b: ShieldedBalanceView, decimals: number, code: string): string[] {
-  const parts: [string, string][] = [
-    [b.pendingDeposits, 'pending'],
-    [b.locked, 'locked in payments'],
-    [b.awaitingPayout, 'awaiting payout'],
-  ]
-  return parts
-    .filter(([units]) => units !== '0')
-    .map(([units, label]) => `${formatUnits(units, decimals)} ${code} ${label}`)
-}
 
 function ActionButton({
   icon: Icon,
@@ -242,6 +231,8 @@ export default function Home() {
     reload: reloadShielded,
   } = useShieldedStatus(shieldedAvailable, active, activePublicKey, activeNetwork.id, shieldedPools)
   const shieldedStatus = shieldedByPool[poolId]?.status ?? null
+  const shieldedModel = shieldedStatus ? privateBalance(shieldedStatus) : null
+  const [openPart, setOpenPart] = useState<BalancePartKey | null>(null)
   const [shieldedReceiveOpen, setShieldedReceiveOpen] = useState(false)
   const [shieldedAction, setShieldedAction] = useState<ShieldedAction | null>(null)
   const [retryPlan, setRetryPlan] = useState<ShieldedPlanView | null>(null)
@@ -433,6 +424,9 @@ export default function Home() {
 
   const shieldedDecimals = selectedPool?.decimals ?? 7
   const shieldedLabel = selectedPool?.label ?? 'XLM'
+  const shieldedCode = selectedPool?.native ? 'XLM' : (selectedPool?.assetCode ?? shieldedLabel)
+  const shieldedUnit = (units: bigint | string) =>
+    `${formatBalance(formatUnits(units, shieldedDecimals))} ${shieldedCode}`
 
   // Native pools use the inline XLM glyph; others reuse the public list's issuer icon.
   function poolIcon(pool: (typeof shieldedPools)[number]): string | undefined {
@@ -440,17 +434,27 @@ export default function Home() {
     return pool.icon ?? shieldedIcons.get(`${pool.assetCode}:${pool.assetIssuer}`)
   }
 
-  // Per-pool rows for the list and send/unshield pickers: the spendable balance, with what
-  // waits in deposits, unconfirmed payments and the exit queue beside it.
+  // Per-pool rows for the list and send/unshield pickers: the whole private balance, with the parts
+  // of it still in flight beside it.
   const shieldedTokenRows: ShieldedTokenRow[] = shieldedPools.map((pool) => {
     const pb = shieldedByPool[pool.poolId]
     const code = pool.native ? 'XLM' : (pool.assetCode ?? pool.label)
+    const model = pb?.status ? privateBalance(pb.status) : null
+    const inFlight = model?.parts.filter((p) => p.key !== 'available') ?? []
     return {
       poolId: pool.poolId,
       code,
       label: pool.label,
-      balance: pb?.status ? formatUnits(pb.status.balance.spendable, pool.decimals) : '0',
-      pending: pb?.status ? pendingParts(pb.status.balance, pool.decimals, code) : [],
+      balance: model ? formatBalance(formatUnits(model.total, pool.decimals)) : '0',
+      detail:
+        inFlight.length > 0
+          ? inFlight
+              .map(
+                (p) =>
+                  `${formatBalance(formatUnits(p.amount, pool.decimals))} ${PART_LABELS[p.key].toLowerCase()}`
+              )
+              .join(' / ')
+          : undefined,
       usdValue: pb?.usdValue ?? null,
       usdPrice: pb?.usdPrice ?? null,
       icon: poolIcon(pool),
@@ -656,6 +660,18 @@ export default function Home() {
                       <span className="invisible">0</span>
                     )}
                   </p>
+                  <Reveal show={inPrivateCard && !!shieldedModel && shieldedModel.parts.length > 0}>
+                    {shieldedModel && (
+                      <PrivateBreakdown
+                        balance={shieldedModel}
+                        format={(units) =>
+                          `${formatBalance(formatUnits(units, shieldedDecimals))} ${shieldedCode}`
+                        }
+                        masked={hideBalance}
+                        onOpen={setOpenPart}
+                      />
+                    )}
+                  </Reveal>
                 </div>
                 {createPortal(<div className="peel-flap" />, document.body)}
                 <div
@@ -737,50 +753,25 @@ export default function Home() {
                         )}
                       </div>
                     </div>
-                    {shieldedTokenRows.map((t) => (
-                      <button
+                    {shieldedTokenRows.map((t, i) => (
+                      <div
                         key={t.poolId}
-                        onClick={() => setTappedPoolId(t.poolId)}
-                        className="group cursor-pointer flex w-full items-center justify-between rounded-xl bg-card px-4 py-3 hover:bg-muted/60 transition-colors text-left"
+                        className="row-enter"
+                        style={{ animationDelay: `${Math.min(i, 8) * 35}ms` }}
                       >
-                        <div className="flex items-center gap-3">
-                          <AssetIcon
-                            icon={t.icon}
-                            code={t.code}
-                            chainIcons={[chainIcons.get(stellarChainId)]}
-                          />
-                          <div className="flex flex-col">
-                            <p className="flex items-center gap-1 text-sm font-medium text-foreground">
-                              {t.code}
-                              <VerifiedBadge />
-                            </p>
-                            <p className="text-xs text-muted-foreground tracking-wider">
-                              {hideBalance ? <PixelMask count={4} size="sm" /> : t.balance}
-                            </p>
-                            {!hideBalance && t.pending && t.pending.length > 0 && (
-                              <p className="text-[11px] text-amber-600 dark:text-amber-400">
-                                {t.pending.join(', ')}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          {hideBalance ? (
-                            <p className="text-sm text-foreground">
-                              <PixelMask count={4} size="sm" />
-                            </p>
-                          ) : t.usdValue !== null ? (
-                            <p className="text-sm text-foreground">{formatSmall(t.usdValue)}</p>
-                          ) : (
-                            <p className="text-xs text-muted-foreground">-</p>
-                          )}
-                          {!hideBalance && t.usdPrice != null && (
-                            <p className="text-xs text-muted-foreground">
-                              {formatPrice(t.usdPrice)}
-                            </p>
-                          )}
-                        </div>
-                      </button>
+                        <TokenRow
+                          code={t.code}
+                          verified
+                          icon={t.icon}
+                          chainIcons={[chainIcons.get(stellarChainId)]}
+                          masked={hideBalance}
+                          balanceText={t.balance}
+                          detail={t.detail}
+                          valueText={t.usdValue !== null ? formatSmall(t.usdValue) : null}
+                          priceText={t.usdPrice != null ? formatPrice(t.usdPrice) : null}
+                          onClick={() => setTappedPoolId(t.poolId)}
+                        />
+                      </div>
                     ))}
                   </div>
 
@@ -1129,6 +1120,15 @@ export default function Home() {
       />
 
       <ShieldedReceive open={shieldedReceiveOpen} onClose={() => setShieldedReceiveOpen(false)} />
+
+      <PrivatePartSheet
+        part={openPart}
+        balance={shieldedModel}
+        status={shieldedStatus}
+        unit={shieldedUnit}
+        onClose={() => setOpenPart(null)}
+        onItem={() => setOpenPart(null)}
+      />
 
       {pickerAction && (
         <ShieldedTokenPicker

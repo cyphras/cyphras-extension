@@ -10,8 +10,8 @@ export interface ShieldedTokenRow {
   label: string
   // Pre-decimalized display string per pool.decimals, not raw units.
   balance: string
-  // What of a private balance is not spendable yet, as short phrases.
-  pending?: string[]
+  // The parts of a private balance still in flight, in the glossary's words.
+  detail?: string
   usdValue: number | null
   usdPrice?: number | null
   icon?: string
@@ -140,8 +140,12 @@ export default function ShieldedTokenPicker({
               </div>
               <div className="text-right shrink-0">
                 <p className="text-sm text-foreground tabular-nums">{t.balance}</p>
-                {t.usdValue !== null && (
-                  <p className="text-xs text-muted-foreground">{formatValue(t.usdValue)}</p>
+                {t.detail ? (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400">{t.detail}</p>
+                ) : (
+                  t.usdValue !== null && (
+                    <p className="text-xs text-muted-foreground">{formatValue(t.usdValue)}</p>
+                  )
                 )}
               </div>
             </button>
