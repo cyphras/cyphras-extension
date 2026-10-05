@@ -689,8 +689,9 @@ export default function Send() {
     if (step !== 'success' || !txHash) return
     setSendTxDetails(null)
     fetch(`${activeNetwork.horizonUrl}/transactions/${txHash}`)
-      .then((r) => r.json())
-      .then((data: HorizonTxDetails) => setSendTxDetails(data))
+      // An error reply (the transaction not found yet) has none of the fields the sheet reads.
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: HorizonTxDetails | null) => setSendTxDetails(data))
       .catch(() => {})
   }, [step, txHash, activeNetwork.horizonUrl])
 
