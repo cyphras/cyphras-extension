@@ -9,7 +9,8 @@
     "typecheck": "tsc -b src/app/tsconfig.json --noEmit",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,json}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,json}\"",
-    "lint": "sh -c 'eslint src/app/src; a=$?; eslint src/background src/content src/constants src/types; b=$?; exit $((a>b?a:b))'"
+    "lint": "sh -c 'eslint src/app/src; a=$?; eslint src/background src/content src/constants src/types; b=$?; exit $((a>b?a:b))'",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@cyphras/private": "file:../cyphras-contracts-sdk-pkg/sdk/private",
