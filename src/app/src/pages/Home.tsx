@@ -24,7 +24,7 @@ import TokenDetailSheet from '@/components/TokenDetailSheet'
 import ShieldedReceive from '@/components/ShieldedReceive'
 import ShieldedSend, { type ShieldedAction } from '@/components/ShieldedSend'
 import ShieldedTokenPicker, { type ShieldedTokenRow } from '@/components/ShieldedTokenPicker'
-import ShieldedTokenSheet from '@/components/ShieldedTokenSheet'
+import { PrivateTokenPage } from '@/components/PrivateTokenPage'
 import ShieldedActivity from '@/components/ShieldedActivity'
 import { PrivateHistory } from '@/components/PrivateHistory'
 import { PrivateTxSheet } from '@/components/PrivateTxSheet'
@@ -804,7 +804,10 @@ export default function Home() {
                           detail={t.detail}
                           valueText={t.usdValue !== null ? formatSmall(t.usdValue) : null}
                           priceText={t.usdPrice != null ? formatPrice(t.usdPrice) : null}
-                          onClick={() => setTappedPoolId(t.poolId)}
+                          onClick={() => {
+                            setSelectedPoolId(t.poolId)
+                            setTappedPoolId(t.poolId)
+                          }}
                         />
                       </div>
                     ))}
@@ -1174,6 +1177,29 @@ export default function Home() {
         }}
       />
 
+      <PrivateTokenPage
+        token={tappedToken}
+        balance={shieldedModel}
+        address={shieldedAddr}
+        entries={entries}
+        format={(units) => formatBalance(formatUnits(units, shieldedDecimals))}
+        fiat={(units) => {
+          const price = shieldedByPool[poolId]?.usdPrice ?? null
+          return price !== null
+            ? formatSmall(Number(formatUnits(units, shieldedDecimals)) * price)
+            : null
+        }}
+        chainIcon={chainIcons.get(stellarChainId)}
+        networkName={activeNetwork.name}
+        fiatOf={entryFiat}
+        onOpenPart={setOpenPart}
+        onSelectEntry={(entry) => setEntryId(entry.item.id)}
+        onHistory={() => setHistoryOpen(true)}
+        onSend={(picked) => openShieldedForPool(picked, 'send')}
+        onReceive={() => setShieldedReceiveOpen(true)}
+        onClose={() => setTappedPoolId(null)}
+      />
+
       <PrivateHistory
         open={historyOpen}
         entries={entries}
@@ -1205,6 +1231,7 @@ export default function Home() {
         poolId={poolId}
         onRetry={(plan) => {
           setHistoryOpen(false)
+          setTappedPoolId(null)
           setRetryPlan(plan)
         }}
         onChanged={refreshShielded}
@@ -1219,13 +1246,6 @@ export default function Home() {
           onClose={() => setPickerAction(null)}
         />
       )}
-
-      <ShieldedTokenSheet
-        token={tappedToken}
-        onSend={(picked) => openShieldedForPool(picked, 'send')}
-        onReceive={() => setShieldedReceiveOpen(true)}
-        onClose={() => setTappedPoolId(null)}
-      />
 
       <ShieldedSend
         action={retryPlan ? retryPlan.kind : shieldedAction}

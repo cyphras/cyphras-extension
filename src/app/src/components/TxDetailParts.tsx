@@ -5,6 +5,7 @@ import { NumberTicker } from '@/components/NumberTicker'
 import { VerifiedBadge } from '@/components/token/VerifiedBadge'
 import { VerifiedMark } from '@/components/token/VerifiedMark'
 import { Collapse } from '@/components/Collapse'
+import { Cy1Avatar } from '@/components/Cy1Avatar'
 import { StellarAvatar } from '@/components/StellarAvatar'
 import { shortAddress } from '@/lib/address'
 import { useAvatarKey } from '@/hooks/useAvatarKey'
@@ -60,6 +61,16 @@ export function AddressValue({ address, isYou }: { address?: string; isYou?: boo
   if (!address) return <span>-</span>
   if (isYou) return <span className="font-medium">You</span>
   return <CopyValue value={address} display={shortAddress(address)} avatar />
+}
+
+// A private address with its identicon, copied whole.
+export function PrivateAddressValue({ address }: { address: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <Cy1Avatar address={address} size={14} />
+      <CopyValue value={address} display={shortAddress(address)} />
+    </span>
+  )
 }
 
 export function NetworkValue({ name, icon }: { name: string; icon?: string }) {

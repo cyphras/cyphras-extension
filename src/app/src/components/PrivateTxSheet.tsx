@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { BottomSheet } from '@/components/BottomSheet'
 import { StepList } from '@/components/BridgeProgress'
-import { Cy1Avatar } from '@/components/Cy1Avatar'
 import { PrivateActions } from '@/components/PrivateActions'
 import { AssetIcon } from '@/components/token/AssetIcon'
 import { VerifiedBadge } from '@/components/token/VerifiedBadge'
@@ -12,28 +11,18 @@ import {
   AdvancedDetails,
   CopyValue,
   DetailRow,
+  PrivateAddressValue,
   StatusPill,
   type StatusTone,
 } from '@/components/TxDetailParts'
 import { usePreferences } from '@/context/PreferencesContext'
 import { formatAmount } from '@/lib/activity'
-import { shortAddress } from '@/lib/address'
 import { trimZeros, stroopsToXlm } from '@/lib/historyUtils'
 import { routeText, SCREENING, type Tone } from '@/lib/privateActivity'
 import { stepsOf, type PrivateEntry } from '@/lib/privateHistory'
 import type { ShieldedPlanView } from '@ext-types/index'
 
 const PILL_TONE: Record<Tone, StatusTone> = { ok: 'ok', warn: 'warn', bad: 'bad', muted: 'warn' }
-
-// A private address with its identicon, copied whole.
-function PrivateAddress({ address }: { address: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <Cy1Avatar address={address} size={14} />
-      <CopyValue value={address} display={shortAddress(address)} />
-    </span>
-  )
-}
 
 // The detail of one private history entry, laid out like a public transaction's: amount and status,
 // the parties, the fee and the route, the transaction, how it got here, and what the user can do.
@@ -105,7 +94,7 @@ export function PrivateTxSheet({
   const counterparty = item.counterparty
   const party =
     item.kind === 'send' && counterparty ? (
-      <PrivateAddress address={counterparty} />
+      <PrivateAddressValue address={counterparty} />
     ) : (item.kind === 'unshield' || item.kind === 'claim') && counterparty ? (
       <AddressValue address={counterparty} isYou={counterparty === accountPk} />
     ) : item.kind === 'receive' ? (

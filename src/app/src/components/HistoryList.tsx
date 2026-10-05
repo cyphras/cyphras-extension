@@ -5,14 +5,16 @@ import { Skeleton } from '@/components/ui/skeleton'
 // The pieces of a history page: rows while it loads, the empty state, and rows under sticky date
 // headers, so every history list reads the same.
 
-export function HistorySkeleton() {
+export function HistorySkeleton({ rows = 5, header = true }: { rows?: number; header?: boolean }) {
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-3 px-1 py-2">
-        <Skeleton className="h-2.5 w-20 rounded" />
-        <div className="h-px flex-1 bg-border" />
-      </div>
-      {[...Array(5)].map((_, i) => (
+      {header && (
+        <div className="flex items-center gap-3 px-1 py-2">
+          <Skeleton className="h-2.5 w-20 rounded" />
+          <div className="h-px flex-1 bg-border" />
+        </div>
+      )}
+      {[...Array(rows)].map((_, i) => (
         <div key={i} className="flex items-center gap-3 rounded-xl bg-card px-4 py-3">
           <div className="relative shrink-0">
             <Skeleton className="h-10 w-10 rounded-full" />

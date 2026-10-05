@@ -52,6 +52,48 @@ export function PrivateBreakdown({
   )
 }
 
+// The parts of a private balance as the rows of a card, each a tap away from what is behind it.
+export function PrivatePartRows({
+  balance,
+  format,
+  fiat,
+  onOpen,
+}: {
+  balance: PrivateBalance
+  format: (units: bigint) => string
+  fiat: (units: bigint) => string | null
+  onOpen: (key: BalancePartKey) => void
+}) {
+  return (
+    <div className="mb-4 divide-y divide-border rounded-xl bg-card">
+      <p className="pixel-label px-4 pt-3 pb-2 text-[10px] text-muted-foreground">Balance</p>
+      {balance.parts.map((part) => {
+        const value = fiat(part.amount)
+        return (
+          <button
+            key={part.key}
+            onClick={() => onOpen(part.key)}
+            className="flex w-full cursor-pointer items-center justify-between px-4 py-3 text-left transition-colors hover:bg-muted/40"
+          >
+            <span className="flex items-center gap-2.5 text-sm font-medium text-foreground">
+              <span className={`h-2 w-2 rounded-full ${PART_DOTS[part.key]}`} />
+              {PART_LABELS[part.key]}
+            </span>
+            <span className="text-right">
+              <span className="block text-sm font-medium tabular-nums text-foreground">
+                {format(part.amount)}
+              </span>
+              {value && (
+                <span className="block text-xs tabular-nums text-muted-foreground">{value}</span>
+              )}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function itemTitle(item: BalanceItem, unit: (units: bigint | string) => string): string {
   if (item.kind === 'deposit') return `Shield ${unit(item.deposit.amount)}`
   const p = item.plan
