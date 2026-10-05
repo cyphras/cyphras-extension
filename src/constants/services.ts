@@ -66,8 +66,10 @@ export const SERVICE_TYPES = {
   SHIELDED_QUOTE: 'SHIELDED_QUOTE',
   // The pool's deposit limits and admission delays, for the active account as the depositor.
   SHIELDED_LIMITS: 'SHIELDED_LIMITS',
-  // Opens a pool on a fresh state when the account's stored one cannot be assigned to it.
+  // Opens a pool on a fresh state when the account's stored one cannot be assigned to it, and
+  // dismisses the warning a fresh start leaves.
   SHIELDED_START_FRESH: 'SHIELDED_START_FRESH',
+  SHIELDED_DISMISS_RESET: 'SHIELDED_DISMISS_RESET',
   // The account takes back a pending deposit, claims a flagged deposit's refund, or claims a
   // stranded payout; id is the deposit ID or the exit ID.
   SHIELDED_CANCEL: 'SHIELDED_CANCEL',

@@ -41,6 +41,7 @@ import {
 import { getIconMap } from '@/hooks/useBalances'
 import { getChainIcons, getChainNames } from '@/lib/chainInfo'
 import { LEGACY_NETWORK_TO_CHAIN, chainById } from '@constants/chains'
+import { SERVICE_TYPES } from '@constants/services'
 import {
   NetworkFilterButton,
   NetworkFilterSheet,
@@ -238,6 +239,7 @@ export default function Home() {
     syncing: shieldedSyncing,
     error: shieldedRequestError,
     refresh: refreshShielded,
+    reload: reloadShielded,
   } = useShieldedStatus(shieldedAvailable, active, activePublicKey, activeNetwork.id, shieldedPools)
   const shieldedStatus = shieldedByPool[poolId]?.status ?? null
   const [shieldedReceiveOpen, setShieldedReceiveOpen] = useState(false)
@@ -537,9 +539,14 @@ export default function Home() {
   const shieldedNotice =
     shieldedStatus?.services === 'mismatch'
       ? 'A private pool service does not match this wallet, so shields and payments are paused.'
-      : (shieldedStatus?.stateReset ??
-        shieldedStatus?.syncError?.message ??
-        shieldedRequestError?.message)
+      : (shieldedStatus?.syncError?.message ?? shieldedRequestError?.message)
+  // A fresh start of the pool's state, which stays until dismissed: payments that only the old
+  // records followed may still land.
+  const shieldedReset = shieldedStatus?.stateReset ?? null
+  const dismissShieldedReset = () =>
+    chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_DISMISS_RESET, poolId }, () =>
+      reloadShielded()
+    )
 
   return (
     <>
@@ -776,6 +783,18 @@ export default function Home() {
                       </button>
                     ))}
                   </div>
+
+                  {shieldedReset && (
+                    <Alert
+                      message={`${new Date(shieldedReset.at).toLocaleString([], {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}: ${shieldedReset.warning}`}
+                      onDismiss={dismissShieldedReset}
+                    />
+                  )}
 
                   {shieldedRequestError?.code === 'state_unassigned' ? (
                     <ShieldedStartFresh

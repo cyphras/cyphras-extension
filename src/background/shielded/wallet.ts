@@ -38,6 +38,7 @@ interface OpenWallet {
   readonly wallet: PrivateWallet
   readonly pool: ShieldedDeployment
   readonly signer: TransactionSigner
+  readonly resetNotice: string
   sync: Promise<void> | undefined
   syncedAt: number | null
   syncError: ShieldedErrorView | null
@@ -109,6 +110,12 @@ async function activeAccount(): Promise<{ account: AccountInfo; mnemonic: string
   return { account, mnemonic }
 }
 
+// Where the warning of a fresh start of this account's pool state is kept. The SDK gives it only to
+// the wallet instance that started fresh, which a worker restart drops, while a payment that only the
+// old records followed may still land well after; so it stays until the user dismisses it.
+const resetNoticeKey = (pool: ShieldedDeployment, account: AccountInfo): string =>
+  `cyphras_shielded_reset_${pool.deployment.id}_${account.walletId}_${account.index}`
+
 // The account's own key, which must be the one the recovery phrase gives at its index.
 async function accountKeypair(account: AccountInfo, mnemonic: string): Promise<Keypair> {
   const { secret } = await deriveKeypairRaw(mnemonic, account.index)
@@ -140,10 +147,16 @@ async function openWallet(
     resetUnreadableState: true,
     resetUnassignedState: startFresh,
   })
+  const resetNotice = resetNoticeKey(pool, account)
+  const reset = wallet.stateReset()
+  if (reset) {
+    await chrome.storage.local.set({ [resetNotice]: { warning: reset.warning, at: Date.now() } })
+  }
   return {
     wallet,
     pool,
     signer: vaultSigner(keypair, pool.deployment),
+    resetNotice,
     sync: undefined,
     syncedAt: null,
     syncError: null,
@@ -246,12 +259,14 @@ function planView(p: PlanView): ShieldedPlanView {
 
 async function statusOf(entry: OpenWallet): Promise<ShieldedStatusView> {
   const { wallet } = entry
-  const [balance, deposits, plans, history] = await Promise.all([
+  const [balance, deposits, plans, history, notices] = await Promise.all([
     wallet.balance(),
     wallet.deposits(),
     wallet.plans(),
     wallet.history(),
+    chrome.storage.local.get(entry.resetNotice),
   ])
+  const notice = notices[entry.resetNotice] as ShieldedStatusView['stateReset'] | undefined
   return {
     address: wallet.generateAddress(),
     balance: {
@@ -272,7 +287,7 @@ async function statusOf(entry: OpenWallet): Promise<ShieldedStatusView> {
     syncedAt: entry.syncedAt,
     syncError: entry.syncError,
     services: wallet.verification().state,
-    stateReset: wallet.stateReset()?.warning ?? null,
+    stateReset: notice ?? null,
   }
 }
 
@@ -313,6 +328,13 @@ export async function shieldedStartFresh(
     if (!(err instanceof CyphrasError && err.code === 'state_unassigned')) throw err
   }
   return statusOf(await walletFor(net, poolId, true))
+}
+
+export async function shieldedDismissReset(net: NetworkConfig, poolId: string): Promise<void> {
+  assertShieldedAllowed(net)
+  const pool = poolOf(net, poolId)
+  const { account } = await activeAccount()
+  await chrome.storage.local.remove(resetNoticeKey(pool, account))
 }
 
 export async function shieldedSync(

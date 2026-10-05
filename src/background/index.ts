@@ -136,6 +136,7 @@ import {
   shieldedAccountAction,
   settleShieldedWallets,
   shieldedDecide,
+  shieldedDismissReset,
   shieldedLimits,
   shieldedQuote,
   shieldedReceiveAddress,
@@ -3376,6 +3377,22 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       try {
         const net = await getActiveNetwork()
         sendResponse({ shieldedStatus: await shieldedStartFresh(net, m.poolId) })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_DISMISS_RESET: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      try {
+        const net = await getActiveNetwork()
+        await shieldedDismissReset(net, m.poolId)
+        sendResponse({ ok: true })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }

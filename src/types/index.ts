@@ -208,7 +208,9 @@ export interface ShieldedStatusView {
   syncError: ShieldedErrorView | null
   // 'mismatch': a service or the vault points elsewhere, so shields and spends are refused.
   services: 'verified' | 'unverified' | 'mismatch'
-  stateReset: string | null
+  // The SDK's warning from when this pool last started this account from a fresh state, and when
+  // (Unix milliseconds); kept until the user dismisses it.
+  stateReset: { warning: string; at: number } | null
 }
 
 // What a send or unshield would pay now, and what the notes as of the last sync can move with that
