@@ -90,21 +90,28 @@ export function PrivateTxSheet({
         hour: '2-digit',
         minute: '2-digit',
       })
-    : 'Not known yet'
+    : 'Not known'
   const counterparty = item.counterparty
   const party =
-    item.kind === 'send' && counterparty ? (
-      <PrivateAddressValue address={counterparty} />
-    ) : (item.kind === 'unshield' || item.kind === 'claim') && counterparty ? (
-      <AddressValue address={counterparty} isYou={counterparty === accountPk} />
-    ) : item.kind === 'receive' ? (
+    item.kind === 'receive' ? (
       'Private pool'
-    ) : (
+    ) : item.kind === 'shield' || item.kind === 'cancel' || item.kind === 'refund' ? (
       'Your account'
+    ) : !counterparty ? (
+      'Not known'
+    ) : item.kind === 'send' ? (
+      <PrivateAddressValue address={counterparty} />
+    ) : (
+      <AddressValue address={counterparty} isYou={counterparty === accountPk} />
     )
   // A relayed payment or a received one is the account's private business: an explorer that shows
-  // its transaction learns that this browser looked at it.
-  const privateTx = item.kind === 'receive' || (plan !== null && plan.route.kind === 'relayer')
+  // its transaction learns that this browser looked at it. A payment rebuilt from the chain counts
+  // as relayed, since its route is not known.
+  const privateTx =
+    item.kind === 'receive' ||
+    (plan !== null
+      ? plan.route.kind === 'relayer'
+      : item.recovered && (item.kind === 'send' || item.kind === 'unshield'))
 
   return (
     <BottomSheet
@@ -165,6 +172,8 @@ export function PrivateTxSheet({
                 {formatAmount(trimZeros(stroopsToXlm(item.fee)))} {view.code}
               </span>
             </DetailRow>
+          ) : item.recovered && item.fee === null && item.kind !== 'receive' ? (
+            <DetailRow label="Fee">Included in the amount</DetailRow>
           ) : (
             networkFee && (
               <DetailRow label="Network fee">

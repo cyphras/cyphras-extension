@@ -198,9 +198,11 @@ export interface ShieldedHistoryItem {
   id: string
   kind: 'shield' | 'send' | 'receive' | 'unshield' | 'refund' | 'cancel' | 'claim'
   amount: string
-  // The relayer fee of a relayed payment, null where the account paid the network itself.
+  // The relayer fee of a relayed payment; null where the account paid the network itself, or where
+  // the chain does not separate the fee from the amount, which then includes it.
   fee: string | null
-  // The private address paid, the Stellar address unshielded to or claimed for, or the depositor.
+  // The private address paid, the Stellar address unshielded to or claimed for, or the depositor;
+  // null for an unshield rebuilt from the chain whose destination no checked event showed.
   counterparty: string | null
   txHash: string | null
   ledger: number | null
@@ -212,6 +214,8 @@ export interface ShieldedHistoryItem {
   // transaction, as for a deposit recovered from the chain.
   depositTx: string | null
   depositId: number | null
+  // Rebuilt from the chain with the viewing keys, with no record of the account's own.
+  recovered: boolean
 }
 
 export interface ShieldedStatusView {

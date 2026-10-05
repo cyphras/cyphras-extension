@@ -73,7 +73,7 @@ function counterpartyOf(item: ShieldedHistoryItem): string {
     case 'claim':
       return to ? `For ${to}` : ''
     default:
-      return to ? `To ${to}` : ''
+      return to ? `To ${to}` : 'To an unknown address'
   }
 }
 
