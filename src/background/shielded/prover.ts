@@ -32,6 +32,9 @@ const PORT_WAIT_MS = 15_000
 
 let proverPort: chrome.runtime.Port | null = null
 let portWaiters: ((port: chrome.runtime.Port) => void)[] = []
+// When the last wake went out. A wake makes the document replace its port, which fails whatever
+// was sent on the old one, so no second wake goes out while one may still be answered.
+let wokenAt = 0
 // Requests by ID, with the port each went out on: a port that closes fails only its own.
 const pending = new Map<
   number,
@@ -62,16 +65,21 @@ export function acceptProverPort(port: chrome.runtime.Port): boolean {
       request.settle(undefined)
     }
   })
+  wokenAt = 0
   for (const waiter of portWaiters.splice(0)) waiter(port)
   return true
 }
 
+// A document that was just created connects by itself, so only one that is already open is woken.
 async function connectedProver(): Promise<chrome.runtime.Port> {
-  await ensureOffscreen()
+  const created = await ensureOffscreen()
   if (proverPort) return proverPort
   return new Promise((resolve, reject) => {
     portWaiters.push(resolve)
-    chrome.runtime.sendMessage({ target: PROVER_WAKE }).catch(() => undefined)
+    if (!created && Date.now() - wokenAt > PORT_WAIT_MS) {
+      wokenAt = Date.now()
+      chrome.runtime.sendMessage({ target: PROVER_WAKE }).catch(() => undefined)
+    }
     setTimeout(() => {
       portWaiters = portWaiters.filter((w) => w !== resolve)
       reject(new Error('the offscreen prover did not connect'))
@@ -79,25 +87,38 @@ async function connectedProver(): Promise<chrome.runtime.Port> {
   })
 }
 
+// Sends one request and settles with the document's reply, or with nothing if the port closes
+// first.
+function request(port: chrome.runtime.Port, req: ProveRequest): Promise<ProveReply | undefined> {
+  return new Promise((settle) => {
+    pending.set(req.id, { port, settle })
+    try {
+      port.postMessage(req)
+    } catch {
+      pending.delete(req.id)
+      settle(undefined)
+    }
+  })
+}
+
 // snarkjs runs in the offscreen document, since it needs browser APIs the service worker lacks.
 // The document loads the wasm and zkey from the package itself and proves only with files that
-// match the pins of the proof, so the worker never holds the proving key.
+// match the pins of the proof, so the worker never holds the proving key. A port that closes before
+// the document answers loses only the request: nothing is saved before a proof, so the proof is
+// asked for once more on a new port. A failure the document reports is not retried.
 export function offscreenProver(paths: Readonly<Record<ArtifactName, string>>): Prover {
   return {
     async prove(witness: TransactionWitness, circuit: CircuitPins): Promise<Groth16Proof> {
-      const port = await connectedProver()
-      const request: ProveRequest = {
-        id: nextRequest++,
-        witness: toWire(witness),
-        circuit: { wasm: circuit.wasm, zkey: circuit.zkey },
-        paths,
+      for (let attempt = 1; ; attempt++) {
+        const reply = await request(await connectedProver(), {
+          id: nextRequest++,
+          witness: toWire(witness),
+          circuit: { wasm: circuit.wasm, zkey: circuit.zkey },
+          paths,
+        })
+        if (reply?.ok) return fromWire(reply.proof) as Groth16Proof
+        if (reply || attempt === 2) throw new Error('the offscreen prover failed')
       }
-      const reply = await new Promise<ProveReply | undefined>((settle) => {
-        pending.set(request.id, { port, settle })
-        port.postMessage(request)
-      })
-      if (!reply?.ok) throw new Error('the offscreen prover failed')
-      return fromWire(reply.proof) as Groth16Proof
     },
   }
 }
