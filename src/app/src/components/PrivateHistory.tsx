@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { ChevronLeft, RefreshCw } from 'lucide-react'
 import { ActivityRow } from '@/components/ActivityRow'
 import { Alert } from '@/components/Alert'
 import { HistoryEmpty, HistoryGroups, HistorySkeleton } from '@/components/HistoryList'
 import { Button } from '@/components/ui/button'
-import WalletNavbar from '@/components/WalletNavbar'
+import { PrivatePage } from '@/components/PrivatePage'
 import { groupRowsByDate } from '@/lib/activity'
 import type { PrivateEntry } from '@/lib/privateHistory'
 
@@ -35,23 +35,6 @@ export function PrivateHistory({
   onShield: () => void
   onClose: () => void
 }) {
-  // The slide-in needs a painted closed frame to start from (double rAF, as the token page).
-  const [shown, setShown] = useState(false)
-  useEffect(() => {
-    if (!open) {
-      setShown(false)
-      return
-    }
-    let raf2 = 0
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => setShown(true))
-    })
-    return () => {
-      cancelAnimationFrame(raf1)
-      cancelAnimationFrame(raf2)
-    }
-  }, [open])
-
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose()
@@ -61,72 +44,63 @@ export function PrivateHistory({
   }, [open, onClose])
 
   return (
-    <div className={`fixed inset-0 z-50 flex flex-col ${open ? '' : 'pointer-events-none'}`}>
-      <div
-        className={`shrink-0 border-b border-border/40 bg-background px-5 pt-5 pb-3 transition-opacity duration-300 ${shown ? 'opacity-100' : 'opacity-0'}`}
-      >
-        <WalletNavbar onHistory={() => undefined} />
-      </div>
-      <div
-        className={`flex min-h-0 flex-1 flex-col bg-background transition-transform duration-300 ease-out ${shown ? 'translate-x-0' : 'translate-x-full'}`}
-      >
-        <div className="flex-1 overflow-y-auto px-5 pt-5 pb-5">
-          <div className="flex flex-col gap-4">
-            <div className="relative flex items-center justify-center">
-              <button
-                onClick={onClose}
-                aria-label="Go back"
-                className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <ChevronLeft size={18} />
-              </button>
-              <h2 className="text-lg font-bold text-foreground">History</h2>
-              <button
-                onClick={onRefresh}
-                aria-label="Refresh history"
-                className="absolute right-0 cursor-pointer rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-              </button>
-            </div>
-
-            {entries === null && loading && <HistorySkeleton />}
-
-            {error && <Alert message={error} onRetry={onRefresh} retrying={loading} />}
-
-            {entries !== null && entries.length === 0 && (
-              <HistoryEmpty
-                title="No private activity yet"
-                subtitle="Shields, payments and what you receive privately will appear here"
-                action={
-                  <Button variant="outline" onClick={onShield}>
-                    Shield
-                  </Button>
-                }
-              />
-            )}
-
-            {entries !== null && (
-              <HistoryGroups
-                groups={groupRowsByDate(entries)}
-                groupKey={(label) => label}
-                renderRow={(entry) => (
-                  <ActivityRow
-                    key={entry.item.id}
-                    view={entry.view}
-                    timestamp={entry.timestamp}
-                    icon={icon}
-                    chainIcon={chainIcon}
-                    fiat={fiatOf(entry)}
-                    counterpartyText={entry.counterpartyText}
-                    onClick={() => onSelect(entry)}
-                  />
-                )}
-              />
-            )}
+    <PrivatePage open={open} onHistory={() => undefined}>
+      <div className="flex-1 overflow-y-auto px-5 pt-5 pb-5">
+        <div className="flex flex-col gap-4">
+          <div className="relative flex items-center justify-center">
+            <button
+              onClick={onClose}
+              aria-label="Go back"
+              className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <h2 className="text-lg font-bold text-foreground">History</h2>
+            <button
+              onClick={onRefresh}
+              aria-label="Refresh history"
+              className="absolute right-0 cursor-pointer rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            </button>
           </div>
+
+          {entries === null && loading && <HistorySkeleton />}
+
+          {error && <Alert message={error} onRetry={onRefresh} retrying={loading} />}
+
+          {entries !== null && entries.length === 0 && (
+            <HistoryEmpty
+              title="No private activity yet"
+              subtitle="Shields, payments and what you receive privately will appear here"
+              action={
+                <Button variant="outline" onClick={onShield}>
+                  Shield
+                </Button>
+              }
+            />
+          )}
+
+          {entries !== null && (
+            <HistoryGroups
+              groups={groupRowsByDate(entries)}
+              groupKey={(label) => label}
+              renderRow={(entry) => (
+                <ActivityRow
+                  key={entry.item.id}
+                  view={entry.view}
+                  timestamp={entry.timestamp}
+                  icon={icon}
+                  chainIcon={chainIcon}
+                  fiat={fiatOf(entry)}
+                  counterpartyText={entry.counterpartyText}
+                  onClick={() => onSelect(entry)}
+                />
+              )}
+            />
+          )}
         </div>
       </div>
-    </div>
+    </PrivatePage>
   )
 }
