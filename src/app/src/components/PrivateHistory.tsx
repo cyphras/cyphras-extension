@@ -65,7 +65,7 @@ export function PrivateHistory({
             </button>
           </div>
 
-          {entries === null && loading && <HistorySkeleton />}
+          {entries === null && !error && <HistorySkeleton />}
 
           {error && <Alert message={error} onRetry={onRefresh} retrying={loading} />}
 

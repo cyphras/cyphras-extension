@@ -1195,8 +1195,11 @@ export default function Home() {
       <PrivateHistory
         open={historyOpen}
         entries={entries}
-        loading={privateHistory.loading}
-        error={privateHistory.error}
+        loading={privateHistory.loading || (!shieldedStatus && shieldedSyncing)}
+        // History is built on the status, so a status that could not be read is its error too.
+        error={
+          privateHistory.error ?? (shieldedStatus ? null : (shieldedRequestError?.message ?? null))
+        }
         icon={shieldedIcon}
         chainIcon={chainIcons.get(stellarChainId)}
         fiatOf={entryFiat}
