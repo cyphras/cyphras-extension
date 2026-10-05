@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { Skeleton } from '@/components/ui/skeleton'
 import { useNavigate } from 'react-router-dom'
 import { useWallet } from '@/context/WalletContext'
 import { useHistory } from '@/hooks/useHistory'
@@ -16,6 +15,7 @@ import { ChainTxSheet } from '@/components/ChainTxSheet'
 import { BridgeJobSheet } from '@/components/BridgeJobSheet'
 import { NetworkFilterButton, NetworkFilterSheet } from '@/components/NetworkFilterSheet'
 import { ActivityRow } from '@/components/ActivityRow'
+import { HistoryEmpty, HistoryGroups, HistorySkeleton } from '@/components/HistoryList'
 import { Alert } from '@/components/Alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -41,7 +41,7 @@ import {
   chainById,
   type ChainEntry,
 } from '@constants/chains'
-import { RefreshCw, ChevronLeft, Inbox, Loader2 } from 'lucide-react'
+import { RefreshCw, ChevronLeft, Loader2 } from 'lucide-react'
 
 export default function History() {
   const navigate = useNavigate()
@@ -250,30 +250,7 @@ export default function History() {
             </div>
           )}
 
-          {loading && (
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-3 px-1 py-2">
-                <Skeleton className="h-2.5 w-20 rounded" />
-                <div className="h-px flex-1 bg-border" />
-              </div>
-              {[...Array(5)].map((_, i) => (
-                <div key={i} className="flex items-center gap-3 rounded-xl bg-card px-4 py-3">
-                  <div className="relative shrink-0">
-                    <Skeleton className="h-10 w-10 rounded-full" />
-                    <span className="absolute -bottom-1 -right-0.5 h-[21px] w-[21px] rounded-full border-[1.5px] border-card bg-muted" />
-                  </div>
-                  <div className="flex flex-1 flex-col gap-2">
-                    <Skeleton className="h-3.5 w-28 rounded" />
-                    <Skeleton className="h-3 w-36 rounded" />
-                  </div>
-                  <div className="flex flex-col items-end gap-2">
-                    <Skeleton className="h-3.5 w-16 rounded" />
-                    <Skeleton className="h-3 w-10 rounded" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          {loading && <HistorySkeleton />}
 
           {error && <Alert message={error} onRetry={refreshAll} retrying={loading} />}
 
@@ -285,70 +262,51 @@ export default function History() {
           )}
 
           {!loading && visibleRows.length === 0 && (
-            <div className="flex flex-col items-center gap-3 py-8 text-center">
-              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted">
-                <Inbox size={24} className="text-muted-foreground" />
-              </div>
-              <div className="flex flex-col gap-1">
-                <p className="text-sm text-muted-foreground">
-                  {filter === 'all' ? 'No transactions yet' : `No activity on ${chainName(filter)}`}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {filter === 'all'
-                    ? 'Your transaction history will appear here'
-                    : 'Transfers on this network will show up here'}
-                </p>
-              </div>
-              {filter === 'all' && (
-                <Button variant="outline" onClick={() => navigate('/receive')}>
-                  Receive
-                </Button>
-              )}
-            </div>
+            <HistoryEmpty
+              title={
+                filter === 'all' ? 'No transactions yet' : `No activity on ${chainName(filter)}`
+              }
+              subtitle={
+                filter === 'all'
+                  ? 'Your transaction history will appear here'
+                  : 'Transfers on this network will show up here'
+              }
+              action={
+                filter === 'all' && (
+                  <Button variant="outline" onClick={() => navigate('/receive')}>
+                    Receive
+                  </Button>
+                )
+              }
+            />
           )}
 
-          {!loading &&
-            grouped.map(({ label, rows: dayRows }, gi) => (
-              <div
-                key={`${filter}:${label}`}
-                className="row-enter flex flex-col gap-2"
-                style={{ animationDelay: `${Math.min(gi, 6) * 45}ms` }}
-              >
-                {/* -top-5 cancels the scroller's 20px top padding: at top-0 the header
-                    stuck 20px low and rows showed through the gap above it */}
-                <div className="sticky -top-5 z-10 -mx-1 bg-background px-1 py-2">
-                  <div className="flex items-center gap-3 px-1">
-                    <p className="pixel-label text-[10px] text-muted-foreground whitespace-nowrap">
-                      {label}
-                    </p>
-                    <div className="flex-1 h-px bg-border" />
-                  </div>
-                </div>
-
-                {dayRows.map((row) => {
-                  const view = viewOf(row)
-                  const fiat = fiatOf(view)
-
-                  return (
-                    <ActivityRow
-                      key={row.id}
-                      view={view}
-                      timestamp={row.timestamp}
-                      icon={iconFor(view.code, view.issuer)}
-                      chainIcon={chainIcons.get(row.chain)}
-                      fiat={fiat}
-                      counterparty={view.counterparty}
-                      trailing={
-                        row.kind === 'stellar' && row.op.type === 'change_trust'
-                          ? row.op.asset_code
-                          : undefined
-                      }
-                      onClick={() => setSelected(row)}
-                    />
-                  )
-                })}
-              </div>
-            ))}
+          {!loading && (
+            <HistoryGroups
+              groups={grouped}
+              groupKey={(label) => `${filter}:${label}`}
+              renderRow={(row) => {
+                const view = viewOf(row)
+                return (
+                  <ActivityRow
+                    key={row.id}
+                    view={view}
+                    timestamp={row.timestamp}
+                    icon={iconFor(view.code, view.issuer)}
+                    chainIcon={chainIcons.get(row.chain)}
+                    fiat={fiatOf(view)}
+                    counterparty={view.counterparty}
+                    trailing={
+                      row.kind === 'stellar' && row.op.type === 'change_trust'
+                        ? row.op.asset_code
+                        : undefined
+                    }
+                    onClick={() => setSelected(row)}
+                  />
+                )
+              }}
+            />
+          )}
         </div>
       </Layout>
 

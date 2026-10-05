@@ -26,6 +26,9 @@ import ShieldedSend, { type ShieldedAction } from '@/components/ShieldedSend'
 import ShieldedTokenPicker, { type ShieldedTokenRow } from '@/components/ShieldedTokenPicker'
 import ShieldedTokenSheet from '@/components/ShieldedTokenSheet'
 import ShieldedActivity from '@/components/ShieldedActivity'
+import { PrivateHistory } from '@/components/PrivateHistory'
+import { PrivateTxSheet } from '@/components/PrivateTxSheet'
+import { usePrivateHistory } from '@/hooks/usePrivateHistory'
 import { ShieldedStartFresh } from '@/components/ShieldedStartFresh'
 import { PrivateModeHint } from '@/components/PrivateModeHint'
 import { WhatsNewSheet } from '@/components/WhatsNewSheet'
@@ -52,6 +55,8 @@ import { PrivateBreakdown, PrivatePartSheet } from '@/components/PrivateBalance'
 import type { AssetBalance } from '@/hooks/useBalances'
 import type { ShieldedPlanView } from '@ext-types/index'
 import { formatUnits } from '@/lib/amount'
+import { formatFiat } from '@/lib/activity'
+import { privateEntries, type PrivateEntry } from '@/lib/privateHistory'
 import { PART_LABELS, privateBalance, type BalancePartKey } from '@/lib/privateBalance'
 import {
   RefreshCw,
@@ -233,6 +238,10 @@ export default function Home() {
   const shieldedStatus = shieldedByPool[poolId]?.status ?? null
   const shieldedModel = shieldedStatus ? privateBalance(shieldedStatus) : null
   const [openPart, setOpenPart] = useState<BalancePartKey | null>(null)
+  const privateHistory = usePrivateHistory(active && shieldedAvailable, poolId, shieldedStatus)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  // By its ID, so the sheet follows the entry as syncs move it on.
+  const [entryId, setEntryId] = useState<string | null>(null)
   const [shieldedReceiveOpen, setShieldedReceiveOpen] = useState(false)
   const [shieldedAction, setShieldedAction] = useState<ShieldedAction | null>(null)
   const [retryPlan, setRetryPlan] = useState<ShieldedPlanView | null>(null)
@@ -294,6 +303,8 @@ export default function Home() {
       setSelectedPoolId(shieldedPools[0]?.poolId ?? 'xlm')
       setPickerAction(null)
       setTappedPoolId(null)
+      setHistoryOpen(false)
+      setEntryId(null)
     }
   }, [active, shieldedPools])
 
@@ -380,6 +391,8 @@ export default function Home() {
     setRetryPlan(null)
     setPickerAction(null)
     setTappedPoolId(null)
+    setHistoryOpen(false)
+    setEntryId(null)
     setSelectedPoolId(shieldedPools[0]?.poolId ?? 'xlm')
     exit()
   }, [activeNetwork.id, activePublicKey, shieldedPools, exit])
@@ -427,6 +440,24 @@ export default function Home() {
   const shieldedCode = selectedPool?.native ? 'XLM' : (selectedPool?.assetCode ?? shieldedLabel)
   const shieldedUnit = (units: bigint | string) =>
     `${formatBalance(formatUnits(units, shieldedDecimals))} ${shieldedCode}`
+  const entries: PrivateEntry[] | null =
+    privateHistory.items && shieldedStatus
+      ? privateEntries(
+          privateHistory.items,
+          shieldedStatus,
+          shieldedCode,
+          shieldedDecimals,
+          shieldedUnit
+        )
+      : null
+  const selectedEntry = entries?.find((e) => e.item.id === entryId) ?? null
+  // Valued like the rows of public history.
+  const entryFiat = (entry: PrivateEntry): string | null => {
+    const price = shieldedByPool[poolId]?.usdPrice ?? null
+    const n = parseFloat(entry.view.amount?.value ?? '')
+    return price !== null && Number.isFinite(n) ? formatFiat(n * price) : null
+  }
+  const shieldedIcon = selectedPool ? poolIcon(selectedPool) : undefined
 
   // Native pools use the inline XLM glyph; others reuse the public list's issuer icon.
   function poolIcon(pool: (typeof shieldedPools)[number]): string | undefined {
@@ -555,7 +586,11 @@ export default function Home() {
   return (
     <>
       <Layout
-        navbar={<WalletNavbar />}
+        navbar={
+          <WalletNavbar
+            onHistory={active && shieldedAvailable ? () => setHistoryOpen(true) : undefined}
+          />
+        }
         bottomBlur={active}
         bottomBlurVisible={exitHover || swiping}
       >
@@ -803,16 +838,17 @@ export default function Home() {
                     )
                   )}
 
-                  {shieldedStatus && (
+                  {entries && (
                     <ShieldedActivity
-                      status={shieldedStatus}
+                      entries={entries}
                       poolId={poolId}
-                      onChanged={refreshShielded}
-                      code={
-                        selectedPool?.native ? 'XLM' : (selectedPool?.assetCode ?? shieldedLabel)
-                      }
-                      decimals={shieldedDecimals}
+                      icon={shieldedIcon}
+                      chainIcon={chainIcons.get(stellarChainId)}
+                      fiatOf={entryFiat}
+                      onSelect={(entry) => setEntryId(entry.item.id)}
                       onRetry={(plan) => setRetryPlan(plan)}
+                      onChanged={refreshShielded}
+                      onSeeAll={() => setHistoryOpen(true)}
                     />
                   )}
                 </>
@@ -1127,7 +1163,52 @@ export default function Home() {
         status={shieldedStatus}
         unit={shieldedUnit}
         onClose={() => setOpenPart(null)}
-        onItem={() => setOpenPart(null)}
+        onItem={(item) => {
+          setOpenPart(null)
+          const entry = entries?.find((e) =>
+            item.kind === 'plan'
+              ? e.item.planId === item.plan.planId
+              : e.item.kind === 'shield' && e.item.depositTx === item.deposit.txHash
+          )
+          if (entry) setEntryId(entry.item.id)
+        }}
+      />
+
+      <PrivateHistory
+        open={historyOpen}
+        entries={entries}
+        loading={privateHistory.loading}
+        error={privateHistory.error}
+        icon={shieldedIcon}
+        chainIcon={chainIcons.get(stellarChainId)}
+        fiatOf={entryFiat}
+        onSelect={(entry) => setEntryId(entry.item.id)}
+        onRefresh={() => {
+          refreshShielded()
+          privateHistory.refresh()
+        }}
+        onShield={() => {
+          setHistoryOpen(false)
+          setPickerAction('shield')
+        }}
+        onClose={() => setHistoryOpen(false)}
+      />
+
+      <PrivateTxSheet
+        entry={selectedEntry}
+        networkId={activeNetwork.id}
+        horizonUrl={activeNetwork.horizonUrl}
+        accountPk={activePublicKey}
+        icon={shieldedIcon}
+        chainIcon={chainIcons.get(stellarChainId)}
+        fiat={selectedEntry ? entryFiat(selectedEntry) : null}
+        poolId={poolId}
+        onRetry={(plan) => {
+          setHistoryOpen(false)
+          setRetryPlan(plan)
+        }}
+        onChanged={refreshShielded}
+        onClose={() => setEntryId(null)}
       />
 
       {pickerAction && (

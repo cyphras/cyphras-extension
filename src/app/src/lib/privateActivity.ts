@@ -8,15 +8,17 @@ import type {
 import { changeOf } from '@/lib/privateBalance'
 
 // Where a deposit or payment stands, in the glossary's words: a short label for its pill, a tone,
-// and a sentence that says what is happening and when it resolves. `done` marks one that needs
-// nothing more.
+// a sentence that says what is happening and when it resolves, and its stage: done, on its way,
+// waiting on the user or a hold, or failed for good.
 export type Tone = 'ok' | 'warn' | 'bad' | 'muted'
+
+export type Stage = 'done' | 'progress' | 'attention' | 'failed'
 
 export interface ItemStatus {
   readonly label: string
   readonly tone: Tone
   readonly detail?: string
-  readonly done: boolean
+  readonly stage: Stage
 }
 
 export function when(unixSeconds: number): string {
@@ -74,7 +76,7 @@ export function depositStatus(d: ShieldedDepositView): ItemStatus {
         label: 'Depositing',
         tone: 'warn',
         detail: 'Waiting for the network to confirm it.',
-        done: false,
+        stage: 'progress',
       }
     case 'pending': {
       if (d.flag) {
@@ -90,7 +92,7 @@ export function depositStatus(d: ShieldedDepositView): ItemStatus {
           label: `${s.label}${code}`,
           tone: s.tone,
           detail: `${s.detail}${refund}${unconfirmed}`,
-          done: false,
+          stage: 'attention',
         }
       }
       const at = d.earliestAdmission ? when(d.earliestAdmission) : null
@@ -105,7 +107,7 @@ export function depositStatus(d: ShieldedDepositView): ItemStatus {
             : at
               ? `Usable from ${at} at the earliest.`
               : 'The time it can be used shows once the pool reports it.') + unconfirmed,
-        done: false,
+        stage: 'progress',
       }
     }
     case 'admitted':
@@ -113,7 +115,7 @@ export function depositStatus(d: ShieldedDepositView): ItemStatus {
         label: 'Shielded',
         tone: 'ok',
         detail: d.confirmed ? undefined : INDEXER_ONLY,
-        done: true,
+        stage: 'done',
       }
     case 'cancelled':
       return {
@@ -122,7 +124,7 @@ export function depositStatus(d: ShieldedDepositView): ItemStatus {
         detail: d.confirmed
           ? 'You took the deposit back.'
           : 'Sent. It counts once the network confirms it.',
-        done: d.confirmed,
+        stage: d.confirmed ? 'done' : 'progress',
       }
     case 'refunded':
       return {
@@ -133,17 +135,17 @@ export function depositStatus(d: ShieldedDepositView): ItemStatus {
             ? `${SCREENING[d.refundKind].label}. It went back to your account.`
             : 'It went back to your account.'
           : 'Sent. It counts once the network confirms it.',
-        done: d.confirmed,
+        stage: d.confirmed ? 'done' : 'progress',
       }
     case 'failed':
-      return { label: 'Failed', tone: 'bad', detail: 'Nothing was deposited.', done: true }
+      return { label: 'Failed', tone: 'bad', detail: 'Nothing was deposited.', stage: 'failed' }
     case 'unresolved':
       return {
         label: 'Outcome unknown',
         tone: 'warn',
         detail:
           'It can no longer land, but whether it did is unknown. If it did, it shows here once the pool confirms it.',
-        done: false,
+        stage: 'attention',
       }
   }
 }
@@ -166,7 +168,7 @@ export function planStatus(
       tone: 'warn',
       detail:
         'Its deadline passed before the wallet saw the whole pool. A retry with the same notes cannot pay twice.',
-      done: false,
+      stage: 'attention',
     }
   }
   switch (p.state) {
@@ -175,7 +177,7 @@ export function planStatus(
         label: 'May still land',
         tone: 'warn',
         detail: `It may still land. Your funds come back if it does not, by ${when(deadlineOf(p))}.`,
-        done: false,
+        stage: 'attention',
       }
     case 'submitted': {
       const change = changeOf(status, p)
@@ -189,23 +191,23 @@ export function planStatus(
             : change > 0n
               ? `${what} Your ${unit(change)} change returns when it confirms.`
               : what,
-        done: false,
+        stage: 'progress',
       }
     }
     case 'confirmed':
       return p.kind === 'send'
-        ? { label: 'Sent', tone: 'ok', done: true }
-        : { label: 'Landed', tone: 'warn', detail: 'The payout follows.', done: false }
+        ? { label: 'Sent', tone: 'ok', stage: 'done' }
+        : { label: 'Landed', tone: 'warn', detail: 'The payout follows.', stage: 'progress' }
     case 'settled':
       return p.kind === 'send'
-        ? { label: 'Sent', tone: 'ok', done: true }
-        : { label: 'Paid out', tone: 'ok', detail: indexerOnly.trim() || undefined, done: true }
+        ? { label: 'Sent', tone: 'ok', stage: 'done' }
+        : { label: 'Paid out', tone: 'ok', detail: indexerOnly.trim() || undefined, stage: 'done' }
     case 'queued':
       return {
         label: 'Sending',
         tone: 'warn',
         detail: `Waiting in the pool's exit queue, which pays out in order.${indexerOnly}`,
-        done: false,
+        stage: 'progress',
       }
     case 'stranded':
       return {
@@ -215,17 +217,17 @@ export function planStatus(
           p.exitConfirmed === true
             ? 'The destination could not receive the payout. Claim it once it can.'
             : "Only the pool's indexer says the destination could not receive the payout. A claim is offered once the vault's own events show it.",
-        done: false,
+        stage: 'attention',
       }
     case 'superseded':
-      return { label: 'Replaced by a retry', tone: 'muted', done: true }
+      return { label: 'Replaced by a retry', tone: 'muted', stage: 'done' }
     case 'dead':
       return {
         label: 'Not sent',
         tone: 'bad',
         detail:
           'Its deadline passed without it landing, so your funds are back in Available. A retry with the same notes cannot pay twice.',
-        done: false,
+        stage: 'attention',
       }
   }
 }
@@ -286,4 +288,13 @@ export function planActions(p: ShieldedPlanView): AccountAction[] {
     label: 'Claim payout',
     explain: `The payout goes back into the exit queue and is paid once the destination can receive. Your account submits the claim and becomes publicly linked to this withdrawal. ${FEE_NOTE}`,
   }))
+}
+
+// Whether a deposit or payment has anything for the user to do about it.
+export function hasActions(
+  plan: ShieldedPlanView | null,
+  deposit: ShieldedDepositView | null
+): boolean {
+  if (plan) return needsRetry(plan) || planActions(plan).length > 0
+  return deposit ? depositActions(deposit, Math.floor(Date.now() / 1000)).length > 0 : false
 }

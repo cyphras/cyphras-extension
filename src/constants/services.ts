@@ -66,6 +66,8 @@ export const SERVICE_TYPES = {
   SHIELDED_QUOTE: 'SHIELDED_QUOTE',
   // The pool's deposit limits and admission delays, for the active account as the depositor.
   SHIELDED_LIMITS: 'SHIELDED_LIMITS',
+  // The account's private history, newest first, with the times of its ledgers resolved.
+  SHIELDED_HISTORY: 'SHIELDED_HISTORY',
   // Opens a pool on a fresh state when the account's stored one cannot be assigned to it, and
   // dismisses the warning a fresh start leaves.
   SHIELDED_START_FRESH: 'SHIELDED_START_FRESH',

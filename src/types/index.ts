@@ -191,6 +191,24 @@ export interface ShieldedPlanView {
   needsUserDecision: boolean
 }
 
+// One entry of the private history. A deposit and a payment of this account carry what ties them to
+// its status, which holds their current state and actions; an entry rebuilt from the chain has only
+// what the chain shows.
+export interface ShieldedHistoryItem {
+  id: string
+  kind: 'shield' | 'send' | 'receive' | 'unshield' | 'refund' | 'cancel' | 'claim'
+  amount: string
+  // The relayer fee of a relayed payment, null where the account paid the network itself.
+  fee: string | null
+  // The private address paid, the Stellar address unshielded to or claimed for, or the depositor.
+  counterparty: string | null
+  txHash: string | null
+  ledger: number | null
+  time: number | null // Unix milliseconds
+  planId: string | null
+  depositTx: string | null // the shield transaction of a deposit
+}
+
 // A payment another account sent to this one, found in the pool's notes.
 export interface ShieldedReceivedView {
   amount: string
@@ -330,6 +348,7 @@ export interface ServiceResponse {
   shieldedStep?: ShieldedStep
   shieldedQuote?: ShieldedQuoteView
   shieldedLimits?: ShieldedLimitsView
+  shieldedHistory?: ShieldedHistoryItem[]
   jobId?: string
   jobs?: CctpJobInfo[]
   maxFee?: string

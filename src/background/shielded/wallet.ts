@@ -12,6 +12,7 @@ import { TESTNET_PASSPHRASE, type NetworkConfig } from '@constants/networks'
 import type {
   ShieldedDepositView,
   ShieldedErrorView,
+  ShieldedHistoryItem,
   ShieldedLimitsView,
   ShieldedPlanView,
   ShieldedQuoteView,
@@ -32,13 +33,15 @@ import { MayStillLand, ShieldedRefusal, errorView } from './errors'
 import { offscreenProver, packagedArtifacts } from './prover'
 import { declineAllReviews, decideReview, startReviewed } from './reviews'
 import { vaultSigner } from './signer'
+import { ledgerTimes } from './ledgerTimes'
 import { chromeStore } from './store'
 
 interface OpenWallet {
   readonly wallet: PrivateWallet
   readonly pool: ShieldedDeployment
   readonly signer: TransactionSigner
-  readonly resetNotice: string
+  // Names the account's records beside the SDK's: the notice of a fresh start, and its own actions.
+  readonly scope: string
   sync: Promise<void> | undefined
   syncedAt: number | null
   syncError: ShieldedErrorView | null
@@ -110,11 +113,32 @@ async function activeAccount(): Promise<{ account: AccountInfo; mnemonic: string
   return { account, mnemonic }
 }
 
+const scopeOf = (pool: ShieldedDeployment, account: AccountInfo): string =>
+  `${pool.deployment.id}_${account.walletId}_${account.index}`
+
 // Where the warning of a fresh start of this account's pool state is kept. The SDK gives it only to
 // the wallet instance that started fresh, which a worker restart drops, while a payment that only the
 // old records followed may still land well after; so it stays until the user dismisses it.
-const resetNoticeKey = (pool: ShieldedDeployment, account: AccountInfo): string =>
-  `cyphras_shielded_reset_${pool.deployment.id}_${account.walletId}_${account.index}`
+const resetNoticeKey = (scope: string): string => `cyphras_shielded_reset_${scope}`
+
+// What the account did itself in the pool, which the SDK's records do not date: a cancel, a refund
+// or a claim, with its transaction and time, and for a claim the payout it put back in the queue.
+interface ActionRecord {
+  readonly kind: 'cancel' | 'refund' | 'claim'
+  readonly id: number
+  readonly txHash: string
+  readonly at: number
+  readonly amount?: string
+  readonly to?: string
+  readonly planId?: string
+}
+
+const actionsKey = (scope: string): string => `cyphras_shielded_actions_${scope}`
+
+async function actionRecords(scope: string): Promise<ActionRecord[]> {
+  const key = actionsKey(scope)
+  return ((await chrome.storage.local.get(key))[key] ?? []) as ActionRecord[]
+}
 
 // The account's own key, which must be the one the recovery phrase gives at its index.
 async function accountKeypair(account: AccountInfo, mnemonic: string): Promise<Keypair> {
@@ -147,16 +171,18 @@ async function openWallet(
     resetUnreadableState: true,
     resetUnassignedState: startFresh,
   })
-  const resetNotice = resetNoticeKey(pool, account)
+  const scope = scopeOf(pool, account)
   const reset = wallet.stateReset()
   if (reset) {
-    await chrome.storage.local.set({ [resetNotice]: { warning: reset.warning, at: Date.now() } })
+    await chrome.storage.local.set({
+      [resetNoticeKey(scope)]: { warning: reset.warning, at: Date.now() },
+    })
   }
   return {
     wallet,
     pool,
     signer: vaultSigner(keypair, pool.deployment),
-    resetNotice,
+    scope,
     sync: undefined,
     syncedAt: null,
     syncError: null,
@@ -264,9 +290,11 @@ async function statusOf(entry: OpenWallet): Promise<ShieldedStatusView> {
     wallet.deposits(),
     wallet.plans(),
     wallet.history(),
-    chrome.storage.local.get(entry.resetNotice),
+    chrome.storage.local.get(resetNoticeKey(entry.scope)),
   ])
-  const notice = notices[entry.resetNotice] as ShieldedStatusView['stateReset'] | undefined
+  const notice = notices[resetNoticeKey(entry.scope)] as
+    | ShieldedStatusView['stateReset']
+    | undefined
   return {
     address: wallet.generateAddress(),
     balance: {
@@ -334,7 +362,122 @@ export async function shieldedDismissReset(net: NetworkConfig, poolId: string): 
   assertShieldedAllowed(net)
   const pool = poolOf(net, poolId)
   const { account } = await activeAccount()
-  await chrome.storage.local.remove(resetNoticeKey(pool, account))
+  await chrome.storage.local.remove(resetNoticeKey(scopeOf(pool, account)))
+}
+
+// Deposits and payments of this account, newest first. Those it made carry their own times; what the
+// chain alone shows, as a payment it received, is dated by its ledger.
+export async function shieldedHistory(
+  net: NetworkConfig,
+  poolId: string
+): Promise<ShieldedHistoryItem[]> {
+  const entry = await walletFor(net, poolId)
+  const { wallet } = entry
+  const [history, plans, deposits, records] = await Promise.all([
+    wallet.history(),
+    wallet.plans(),
+    wallet.deposits(),
+    actionRecords(entry.scope),
+  ])
+  const item = (
+    fields: Partial<ShieldedHistoryItem> & Pick<ShieldedHistoryItem, 'id' | 'kind' | 'amount'>
+  ): ShieldedHistoryItem => ({
+    fee: null,
+    counterparty: null,
+    txHash: null,
+    ledger: null,
+    time: null,
+    planId: null,
+    depositTx: null,
+    ...fields,
+  })
+  const items: ShieldedHistoryItem[] = []
+  for (const p of plans) {
+    if (p.state === 'superseded') continue
+    items.push(
+      item({
+        id: `plan:${p.planId}`,
+        kind: p.kind,
+        amount: p.amount.toString(),
+        fee: p.route.kind === 'relayer' ? p.fee.toString() : null,
+        counterparty: p.to,
+        txHash: orNull(p.txHash),
+        time: p.createdAt,
+        planId: p.planId,
+      })
+    )
+  }
+  const shieldedAt = new Map(
+    history
+      .filter((h) => h.kind === 'shield' && h.txHash !== undefined)
+      .map((h) => [h.txHash, h.time])
+  )
+  for (const d of deposits) {
+    const time = d.txHash === undefined ? null : (shieldedAt.get(d.txHash) ?? null)
+    const of = {
+      amount: d.amount.toString(),
+      counterparty: d.depositor,
+      depositTx: orNull(d.txHash),
+    }
+    items.push(
+      item({
+        id: `deposit:${d.txHash ?? d.id}`,
+        kind: 'shield',
+        txHash: orNull(d.txHash),
+        time,
+        ...of,
+      })
+    )
+    if (d.state === 'cancelled' || d.state === 'refunded') {
+      const kind = d.state === 'cancelled' ? 'cancel' : 'refund'
+      const record = records.find((r) => r.kind === kind && r.id === d.id)
+      items.push(
+        item({
+          id: `${kind}:${d.txHash ?? d.id}`,
+          kind,
+          txHash: record?.txHash ?? null,
+          time: record?.at ?? time,
+          ...of,
+        })
+      )
+    }
+  }
+  for (const h of history) {
+    if (!h.recovered || h.kind === 'self') continue
+    items.push(
+      item({
+        id: `chain:${h.txHash}:${h.leafIndex ?? h.kind}`,
+        kind: h.kind,
+        amount: h.amount.toString(),
+        fee: h.fee === undefined ? null : h.fee.toString(),
+        counterparty: orNull(h.counterparty),
+        txHash: orNull(h.txHash),
+        ledger: orNull(h.ledger),
+        time: orNull(h.time),
+      })
+    )
+  }
+  for (const r of records) {
+    if (r.kind !== 'claim') continue
+    items.push(
+      item({
+        id: `claim:${r.id}:${r.txHash}`,
+        kind: 'claim',
+        amount: r.amount ?? '0',
+        counterparty: r.to ?? null,
+        txHash: r.txHash,
+        time: r.at,
+        planId: r.planId ?? null,
+      })
+    )
+  }
+  const undated = items.flatMap((i) => (i.time === null && i.ledger !== null ? [i.ledger] : []))
+  const times = await ledgerTimes(net.horizonUrl, net.id, undated)
+  return items
+    .map((i) =>
+      i.time === null && i.ledger !== null ? { ...i, time: times.get(i.ledger) ?? null } : i
+    )
+    .sort((a, b) => (b.time ?? 0) - (a.time ?? 0))
 }
 
 export async function shieldedSync(
@@ -472,7 +615,11 @@ export async function shieldedAccountAction(
   action: 'cancel' | 'refund' | 'claim',
   id: number
 ): Promise<string> {
-  const { wallet, signer } = await walletFor(net, poolId)
+  const { wallet, signer, scope } = await walletFor(net, poolId)
+  const claimed =
+    action === 'claim'
+      ? (await wallet.plans()).find((p) => p.exitParts.some((part) => part.id === id))
+      : undefined
   const run =
     action === 'cancel'
       ? wallet.cancelDeposit(id, signer)
@@ -480,7 +627,22 @@ export async function shieldedAccountAction(
         ? wallet.refundDeposit(id, signer)
         : wallet.claimExit(id, signer)
   try {
-    return (await track(run)).txHash
+    const { txHash } = await track(run)
+    const record: ActionRecord = {
+      kind: action,
+      id,
+      txHash,
+      at: Date.now(),
+      ...(claimed && {
+        amount: claimed.exitParts.find((part) => part.id === id)?.payoutLeft.toString(),
+        to: claimed.to,
+        planId: claimed.planId,
+      }),
+    }
+    await chrome.storage.local.set({
+      [actionsKey(scope)]: [...(await actionRecords(scope)), record],
+    })
+    return txHash
   } catch (err) {
     // Cancel and refund read the entry queue first, which no longer holds a settled deposit.
     if (err instanceof CyphrasError && err.code === 'not_found') {

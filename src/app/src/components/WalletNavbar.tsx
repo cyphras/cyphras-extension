@@ -14,7 +14,8 @@ function networkDotColor(networkId: string, hasFriendbot: boolean) {
   return 'bg-blue-400'
 }
 
-export default function WalletNavbar() {
+// onHistory replaces the History page, as private mode does with its own history.
+export default function WalletNavbar({ onHistory }: { onHistory?: () => void } = {}) {
   const navigate = useNavigate()
   const { status, accounts } = useWallet()
   const { activeNetwork } = useNetwork()
@@ -79,7 +80,7 @@ export default function WalletNavbar() {
 
         <div className="flex items-center gap-0.5 shrink-0">
           <button
-            onClick={() => navigate('/history')}
+            onClick={onHistory ?? (() => navigate('/history'))}
             aria-label="History"
             className="cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >

@@ -13,7 +13,7 @@ export function BottomSheet({
   open: boolean
   title: ReactNode
   onClose: () => void
-  children: ReactNode
+  children?: ReactNode
   zIndex?: string
 }) {
   // Enter waits a double rAF (the first fires before the initial paint) so the
