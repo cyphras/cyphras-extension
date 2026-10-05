@@ -144,7 +144,7 @@ export function PrivatePartSheet({
                 const s =
                   item.kind === 'deposit'
                     ? depositStatus(item.deposit)
-                    : planStatus(status, item.plan, unit)
+                    : planStatus(item.plan, unit)
                 const Icon =
                   item.kind === 'deposit'
                     ? ArrowDownToLine

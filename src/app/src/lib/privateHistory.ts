@@ -29,12 +29,9 @@ function statusOf(
   item: ShieldedHistoryItem,
   plan: ShieldedPlanView | null,
   deposit: ShieldedDepositView | null,
-  status: ShieldedStatusView,
   unit: (units: bigint | string) => string
 ): ItemStatus {
-  if (plan && (item.kind === 'send' || item.kind === 'unshield')) {
-    return planStatus(status, plan, unit)
-  }
+  if (plan && (item.kind === 'send' || item.kind === 'unshield')) return planStatus(plan, unit)
   if (deposit) return depositStatus(deposit)
   if (item.kind === 'receive') return { label: 'Received', tone: 'ok', stage: 'done' }
   if (item.kind === 'claim') return { label: 'Claimed', tone: 'ok', stage: 'done' }
@@ -92,7 +89,7 @@ export function privateEntries(
         : item.depositId !== null
           ? status.deposits.find((d) => d.txHash === null && d.id === item.depositId)
           : undefined) ?? null
-    const s = statusOf(item, plan, deposit, status, unit)
+    const s = statusOf(item, plan, deposit, unit)
     const view: RowView = {
       label: labelOf(item, s),
       direction:

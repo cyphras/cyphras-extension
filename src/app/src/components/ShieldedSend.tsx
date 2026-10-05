@@ -1050,8 +1050,11 @@ export default function ShieldedSend({
   function result(s: ResultStep) {
     const plan = resultPlan(s)
     const deposit = resultDeposit(s)
-    const live: ItemStatus | null =
-      plan && status ? planStatus(status, plan, unit) : deposit ? depositStatus(deposit) : null
+    const live: ItemStatus | null = plan
+      ? planStatus(plan, unit)
+      : deposit
+        ? depositStatus(deposit)
+        : null
     const hash = s.kind === 'shielded' ? s.receipt.txHash : s.kind === 'submitted' ? s.txHash : null
     const shielding = a === 'shield'
     const value = s.kind === 'submitted' && plan ? plan.amount : (units ?? 0n)

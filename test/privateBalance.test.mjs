@@ -31,12 +31,15 @@ function statusOf({
   }
 }
 
+// A payment of 10 XLM with a 0.1 XLM fee from 15 XLM of notes, unless the fields say otherwise.
 function plan(fields) {
+  const amount = BigInt(fields.amount ?? 10n * XLM)
+  const fee = BigInt(fields.fee ?? XLM / 10n)
+  const inputValue = BigInt(fields.inputValue ?? 15n * XLM)
+  const planId = fields.planId ?? 'plan'
   return {
-    planId: 'plan',
+    planId,
     kind: 'send',
-    amount: String(10n * XLM),
-    fee: String(XLM / 10n),
     to: 'cyt1qrecipient',
     route: { kind: 'relayer', url: 'https://relayer.example' },
     state: 'submitted',
@@ -48,7 +51,15 @@ function plan(fields) {
     relayerStatus: null,
     mustRetry: true,
     needsUserDecision: false,
+    retryOf: null,
+    familyId: planId,
+    deadline: 5_000_000,
+    deadlineBy: null,
     ...fields,
+    amount: String(amount),
+    fee: String(fee),
+    inputValue: String(inputValue),
+    change: String(inputValue - amount - fee),
   }
 }
 
@@ -89,30 +100,57 @@ test('one payment in flight shows what leaves and the change that returns', () =
   assert.equal(part(model, 'returning'), 49n * (XLM / 10n))
 })
 
-test('a stalled payment and its retry count their notes once', () => {
+test('a stalled payment and its retry count their notes once, by the retry', () => {
   // The stalled payment's deadline passed before the wallet saw the whole pool; its retry spends
   // the same 15 XLM of notes, so only one of the two can land.
   const stalled = plan({ planId: 'stalled', needsUserDecision: true, createdAt: 1 })
-  const retry = plan({ planId: 'retry', state: 'prepared', createdAt: 2 })
+  const retry = plan({
+    planId: 'retry',
+    retryOf: 'stalled',
+    familyId: 'stalled',
+    state: 'prepared',
+    createdAt: 2,
+  })
   const status = statusOf({ spendable: 2n * XLM, locked: 15n * XLM, plans: [retry, stalled] })
   const model = privateBalance(status)
   assertAddsUp(status, model)
-  assert.equal(part(model, 'sending') + part(model, 'returning'), 15n * XLM)
+  assert.equal(part(model, 'sending'), 101n * (XLM / 10n))
+  assert.equal(part(model, 'returning'), 49n * (XLM / 10n))
   const sending = model.parts.find((p) => p.key === 'sending')
   assert.deepEqual(
-    sending.items.map((i) => i.plan.planId),
-    ['retry', 'stalled']
+    sending.items.map((i) => [i.plan.planId, i.amount]),
+    [
+      ['retry', 101n * (XLM / 10n)],
+      ['stalled', 0n],
+    ]
   )
 })
 
-test('a repriced pair counts its notes once', () => {
+test('a repriced pair counts its notes once, at the newer fee', () => {
   // The relayer refused the first proof's fee; the second proves the same notes with a higher one.
   const first = plan({ planId: 'first', state: 'prepared', createdAt: 1 })
-  const repriced = plan({ planId: 'repriced', fee: String((3n * XLM) / 10n), createdAt: 2 })
+  const repriced = plan({
+    planId: 'repriced',
+    retryOf: 'first',
+    familyId: 'first',
+    fee: (3n * XLM) / 10n,
+    createdAt: 2,
+  })
   const status = statusOf({ spendable: 0n, locked: 15n * XLM, plans: [repriced, first] })
   const model = privateBalance(status)
   assertAddsUp(status, model)
-  assert.equal(part(model, 'sending') + part(model, 'returning'), 15n * XLM)
+  assert.equal(part(model, 'sending'), 103n * (XLM / 10n))
+  assert.equal(part(model, 'returning'), 47n * (XLM / 10n))
+})
+
+test('separate payments in flight each count', () => {
+  const one = plan({ planId: 'one' })
+  const other = plan({ planId: 'other', amount: 5n * XLM, inputValue: 8n * XLM, createdAt: 2 })
+  const status = statusOf({ spendable: XLM, locked: 23n * XLM, plans: [other, one] })
+  const model = privateBalance(status)
+  assertAddsUp(status, model)
+  assert.equal(part(model, 'sending'), 152n * (XLM / 10n))
+  assert.equal(part(model, 'returning'), 78n * (XLM / 10n))
 })
 
 test('payouts owed and deposits add up with a payment in flight', () => {
@@ -121,6 +159,7 @@ test('payouts owed and deposits add up with a payment in flight', () => {
     kind: 'unshield',
     state: 'queued',
     payoutLeft: String(2n * XLM),
+    mustRetry: false,
   })
   const stranded = plan({
     planId: 'stranded',
@@ -129,6 +168,7 @@ test('payouts owed and deposits add up with a payment in flight', () => {
     payoutLeft: String(3n * XLM),
     exitConfirmed: true,
     strandedExits: [4],
+    mustRetry: false,
   })
   const screening = deposit({ id: 7 })
   const flagged = deposit({

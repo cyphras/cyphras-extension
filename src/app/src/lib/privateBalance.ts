@@ -47,19 +47,23 @@ const owed = (p: ShieldedPlanView): bigint => BigInt(p.payoutLeft ?? p.amount)
 
 export function privateBalance(status: ShieldedStatusView): PrivateBalance {
   const available = BigInt(status.balance.spendable)
-  const locked = BigInt(status.balance.locked)
   const flying = status.plans.filter(inFlight)
-  const outgoing = flying.reduce((s, p) => s + BigInt(p.amount) + BigInt(p.fee), 0n)
-  // A payment and its retry, or a repriced pair, spend the same notes: only one of them can land,
-  // and locked counts those notes once while each plan counts its own amount. Plan views do not
-  // say which plans share notes, so what is in flight never counts for more than locked, and then
-  // no plan claims an amount of its own.
-  const shared = outgoing > locked
+  // A payment and its retries, or a repriced proof, spend the same notes and share a family: only
+  // one of them can land, so each family counts once, by its newest plan still in flight.
+  const newest = new Map<string, ShieldedPlanView>()
+  for (const plan of flying) {
+    const seen = newest.get(plan.familyId)
+    if (!seen || plan.createdAt > seen.createdAt) newest.set(plan.familyId, plan)
+  }
+  const counted = [...newest.values()]
   const paying: BalanceItem[] = flying.map((plan) => ({
     kind: 'plan',
     plan,
-    amount: shared ? 0n : BigInt(plan.amount) + BigInt(plan.fee),
+    amount: newest.get(plan.familyId) === plan ? BigInt(plan.amount) + BigInt(plan.fee) : 0n,
   }))
+  const returning: BalanceItem[] = counted
+    .filter((plan) => BigInt(plan.change) > 0n)
+    .map((plan) => ({ kind: 'plan', plan, amount: BigInt(plan.change) }))
   const queued: BalanceItem[] = status.plans
     .filter((plan) => plan.state === 'queued')
     .map((plan) => ({ kind: 'plan', plan, amount: owed(plan) }))
@@ -73,16 +77,12 @@ export function privateBalance(status: ShieldedStatusView): PrivateBalance {
     if (deposit.flag) held.push(item)
     else screening.push(item)
   }
-  // The notes of payments in flight hold their amounts, their fees and the change that comes back.
-  const inFlightPart = shared ? locked : outgoing
-  const change = locked - inFlightPart
-  const returning: BalanceItem[] =
-    change > 0n ? flying.map((plan) => ({ kind: 'plan', plan, amount: 0n })) : []
+  const sending = [...paying, ...queued]
   const sum = (items: BalanceItem[]) => items.reduce((s, i) => s + i.amount, 0n)
   const parts: BalancePart[] = [
     { key: 'available', amount: available, items: [] },
-    { key: 'sending', amount: inFlightPart + sum(queued), items: [...paying, ...queued] },
-    { key: 'returning', amount: change, items: returning },
+    { key: 'sending', amount: sum(sending), items: sending },
+    { key: 'returning', amount: sum(returning), items: returning },
     { key: 'screening', amount: sum(screening), items: screening },
     { key: 'held', amount: sum(held), items: held },
   ]
@@ -90,13 +90,4 @@ export function privateBalance(status: ShieldedStatusView): PrivateBalance {
     total: parts.reduce((s, p) => s + p.amount, 0n),
     parts: parts.filter((p) => p.amount > 0n),
   }
-}
-
-// The change a payment in flight brings back, when it is the only one in flight: the wallet knows
-// the change of all of them together, not of each.
-export function changeOf(status: ShieldedStatusView, plan: ShieldedPlanView): bigint | null {
-  const flying = status.plans.filter(inFlight)
-  if (flying.length !== 1 || flying[0].planId !== plan.planId) return null
-  const change = BigInt(status.balance.locked) - BigInt(plan.amount) - BigInt(plan.fee)
-  return change > 0n ? change : 0n
 }

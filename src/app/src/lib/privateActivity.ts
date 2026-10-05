@@ -1,11 +1,5 @@
 import { SERVICE_TYPES } from '@constants/services'
-import type {
-  ShieldedDepositView,
-  ShieldedPlanView,
-  ShieldedScreening,
-  ShieldedStatusView,
-} from '@ext-types/index'
-import { changeOf } from '@/lib/privateBalance'
+import type { ShieldedDepositView, ShieldedPlanView, ShieldedScreening } from '@ext-types/index'
 
 // Where a deposit or payment stands, in the glossary's words: a short label for its pill, a tone,
 // a sentence that says what is happening and when it resolves, and its stage: done, on its way,
@@ -27,12 +21,6 @@ export function when(unixSeconds: number): string {
   const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   return sameDay ? time : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`
 }
-
-// A proof expires 120 ledgers after it is built, about twelve minutes at testnet's pace, and the
-// wallet sees it after its next sync, so its funds are back two minutes later at the latest.
-const DEADLINE_MS = 14 * 60_000
-
-const deadlineOf = (p: ShieldedPlanView): number => Math.floor((p.createdAt + DEADLINE_MS) / 1000)
 
 // Screening reason codes, by what they mean rather than as a refusal by default.
 export const SCREENING: Record<ShieldedScreening, { label: string; tone: Tone; detail: string }> = {
@@ -156,7 +144,6 @@ export function needsRetry(p: ShieldedPlanView): boolean {
 }
 
 export function planStatus(
-  status: ShieldedStatusView,
   p: ShieldedPlanView,
   unit: (units: bigint | string) => string
 ): ItemStatus {
@@ -175,21 +162,21 @@ export function planStatus(
       return {
         label: 'May still land',
         tone: 'warn',
-        detail: `It may still land. Your funds come back if it does not, by ${when(deadlineOf(p))}.`,
+        // The deadline is an estimate from the network's recent pace, never what allows a retry.
+        detail:
+          p.deadlineBy === null
+            ? 'It may still land. Your funds come back if it does not.'
+            : `It may still land. Your funds come back if it does not, by about ${when(Math.floor(p.deadlineBy / 1000))}.`,
         stage: 'attention',
       }
     case 'submitted': {
-      const change = changeOf(status, p)
+      const change = BigInt(p.change)
       const what = `${p.kind === 'send' ? 'Sending' : 'Unshielding'} ${unit(p.amount)}.`
       return {
         label: p.relayerStatus === 'held' ? 'Scheduled' : 'Sending',
         tone: 'warn',
         detail:
-          change === null
-            ? `${what} The change returns when it confirms.`
-            : change > 0n
-              ? `${what} Your ${unit(change)} change returns when it confirms.`
-              : what,
+          change > 0n ? `${what} Your ${unit(change)} change returns when it confirms.` : what,
         stage: 'progress',
       }
     }

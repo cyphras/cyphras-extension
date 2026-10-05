@@ -279,6 +279,12 @@ function planView(p: PlanView): ShieldedPlanView {
     relayerStatus: orNull(p.relayerStatus),
     mustRetry: p.mustRetry,
     needsUserDecision: p.needsUserDecision,
+    retryOf: orNull(p.retryOf),
+    familyId: p.familyId,
+    inputValue: p.inputValue.toString(),
+    change: p.change.toString(),
+    deadline: p.deadline,
+    deadlineBy: orNull(p.deadlineBy),
   }
 }
 

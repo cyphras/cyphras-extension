@@ -189,6 +189,18 @@ export interface ShieldedPlanView {
   // Paying again must go through a retry with the same notes, never through a new send.
   mustRetry: boolean
   needsUserDecision: boolean
+  // The plan it proves again with the same notes, and the first plan of that line, which every
+  // plan spending those notes shares: a balance counts a family once.
+  retryOf: string | null
+  familyId: string
+  // What the notes it spends hold, and what of that comes back after the amount and the fee.
+  inputValue: string
+  change: string
+  // The last ledger its proof can land in, and an estimate, in Unix milliseconds, of when that
+  // ledger closes; null until a sync has read close times. Only mustRetry and needsUserDecision
+  // decide whether it may be paid again.
+  deadline: number
+  deadlineBy: number | null
 }
 
 // One entry of the private history. A deposit and a payment of this account carry what ties them to
