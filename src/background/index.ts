@@ -595,15 +595,17 @@ void refreshCctpBadge()
 void chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
 
 // Private data this release has no reader for: the fixed-denomination send's alarm and records,
-// and the notes kept under cyphras_shielded_notes_. The sealed records of every v2 vault stay,
-// whether this release opens the vault or not, since a payment in flight may need them.
+// the notes kept under cyphras_shielded_notes_, and ledger close times kept under
+// cyphras_shielded_ledger_times_. The sealed records of every v2 vault stay, whether this release
+// opens the vault or not, since a payment in flight may need them.
 async function removeRetiredPrivateData(): Promise<void> {
   await chrome.alarms.clear('cyphras_private_processor')
   const all = await chrome.storage.local.get(null)
   const stale = Object.keys(all).filter(
     (k) =>
       (k.startsWith('cyphras_private_') && k !== 'cyphras_private_hint_seen') ||
-      k.startsWith('cyphras_shielded_notes_')
+      k.startsWith('cyphras_shielded_notes_') ||
+      k.startsWith('cyphras_shielded_ledger_times_')
   )
   if (stale.length > 0) await chrome.storage.local.remove(stale)
 }

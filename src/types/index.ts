@@ -204,7 +204,9 @@ export interface ShieldedHistoryItem {
   counterparty: string | null
   txHash: string | null
   ledger: number | null
-  time: number | null // Unix milliseconds
+  // Unix milliseconds: when the account made it, or when its ledger closed as the first RPC
+  // provider reported it, unconfirmed; null when neither is known.
+  time: number | null
   planId: string | null
   // The deposit an entry is about: its shield transaction, or its ID when the wallet knows no
   // transaction, as for a deposit recovered from the chain.

@@ -33,7 +33,6 @@ import { MayStillLand, ShieldedRefusal, errorView } from './errors'
 import { offscreenProver, packagedArtifacts } from './prover'
 import { declineAllReviews, decideReview, startReviewed } from './reviews'
 import { vaultSigner } from './signer'
-import { ledgerTimes } from './ledgerTimes'
 import { chromeStore } from './store'
 
 interface OpenWallet {
@@ -358,7 +357,8 @@ export async function shieldedDismissReset(net: NetworkConfig, poolId: string): 
 }
 
 // Deposits and payments of this account, newest first. Those it made carry their own times; what the
-// chain alone shows, as a payment it received, is dated by its ledger.
+// chain alone shows, as a payment it received, carries its ledger's close time as the first RPC
+// provider reported it, unconfirmed, or no time when no provider did.
 export async function shieldedHistory(
   net: NetworkConfig,
   poolId: string
@@ -403,7 +403,7 @@ export async function shieldedHistory(
   const shieldedAt = new Map(
     history
       .filter((h) => h.kind === 'shield' && h.txHash !== undefined)
-      .map((h) => [h.txHash, h.time])
+      .map((h) => [h.txHash, h.time ?? h.closedAt])
   )
   for (const d of deposits) {
     const time = d.txHash === undefined ? null : (shieldedAt.get(d.txHash) ?? null)
@@ -447,7 +447,7 @@ export async function shieldedHistory(
         counterparty: orNull(h.counterparty),
         txHash: orNull(h.txHash),
         ledger: orNull(h.ledger),
-        time: orNull(h.time),
+        time: orNull(h.time ?? h.closedAt),
       })
     )
   }
@@ -465,13 +465,7 @@ export async function shieldedHistory(
       })
     )
   }
-  const undated = items.flatMap((i) => (i.time === null && i.ledger !== null ? [i.ledger] : []))
-  const times = await ledgerTimes(net.horizonUrl, net.id, undated)
-  return items
-    .map((i) =>
-      i.time === null && i.ledger !== null ? { ...i, time: times.get(i.ledger) ?? null } : i
-    )
-    .sort((a, b) => (b.time ?? 0) - (a.time ?? 0))
+  return items.sort((a, b) => (b.time ?? 0) - (a.time ?? 0) || (b.ledger ?? 0) - (a.ledger ?? 0))
 }
 
 export async function shieldedSync(
