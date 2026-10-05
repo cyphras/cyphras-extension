@@ -77,7 +77,7 @@ export function HistoryGroups<T>({
         >
           {/* -top-5 cancels the scroller's 20px top padding: at top-0 the header
               stuck 20px low and rows showed through the gap above it */}
-          <div className="sticky -top-5 z-10 -mx-1 bg-background px-1 py-2">
+          <div className="private-frosted sticky -top-5 z-10 -mx-1 bg-background px-1 py-2">
             <div className="flex items-center gap-3 px-1">
               <p className="pixel-label text-[10px] text-muted-foreground whitespace-nowrap">
                 {label}

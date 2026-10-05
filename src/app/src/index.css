@@ -425,7 +425,10 @@ html.private-active .peel-grab {
   transform: translateY(0);
 }
 
-html.private-shifting .h-full.bg-background {
+/* Private mode's backdrop: a glow from the top and a faint one from the bottom over the page
+   color, fixed to the window so content scrolls over it, as in a tab. Home's layout and every
+   private page draw this one, so moving between them leaves it still. */
+html.private-shifting .private-backdrop {
   background-image:
     radial-gradient(
       140% 60% at 50% 10%,
@@ -437,11 +440,21 @@ html.private-shifting .h-full.bg-background {
       oklch(0.62 0.13 245 / calc(0.14 * var(--ghost-progress))),
       transparent 62%
     );
+  background-attachment: fixed;
 }
 
 html.private-shifting .bg-background.border-b {
   background-color: transparent;
   border-bottom-color: transparent;
+}
+
+/* A sticky bar over the private backdrop, a list's date header or the navbar in a tab, lets the
+   backdrop show through and blurs what scrolls under it rather than covering it with a flat
+   strip. */
+html.private-shifting .private-frosted {
+  background-color: transparent;
+  border-bottom-color: transparent;
+  backdrop-filter: blur(12px);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -488,8 +501,10 @@ html.private-shifting .bg-background.border-b {
   animation: cyphras-fade 180ms var(--ease-out) both;
 }
 
+/* Backwards fill only: once risen a row keeps no transform, which would otherwise turn it into
+   the frame of its fixed backgrounds and fixed descendants. */
 .row-enter {
-  animation: cyphras-rise 260ms var(--ease-out) both;
+  animation: cyphras-rise 260ms var(--ease-out) backwards;
 }
 
 .value-enter {
