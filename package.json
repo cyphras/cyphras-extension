@@ -13,8 +13,8 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@cyphras/private": "file:../cyphras-contracts-sdk-pkg/sdk/private",
-    "@cyphras/private-prover-snarkjs": "file:../cyphras-contracts-sdk-pkg/sdk/prover-snarkjs",
+    "@cyphras/private": "0.1.0",
+    "@cyphras/private-prover-snarkjs": "0.1.0",
     "@fontsource-variable/inter": "^5.2.8",
     "@noble/ciphers": "^2.2.0",
     "@noble/hashes": "^2.4.0",
