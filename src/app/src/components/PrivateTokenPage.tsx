@@ -5,11 +5,12 @@ import { HistorySkeleton } from '@/components/HistoryList'
 import { PrivatePartRows } from '@/components/PrivateBalance'
 import { AssetIcon } from '@/components/token/AssetIcon'
 import { VerifiedBadge } from '@/components/token/VerifiedBadge'
-import { PrivateAddressValue } from '@/components/TxDetailParts'
+import { NetworkValue, PrivateAddressValue } from '@/components/TxDetailParts'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import WalletNavbar from '@/components/WalletNavbar'
 import { usePreferences } from '@/context/PreferencesContext'
+import { useStellarChain } from '@/hooks/useStellarChain'
 import type { BalancePartKey, PrivateBalance } from '@/lib/privateBalance'
 import type { PrivateEntry } from '@/lib/privateHistory'
 
@@ -31,7 +32,6 @@ export function PrivateTokenPage({
   format,
   fiat,
   chainIcon,
-  networkName,
   fiatOf,
   onOpenPart,
   onSelectEntry,
@@ -47,7 +47,6 @@ export function PrivateTokenPage({
   format: (units: bigint) => string
   fiat: (units: bigint) => string | null
   chainIcon?: string
-  networkName: string
   fiatOf: (entry: PrivateEntry) => string | null
   onOpenPart: (key: BalancePartKey) => void
   onSelectEntry: (entry: PrivateEntry) => void
@@ -57,6 +56,7 @@ export function PrivateTokenPage({
   onClose: () => void
 }) {
   const { formatValue, formatPrice } = usePreferences()
+  const stellarChain = useStellarChain()
   // Keep the last token so content stays visible during the close slide.
   const lastToken = useRef<PrivateToken | null>(null)
   if (token) lastToken.current = token
@@ -161,7 +161,9 @@ export function PrivateTokenPage({
                 )}
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-sm text-muted-foreground">Network</span>
-                  <span className="text-sm font-medium text-foreground">{networkName}</span>
+                  <span className="text-sm font-medium text-foreground">
+                    <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+                  </span>
                 </div>
               </div>
 

@@ -1180,7 +1180,6 @@ export default function Home() {
             : null
         }}
         chainIcon={chainIcons.get(stellarChainId)}
-        networkName={activeNetwork.name}
         fiatOf={entryFiat}
         onOpenPart={setOpenPart}
         onSelectEntry={(entry) => setEntryId(entry.item.id)}
