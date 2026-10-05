@@ -9,7 +9,7 @@ export type BalanceItem =
   | { readonly kind: 'plan'; readonly plan: ShieldedPlanView; readonly amount: bigint }
   | { readonly kind: 'deposit'; readonly deposit: ShieldedDepositView; readonly amount: bigint }
 
-export interface BalancePart {
+interface BalancePart {
   readonly key: BalancePartKey
   readonly amount: bigint
   readonly items: readonly BalanceItem[]

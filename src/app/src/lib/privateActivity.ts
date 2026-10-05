@@ -12,7 +12,7 @@ import { changeOf } from '@/lib/privateBalance'
 // waiting on the user or a hold, or failed for good.
 export type Tone = 'ok' | 'warn' | 'bad' | 'muted'
 
-export type Stage = 'done' | 'progress' | 'attention' | 'failed'
+type Stage = 'done' | 'progress' | 'attention' | 'failed'
 
 export interface ItemStatus {
   readonly label: string
@@ -32,8 +32,7 @@ export function when(unixSeconds: number): string {
 // wallet sees it after its next sync, so its funds are back two minutes later at the latest.
 const DEADLINE_MS = 14 * 60_000
 
-export const deadlineOf = (p: ShieldedPlanView): number =>
-  Math.floor((p.createdAt + DEADLINE_MS) / 1000)
+const deadlineOf = (p: ShieldedPlanView): number => Math.floor((p.createdAt + DEADLINE_MS) / 1000)
 
 // Screening reason codes, by what they mean rather than as a refusal by default.
 export const SCREENING: Record<ShieldedScreening, { label: string; tone: Tone; detail: string }> = {
