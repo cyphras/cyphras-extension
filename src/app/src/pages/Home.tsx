@@ -245,7 +245,8 @@ export default function Home() {
   const [shieldedReceiveOpen, setShieldedReceiveOpen] = useState(false)
   const [shieldedAction, setShieldedAction] = useState<ShieldedAction | null>(null)
   const [retryPlan, setRetryPlan] = useState<ShieldedPlanView | null>(null)
-  // Picker drives send/shield/unshield; tappedPoolId opens the per-token sheet.
+  // The picker switches the pool of the open send, shield or unshield; tappedPoolId opens the
+  // token page.
   const [pickerAction, setPickerAction] = useState<ShieldedAction | null>(null)
   const [tappedPoolId, setTappedPoolId] = useState<string | null>(null)
   const [shieldedIcons, setShieldedIcons] = useState<Map<string, string>>(new Map())
@@ -522,10 +523,9 @@ export default function Home() {
     setTimeout(() => setCopiedCy1(false), 2000)
   }
 
-  // Select the pool, then open the shielded send form for the chosen action.
+  // Select the pool, then open the page for the chosen action.
   function openShieldedForPool(targetPoolId: string, nextAction: ShieldedAction) {
     setSelectedPoolId(targetPoolId)
-    // Close the picker/tap-sheet as the form opens so the chip's change-asset reopen is clean.
     setPickerAction(null)
     setTappedPoolId(null)
     setShieldedAction(nextAction)
@@ -732,17 +732,17 @@ export default function Home() {
                     <ActionButton
                       icon={Send}
                       label="Send"
-                      onClick={() => setPickerAction('send')}
+                      onClick={() => openShieldedForPool(poolId, 'send')}
                     />
                     <ActionButton
                       icon={ArrowDownToLine}
                       label="Shield"
-                      onClick={() => setPickerAction('shield')}
+                      onClick={() => openShieldedForPool(poolId, 'shield')}
                     />
                     <ActionButton
                       icon={ArrowUpFromLine}
                       label="Unshield"
-                      onClick={() => setPickerAction('unshield')}
+                      onClick={() => openShieldedForPool(poolId, 'unshield')}
                     />
                   </div>
 
@@ -1215,7 +1215,7 @@ export default function Home() {
         }}
         onShield={() => {
           setHistoryOpen(false)
-          setPickerAction('shield')
+          openShieldedForPool(poolId, 'shield')
         }}
         onClose={() => setHistoryOpen(false)}
       />
@@ -1240,9 +1240,8 @@ export default function Home() {
 
       {pickerAction && (
         <ShieldedTokenPicker
-          action={pickerAction}
           tokens={pickerRows}
-          onSelect={(picked) => openShieldedForPool(picked, pickerAction)}
+          onSelect={setSelectedPoolId}
           onClose={() => setPickerAction(null)}
         />
       )}
@@ -1257,6 +1256,7 @@ export default function Home() {
         assetCode={selectedPool?.assetCode}
         assetIcon={selectedPool ? poolIcon(selectedPool) : undefined}
         native={!!selectedPool?.native}
+        usdPrice={shieldedByPool[poolId]?.usdPrice ?? null}
         accountPk={activePublicKey}
         publicBalance={
           // Pools are Stellar-only while `balances` spans every chain; match on the
@@ -1272,10 +1272,12 @@ export default function Home() {
           )?.balance ?? null
         }
         subentryCount={subentryCount}
-        onChangeAsset={() => {
-          // Reopen the picker for the current action so the chip switches pools.
-          if (shieldedAction) setPickerAction(shieldedAction)
+        // The picker opens over the form, as on public Send, so what is typed stays.
+        onChangeAsset={() => setPickerAction(shieldedAction)}
+        onHistory={() => {
           setShieldedAction(null)
+          setRetryPlan(null)
+          setHistoryOpen(true)
         }}
         onClose={() => {
           setShieldedAction(null)
