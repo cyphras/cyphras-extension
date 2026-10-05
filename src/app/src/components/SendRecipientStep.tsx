@@ -16,6 +16,121 @@ export interface RecipientSuggestion {
   label?: string
 }
 
+// The page that asks who a payment goes to: the address field with what it reads as, suggestions
+// under it, and Continue at the foot.
+export function RecipientStepPage({
+  title,
+  placeholder,
+  value,
+  onValue,
+  avatar,
+  hint,
+  ready,
+  onBack,
+  onContinue,
+  children,
+}: {
+  title: string
+  placeholder: string
+  value: string
+  onValue: (value: string) => void
+  // Shown before the field once the address reads as one.
+  avatar: ReactNode
+  hint: string
+  ready: boolean
+  onBack: () => void
+  onContinue: () => void
+  children?: ReactNode
+}) {
+  const trimmed = value.trim()
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex-1 overflow-y-auto px-5">
+        <div className="flex flex-col gap-4 py-5">
+          <div className="relative flex items-center justify-center">
+            <button
+              onClick={onBack}
+              aria-label="Go back"
+              className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <h2 className="text-lg font-bold text-foreground">{title}</h2>
+          </div>
+
+          <div className="flex flex-col gap-2 rounded-xl bg-card px-4 py-3">
+            <span className="pixel-label text-[10px] text-muted-foreground">To</span>
+            <div className="flex items-center gap-3">
+              {avatar}
+              <input
+                autoFocus
+                value={value}
+                onChange={(e) => onValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && ready) onContinue()
+                }}
+                placeholder={placeholder}
+                spellCheck={false}
+                autoComplete="off"
+                aria-label="Recipient address"
+                className="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:font-sans placeholder:text-sm placeholder:text-muted-foreground"
+              />
+            </div>
+            <Reveal show={trimmed !== ''} gap={8}>
+              <p className={`text-[11px] ${ready ? 'text-muted-foreground' : 'text-destructive'}`}>
+                {hint}
+              </p>
+            </Reveal>
+          </div>
+
+          {children}
+        </div>
+      </div>
+
+      <div className="shrink-0 border-t border-border/40 px-5 py-4">
+        <Button className="w-full" disabled={!ready} onClick={onContinue}>
+          {trimmed === '' ? 'Enter an address' : ready ? 'Continue' : 'Check the address'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// A titled group of addresses to pick from, such as recent recipients or the wallet's accounts.
+export function SuggestionSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="pixel-label px-1 text-[10px] text-muted-foreground">{title}</p>
+      <div className="rounded-xl bg-card p-1">{children}</div>
+    </div>
+  )
+}
+
+export function SuggestionRow({
+  avatar,
+  title,
+  subtitle,
+  onPick,
+}: {
+  avatar: ReactNode
+  title: string
+  subtitle: string
+  onPick: () => void
+}) {
+  return (
+    <button
+      onClick={onPick}
+      className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-muted"
+    >
+      {avatar}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-semibold text-foreground">{title}</span>
+        <span className="block truncate text-[11px] text-muted-foreground">{subtitle}</span>
+      </span>
+    </button>
+  )
+}
+
 // Who first, then what: the address decides the network, so the asset list
 // that follows only offers assets that can actually reach it.
 export function SendRecipientStep({
@@ -60,102 +175,55 @@ export function SendRecipientStep({
   const kindsText =
     kinds.length > 1 ? `${kinds.slice(0, -1).join(', ')} or ${kinds[kinds.length - 1]}` : kinds[0]
 
-  const renderRow = (s: RecipientSuggestion) => (
-    <button
-      key={`${s.family}:${s.address}`}
-      onClick={() => onContinue(s.address, s.family)}
-      className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-muted"
-    >
-      <AddressAvatar address={s.address} chainIcon={iconOf(s.family)} />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-semibold text-foreground">
-          {s.label ?? shortAddress(s.address)}
-        </span>
-        <span className="block truncate text-[11px] text-muted-foreground">
-          {s.label
-            ? `${shortAddress(s.address)} on ${networkOf(s.family)}`
-            : `on ${networkOf(s.family)}`}
-        </span>
-      </span>
-    </button>
-  )
-
   const section = (title: string, rows: RecipientSuggestion[]): ReactNode =>
     rows.length > 0 && (
-      <div className="flex flex-col gap-1">
-        <p className="pixel-label px-1 text-[10px] text-muted-foreground">{title}</p>
-        <div className="rounded-xl bg-card p-1">{rows.map(renderRow)}</div>
-      </div>
+      <SuggestionSection title={title}>
+        {rows.map((s) => (
+          <SuggestionRow
+            key={`${s.family}:${s.address}`}
+            avatar={<AddressAvatar address={s.address} chainIcon={iconOf(s.family)} />}
+            title={s.label ?? shortAddress(s.address)}
+            subtitle={
+              s.label
+                ? `${shortAddress(s.address)} on ${networkOf(s.family)}`
+                : `on ${networkOf(s.family)}`
+            }
+            onPick={() => onContinue(s.address, s.family)}
+          />
+        ))}
+      </SuggestionSection>
     )
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex-1 overflow-y-auto px-5">
-        <div className="flex flex-col gap-4 py-5">
-          <div className="relative flex items-center justify-center">
-            <button
-              onClick={onBack}
-              aria-label="Go back"
-              className="absolute left-0 cursor-pointer rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <ChevronLeft size={18} />
-            </button>
-            <h2 className="text-lg font-bold text-foreground">Send</h2>
-          </div>
-
-          <div className="flex flex-col gap-2 rounded-xl bg-card px-4 py-3">
-            <span className="pixel-label text-[10px] text-muted-foreground">To</span>
-            <div className="flex items-center gap-3">
-              {ready && family && <AddressAvatar address={trimmed} chainIcon={iconOf(family)} />}
-              <input
-                autoFocus
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && ready && family) onContinue(trimmed, family)
-                }}
-                placeholder={kinds.length > 1 ? `${kindsText} address` : 'Stellar address (G...)'}
-                spellCheck={false}
-                autoComplete="off"
-                aria-label="Recipient address"
-                className="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:font-sans placeholder:text-sm placeholder:text-muted-foreground"
-              />
-            </div>
-            <Reveal show={trimmed !== ''} gap={8}>
-              <p className={`text-[11px] ${ready ? 'text-muted-foreground' : 'text-destructive'}`}>
-                {ready && family
-                  ? family === 'stellar'
-                    ? 'Stellar address'
-                    : family === 'bitcoin'
-                      ? `Bitcoin address, sends on ${bitcoin?.name}`
-                      : `EVM address, sends on ${evmName}`
-                  : unsupportedEvm
-                    ? 'EVM sends are not available on this network'
-                    : unsupportedBitcoin
-                      ? 'Bitcoin sends are not available on this network'
-                      : wrongBitcoinNetwork
-                        ? bitcoin?.testnet
-                          ? 'This is a mainnet Bitcoin address; switch to Mainnet to send to it'
-                          : 'This is a testnet Bitcoin address; switch to Testnet to send to it'
-                        : `Not a ${kindsText} address`}
-              </p>
-            </Reveal>
-          </div>
-
-          {section('Recent', recents.filter(available))}
-          {section('Your accounts', ownAccounts.filter(available))}
-        </div>
-      </div>
-
-      <div className="shrink-0 border-t border-border/40 px-5 py-4">
-        <Button
-          className="w-full"
-          disabled={!ready}
-          onClick={() => family && onContinue(trimmed, family)}
-        >
-          {trimmed === '' ? 'Enter an address' : ready ? 'Continue' : 'Check the address'}
-        </Button>
-      </div>
-    </div>
+    <RecipientStepPage
+      title="Send"
+      placeholder={kinds.length > 1 ? `${kindsText} address` : 'Stellar address (G...)'}
+      value={value}
+      onValue={setValue}
+      avatar={ready && family && <AddressAvatar address={trimmed} chainIcon={iconOf(family)} />}
+      hint={
+        ready && family
+          ? family === 'stellar'
+            ? 'Stellar address'
+            : family === 'bitcoin'
+              ? `Bitcoin address, sends on ${bitcoin?.name}`
+              : `EVM address, sends on ${evmName}`
+          : unsupportedEvm
+            ? 'EVM sends are not available on this network'
+            : unsupportedBitcoin
+              ? 'Bitcoin sends are not available on this network'
+              : wrongBitcoinNetwork
+                ? bitcoin?.testnet
+                  ? 'This is a mainnet Bitcoin address; switch to Mainnet to send to it'
+                  : 'This is a testnet Bitcoin address; switch to Testnet to send to it'
+                : `Not a ${kindsText} address`
+      }
+      ready={ready}
+      onBack={onBack}
+      onContinue={() => family && onContinue(trimmed, family)}
+    >
+      {section('Recent', recents.filter(available))}
+      {section('Your accounts', ownAccounts.filter(available))}
+    </RecipientStepPage>
   )
 }
