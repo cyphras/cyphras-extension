@@ -3,50 +3,114 @@ import { useNetwork } from '@/context/NetworkContext'
 import { usePreferences } from '@/context/PreferencesContext'
 import { Button } from '@/components/ui/button'
 import { Layout } from '@/components/Layout'
-import { Copy, Check, ChevronLeft, ExternalLink } from 'lucide-react'
+import { BottomSheet } from '@/components/BottomSheet'
+import { XlmIcon } from '@/components/token/AssetIcon'
+import { Copy, Check, ChevronLeft, ExternalLink, QrCode } from 'lucide-react'
 import WalletNavbar from '@/components/WalletNavbar'
-import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
-import QRCode from 'qrcode'
+import { useState, useEffect, useMemo, type ReactNode } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { AddressQr, FullAddress } from '@/components/AddressQr'
+import { useCopy } from '@/hooks/useCopy'
+import { BUILTIN_CHAINS, explorerUrl, type ChainEntry } from '@constants/chains'
+import { getRegistryChains } from '@bg/chainRegistry'
+import { getChainIcons } from '@/lib/chainInfo'
+
+type ReceiveChain = 'stellar' | 'evm' | 'bitcoin'
+
+function shortAddress(address: string): string {
+  return `${address.slice(0, 6)}...${address.slice(-6)}`
+}
 
 export default function Receive() {
   const navigate = useNavigate()
-  const { status } = useWallet()
+  const location = useLocation()
+  const { status, accounts } = useWallet()
   const { activeNetwork } = useNetwork()
-  const { getExplorerAccountUrl, getExplorerName } = usePreferences()
-  const [copied, setCopied] = useState(false)
-  const [showFull, setShowFull] = useState(false)
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
+  const { getExplorerAccountUrl, getExplorerName, chainExplorer } = usePreferences()
+  // Arriving with a chain (e.g. Bridge's "Receive ETH") goes straight to its code.
+  const [qrFor, setQrFor] = useState<ReceiveChain | null>(
+    (location.state as { chain?: ReceiveChain } | null)?.chain ?? null
+  )
+  const [chains, setChains] = useState<ChainEntry[]>(BUILTIN_CHAINS)
+  const [chainIcons, setChainIcons] = useState<Map<string, string>>(new Map())
+  const { copied, copy } = useCopy()
+
+  const account = accounts.find((a) => a.publicKey === status.publicKey)
+  const stellarAddress = status.publicKey
+  const evmAddress = account?.addresses?.evm
+
+  // One derived EVM address serves every EVM chain of the environment, so
+  // its row lists all of them (registry first, so admin-panel chains show too).
+  const evmChains = useMemo(() => {
+    if (activeNetwork.id !== 'mainnet' && activeNetwork.id !== 'testnet') return []
+    const isTestnet = activeNetwork.id === 'testnet'
+    return chains.filter((c) => c.family === 'evm' && c.enabled && c.isTestnet === isTestnet)
+  }, [chains, activeNetwork.id])
+
+  const btcChain = useMemo(() => {
+    if (activeNetwork.id !== 'mainnet' && activeNetwork.id !== 'testnet') return undefined
+    const isTestnet = activeNetwork.id === 'testnet'
+    return chains.find((c) => c.family === 'bip122' && c.enabled && c.isTestnet === isTestnet)
+  }, [chains, activeNetwork.id])
+  const btcAddress = btcChain?.isTestnet
+    ? account?.addresses?.bitcoinTestnet
+    : account?.addresses?.bitcoin
 
   useEffect(() => {
-    if (!status.publicKey) return
-
-    QRCode.toDataURL(status.publicKey, {
-      width: 200,
-      margin: 2,
-      color: {
-        dark: '#000000',
-        light: '#ffffff',
-      },
-      errorCorrectionLevel: 'M',
+    let cancelled = false
+    getRegistryChains().then((c) => {
+      if (!cancelled && c.length > 0) setChains(c)
     })
-      .then(setQrDataUrl)
-      .catch(() => {})
-  }, [status.publicKey])
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
-  function handleCopy() {
-    if (!status.publicKey) return
-    navigator.clipboard.writeText(status.publicKey)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
+  const stellarChainId = activeNetwork.id === 'testnet' ? 'stellar:testnet' : 'stellar:pubnet'
 
-  const publicKey = status.publicKey
-  const chunked = publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-6)}` : ''
+  useEffect(() => {
+    let cancelled = false
+    const ids = [stellarChainId, ...evmChains.map((c) => c.id), ...(btcChain ? [btcChain.id] : [])]
+    getChainIcons(ids).then((icons) => {
+      if (!cancelled) setChainIcons(icons)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [evmChains, btcChain, stellarChainId])
+
+  const evmNames = evmChains.map((c) => c.name)
+  const evmTitle = evmChains.length === 1 ? evmChains[0].name : 'EVM networks'
+  const qrAddress =
+    qrFor === 'stellar'
+      ? stellarAddress
+      : qrFor === 'evm'
+        ? evmAddress
+        : qrFor === 'bitcoin'
+          ? btcAddress
+          : undefined
+  const qrTitle =
+    qrFor === 'stellar'
+      ? 'Receive on Stellar'
+      : qrFor === 'bitcoin'
+        ? `Receive on ${btcChain?.name ?? 'Bitcoin'}`
+        : `Receive on ${evmTitle}`
+
+  const qrChainIcon =
+    qrFor === 'stellar'
+      ? chainIcons.get(stellarChainId)
+      : qrFor === 'bitcoin'
+        ? btcChain && chainIcons.get(btcChain.id)
+        : evmChains[0] && chainIcons.get(evmChains[0].id)
+
+  const derivedUnavailable =
+    account && account.index < 0
+      ? 'Secret-key accounts are Stellar-only'
+      : 'Unlock to derive this address'
 
   return (
     <Layout navbar={<WalletNavbar />}>
-      <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-4">
         <div className="relative flex items-center justify-center">
           <button
             onClick={() => navigate(-1)}
@@ -58,74 +122,233 @@ export default function Receive() {
           <h2 className="text-lg font-bold text-foreground">Receive</h2>
         </div>
 
-        <div className="flex flex-col items-center gap-4">
-          <div className="rounded-2xl bg-card p-5 flex flex-col items-center gap-4 w-full">
-            {qrDataUrl ? (
-              <div className="rounded-xl overflow-hidden bg-white p-3">
-                <img src={qrDataUrl} alt="QR Code" width={200} height={200} className="block" />
-              </div>
-            ) : (
-              <div className="h-[224px] w-[224px] rounded-xl bg-muted animate-pulse" />
-            )}
+        <p className="pixel-label text-[10px] text-muted-foreground">Your addresses</p>
 
-            <div className="flex flex-col items-center gap-2 w-full">
-              <p className="text-xs text-muted-foreground">Your Stellar address</p>
-              <button
-                onClick={handleCopy}
-                aria-label="Copy address"
-                className="cursor-pointer rounded-lg px-2 py-1 hover:bg-muted transition-colors w-full"
-              >
-                <span className="font-mono text-xs text-foreground break-all text-center leading-relaxed block">
-                  {showFull ? publicKey : chunked}
-                </span>
-              </button>
-              <button
-                onClick={() => setShowFull((prev) => !prev)}
-                aria-expanded={showFull}
-                className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors"
-              >
-                {showFull ? 'Hide full address' : 'Show full address'}
-              </button>
-            </div>
-          </div>
-
-          <Button className="w-full" onClick={handleCopy}>
-            {copied ? (
-              <>
-                <Check size={14} /> Copied!
-              </>
-            ) : (
-              <>
-                <Copy size={14} /> Copy address
-              </>
-            )}
-          </Button>
-
-          {publicKey && (
-            <Button variant="outline" className="w-full" asChild>
-              <a
-                href={getExplorerAccountUrl(publicKey, activeNetwork.id)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5"
-              >
-                View on {getExplorerName()} <ExternalLink size={14} />
-              </a>
-            </Button>
+        <div className="flex flex-col gap-2">
+          <AddressRow
+            icon={
+              chainIcons.get(stellarChainId) ? (
+                <img
+                  src={chainIcons.get(stellarChainId)}
+                  alt=""
+                  className="h-10 w-10 rounded-full object-cover"
+                />
+              ) : (
+                <XlmIcon className="h-10 w-10" />
+              )
+            }
+            title="Stellar"
+            subtitle={stellarAddress ? shortAddress(stellarAddress) : ''}
+            copied={copied === 'stellar'}
+            onCopy={stellarAddress ? () => copy('stellar', stellarAddress) : undefined}
+            onQr={stellarAddress ? () => setQrFor('stellar') : undefined}
+          />
+          {btcChain && (
+            <AddressRow
+              icon={<ChainStack icons={[chainIcons.get(btcChain.id)]} />}
+              title={btcChain.name}
+              subtitle={btcAddress ? shortAddress(btcAddress) : derivedUnavailable}
+              copied={copied === 'bitcoin'}
+              onCopy={btcAddress ? () => copy('bitcoin', btcAddress) : undefined}
+              onQr={btcAddress ? () => setQrFor('bitcoin') : undefined}
+            />
           )}
+          {evmChains.length > 0 && (
+            <AddressRow
+              icon={<ChainStack icons={evmChains.map((c) => chainIcons.get(c.id))} />}
+              title={evmTitle}
+              subtitle={evmAddress ? shortAddress(evmAddress) : derivedUnavailable}
+              caption={evmChains.length > 1 ? evmNames.join(', ') : undefined}
+              copied={copied === 'evm'}
+              onCopy={evmAddress ? () => copy('evm', evmAddress) : undefined}
+              onQr={evmAddress ? () => setQrFor('evm') : undefined}
+            />
+          )}
+        </div>
 
-          <div className="rounded-xl bg-muted px-4 py-3 w-full">
-            <p className="text-xs text-muted-foreground text-center leading-relaxed">
-              Only send Stellar assets to this address. Sending other assets may result in permanent
-              loss.
+        <p className="px-1 text-[11px] leading-relaxed text-muted-foreground">
+          Each network has its own address. Share the one that matches the network the sender uses.
+        </p>
+      </div>
+
+      <BottomSheet
+        open={qrFor !== null && !!qrAddress}
+        title={qrTitle}
+        onClose={() => setQrFor(null)}
+      >
+        {qrAddress && (
+          <div className="flex flex-col items-center gap-4">
+            <AddressQr address={qrAddress} icon={qrChainIcon} />
+
+            <FullAddress address={qrAddress} />
+
+            <div className="grid w-full grid-cols-2 gap-2">
+              <Button className="w-full" onClick={() => copy(`sheet-${qrFor}`, qrAddress)}>
+                {copied === `sheet-${qrFor}` ? (
+                  <Check size={14} className="pop-enter" />
+                ) : (
+                  <Copy size={14} />
+                )}
+                {copied === `sheet-${qrFor}` ? 'Copied' : 'Copy'}
+              </Button>
+              {qrFor === 'stellar' ? (
+                <Button variant="outline" className="w-full" asChild>
+                  <a
+                    href={getExplorerAccountUrl(qrAddress, activeNetwork.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5"
+                  >
+                    {getExplorerName()} <ExternalLink size={13} />
+                  </a>
+                </Button>
+              ) : (
+                <Button variant="outline" className="w-full" asChild>
+                  <a
+                    href={
+                      qrFor === 'bitcoin' && btcChain
+                        ? explorerUrl(chainExplorer(btcChain).account, qrAddress)
+                        : evmChains[0]
+                          ? explorerUrl(chainExplorer(evmChains[0]).account, qrAddress)
+                          : undefined
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5"
+                  >
+                    Explorer <ExternalLink size={13} />
+                  </a>
+                </Button>
+              )}
+            </div>
+
+            {qrFor === 'evm' && evmChains.length > 1 && (
+              <div className="flex w-full flex-wrap items-center justify-center gap-1.5">
+                {evmChains.map((c) => (
+                  <a
+                    key={c.id}
+                    href={explorerUrl(chainExplorer(c).account, qrAddress)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 rounded-full bg-card px-2.5 py-1 text-[11px] text-foreground transition-colors hover:bg-muted"
+                  >
+                    {chainIcons.get(c.id) && (
+                      <img
+                        src={chainIcons.get(c.id)}
+                        alt=""
+                        className="h-3.5 w-3.5 rounded-full object-cover"
+                      />
+                    )}
+                    {c.name}
+                  </a>
+                ))}
+              </div>
+            )}
+
+            <p className="flex items-start gap-2.5 rounded-xl bg-amber-500/10 px-3 py-2.5 text-[11px] leading-relaxed text-foreground">
+              {qrChainIcon && (
+                <img
+                  src={qrChainIcon}
+                  alt=""
+                  className="mt-0.5 h-5 w-5 shrink-0 rounded-full object-cover"
+                />
+              )}
+              <span>
+                {qrFor === 'stellar'
+                  ? 'Only send Stellar assets to this address. Assets from other networks may be lost for good.'
+                  : qrFor === 'bitcoin'
+                    ? `Only send BTC on ${btcChain?.name ?? 'Bitcoin'} to this address. Coins from other networks may be lost for good.`
+                    : `Only send assets on ${evmNames.join(', ') || 'EVM networks'} to this address. Assets from other networks may be lost for good.`}
+              </span>
             </p>
           </div>
-        </div>
-      </div>
+        )}
+      </BottomSheet>
 
       <span aria-live="polite" className="sr-only">
         {copied ? 'Address copied to clipboard' : ''}
       </span>
     </Layout>
+  )
+}
+
+function ChainStack({ icons }: { icons: Array<string | undefined> }) {
+  const shown = icons.slice(0, 3)
+  if (shown.length === 1) {
+    return shown[0] ? (
+      <img src={shown[0]} alt="" className="h-10 w-10 rounded-full object-cover" />
+    ) : (
+      <span className="h-10 w-10 rounded-full bg-muted" />
+    )
+  }
+  // Overlapping discs: one address, several networks.
+  return (
+    <span className="relative flex h-10 w-10 items-center">
+      {shown.map((src, i) => (
+        <span
+          key={i}
+          className="absolute h-7 w-7 overflow-hidden rounded-full border-2 border-card bg-muted"
+          style={{ left: i * 7, top: i % 2 === 0 ? 2 : 10 }}
+        >
+          {src && <img src={src} alt="" className="h-full w-full object-cover" />}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+function AddressRow({
+  icon,
+  title,
+  subtitle,
+  caption,
+  copied,
+  onCopy,
+  onQr,
+}: {
+  icon: ReactNode
+  title: string
+  subtitle: string
+  caption?: string
+  copied: boolean
+  onCopy?: () => void
+  onQr?: () => void
+}) {
+  const available = !!onCopy
+  return (
+    <div className="flex items-center gap-3 rounded-xl bg-card px-4 py-3">
+      <span className="shrink-0">{icon}</span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-foreground">{title}</p>
+        <p
+          className={`truncate text-xs ${available ? 'font-mono text-muted-foreground' : 'text-muted-foreground'}`}
+        >
+          {subtitle}
+        </p>
+        {caption && <p className="truncate text-[11px] text-muted-foreground/80">{caption}</p>}
+      </div>
+      {available && (
+        <div className="flex shrink-0 gap-1.5">
+          <button
+            onClick={onQr}
+            aria-label={`Show ${title} QR code`}
+            className="cursor-pointer rounded-full bg-muted p-2 text-foreground transition-colors hover:bg-muted/70"
+          >
+            <QrCode size={16} />
+          </button>
+          <button
+            onClick={onCopy}
+            aria-label={`Copy ${title} address`}
+            className={`cursor-pointer rounded-full p-2 transition-colors ${
+              copied
+                ? 'bg-green-500/15 text-green-600'
+                : 'bg-muted text-foreground hover:bg-muted/70'
+            }`}
+          >
+            {copied ? <Check size={16} className="pop-enter" /> : <Copy size={16} />}
+          </button>
+        </div>
+      )}
+    </div>
   )
 }

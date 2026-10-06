@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useWallet } from '@/context/WalletContext'
-import { useNetwork } from '@/context/NetworkContext'
 import { KeyRound, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
 import { APPROVAL_PAYLOAD_STORAGE_KEY } from '@constants/external'
 import { ApprovalShell, ActionHeader, InfoCard, InfoRow, TrustNote, AddressChip } from './_shell'
+import { NetworkValue } from '@/components/TxDetailParts'
+import { useStellarChain } from '@/hooks/useStellarChain'
 
 export default function SignAuthEntry() {
   const { status } = useWallet()
-  const { activeNetwork } = useNetwork()
+  const stellarChain = useStellarChain()
   const [origin, setOrigin] = useState('')
   const [requestId, setRequestId] = useState('')
   const [entryXdr, setEntryXdr] = useState('')
@@ -71,7 +72,9 @@ export default function SignAuthEntry() {
           </InfoRow>
         )}
         <InfoRow label="Network">
-          <span className="text-sm font-medium text-foreground">{activeNetwork.name}</span>
+          <span className="text-sm font-medium text-foreground">
+            <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+          </span>
         </InfoRow>
       </InfoCard>
 
@@ -95,7 +98,11 @@ export default function SignAuthEntry() {
                   className="absolute top-2.5 right-2.5 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                   title="Copy XDR"
                 >
-                  {copied ? <Check size={13} className="text-primary" /> : <Copy size={13} />}
+                  {copied ? (
+                    <Check size={13} className="pop-enter text-primary" />
+                  ) : (
+                    <Copy size={13} />
+                  )}
                 </button>
               </div>
             </div>

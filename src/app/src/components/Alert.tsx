@@ -4,9 +4,10 @@ interface AlertProps {
   message: string
   onRetry?: () => void
   retrying?: boolean
+  onDismiss?: () => void
 }
 
-export function Alert({ message, onRetry, retrying }: AlertProps) {
+export function Alert({ message, onRetry, retrying, onDismiss }: AlertProps) {
   return (
     <div className="flex items-start gap-2.5 rounded-xl bg-destructive/10 border border-destructive/20 px-3.5 py-3">
       <AlertTriangle size={14} className="text-destructive mt-0.5 shrink-0" />
@@ -20,6 +21,14 @@ export function Alert({ message, onRetry, retrying }: AlertProps) {
           >
             <RefreshCw size={12} className={retrying ? 'animate-spin' : ''} />
             Retry
+          </button>
+        )}
+        {onDismiss && (
+          <button
+            onClick={onDismiss}
+            className="cursor-pointer self-start rounded-lg bg-destructive/10 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/20 transition-colors"
+          >
+            Dismiss
           </button>
         )}
       </div>

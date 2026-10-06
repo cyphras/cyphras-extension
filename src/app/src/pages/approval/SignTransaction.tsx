@@ -5,10 +5,13 @@ import { PenLine, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
 import { TransactionBuilder, Transaction } from '@stellar/stellar-sdk'
 import { APPROVAL_PAYLOAD_STORAGE_KEY } from '@constants/external'
 import { ApprovalShell, ActionHeader, InfoCard, InfoRow, TrustNote, AddressChip } from './_shell'
+import { NetworkValue } from '@/components/TxDetailParts'
+import { useStellarChain } from '@/hooks/useStellarChain'
 
 export default function SignTransaction() {
   const { status } = useWallet()
   const { activeNetwork } = useNetwork()
+  const stellarChain = useStellarChain()
   const [origin, setOrigin] = useState('')
   const [requestId, setRequestId] = useState('')
   const [xdr, setXdr] = useState('')
@@ -93,7 +96,9 @@ export default function SignTransaction() {
           </InfoRow>
         )}
         <InfoRow label="Network">
-          <span className="text-sm font-medium text-foreground">{activeNetwork.name}</span>
+          <span className="text-sm font-medium text-foreground">
+            <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+          </span>
         </InfoRow>
         {feeXlm && (
           <InfoRow label="Network fee">
@@ -127,7 +132,11 @@ export default function SignTransaction() {
                   className="absolute top-2.5 right-2.5 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                   title="Copy XDR"
                 >
-                  {copied ? <Check size={13} className="text-primary" /> : <Copy size={13} />}
+                  {copied ? (
+                    <Check size={13} className="pop-enter text-primary" />
+                  ) : (
+                    <Copy size={13} />
+                  )}
                 </button>
               </div>
             </div>

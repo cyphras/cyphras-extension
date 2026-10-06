@@ -44,16 +44,56 @@ export const SERVICE_TYPES = {
   SET_AUTO_LOCK_TIMEOUT: 'SET_AUTO_LOCK_TIMEOUT',
   // Proxied network calls (routes through background to avoid popup console 404 spam)
   FETCH_HORIZON_ACCOUNT: 'FETCH_HORIZON_ACCOUNT',
-  PRIVATE_QUOTE: 'PRIVATE_QUOTE',
-  PRIVATE_PREPARE_SEND: 'PRIVATE_PREPARE_SEND',
-  PRIVATE_REVEAL_NOTE: 'PRIVATE_REVEAL_NOTE',
-  PRIVATE_RECOVER_FROM_SEED: 'PRIVATE_RECOVER_FROM_SEED',
-  PRIVATE_SELF_RECLAIM: 'PRIVATE_SELF_RECLAIM',
-  PRIVATE_LIST_NOTES: 'PRIVATE_LIST_NOTES',
-  PRIVATE_PROCESS_NOTES: 'PRIVATE_PROCESS_NOTES',
+  FETCH_EVM_BALANCES: 'FETCH_EVM_BALANCES',
+  FETCH_BTC_BALANCES: 'FETCH_BTC_BALANCES',
+  FETCH_BTC_FEES: 'FETCH_BTC_FEES',
+  BTC_QUOTE: 'BTC_QUOTE',
+  SIGN_AND_SUBMIT_BTC_PAYMENT: 'SIGN_AND_SUBMIT_BTC_PAYMENT',
+  BTC_TX_STATUS: 'BTC_TX_STATUS',
+  FETCH_BTC_ACTIVITY: 'FETCH_BTC_ACTIVITY',
+  SIGN_AND_SUBMIT_EVM_PAYMENT: 'SIGN_AND_SUBMIT_EVM_PAYMENT',
+  EVM_TX_STATUS: 'EVM_TX_STATUS',
+  // Private mode; poolId selects the pool (optional for RECEIVE_ADDRESS). Sends, unshields and
+  // retries return a review that SHIELDED_DECIDE answers.
+  SHIELDED_RECEIVE_ADDRESS: 'SHIELDED_RECEIVE_ADDRESS',
+  SHIELDED_STATUS: 'SHIELDED_STATUS',
+  SHIELDED_SYNC: 'SHIELDED_SYNC',
+  SHIELDED_SHIELD: 'SHIELDED_SHIELD',
+  SHIELDED_SPEND: 'SHIELDED_SPEND',
+  SHIELDED_RETRY: 'SHIELDED_RETRY',
+  SHIELDED_DECIDE: 'SHIELDED_DECIDE',
+  // The fee a send or unshield would pay now, and the most one payment can move with it.
+  SHIELDED_QUOTE: 'SHIELDED_QUOTE',
+  // The pool's deposit limits and admission delays, for the active account as the depositor.
+  SHIELDED_LIMITS: 'SHIELDED_LIMITS',
+  // The account's private history, newest first, with the times of its ledgers resolved.
+  SHIELDED_HISTORY: 'SHIELDED_HISTORY',
+  // Opens a pool on a fresh state when the account's stored one cannot be assigned to it, and
+  // dismisses the warning a fresh start leaves.
+  SHIELDED_START_FRESH: 'SHIELDED_START_FRESH',
+  SHIELDED_DISMISS_RESET: 'SHIELDED_DISMISS_RESET',
+  // The account takes back a pending deposit, claims a flagged deposit's refund, or claims a
+  // stranded payout; id is the deposit ID or the exit ID.
+  SHIELDED_CANCEL: 'SHIELDED_CANCEL',
+  SHIELDED_REFUND: 'SHIELDED_REFUND',
+  SHIELDED_CLAIM: 'SHIELDED_CLAIM',
+  // CCTP cross-chain USDC bridge (Stellar <-> Ethereum)
+  CCTP_QUOTE: 'CCTP_QUOTE',
+  CCTP_START: 'CCTP_START',
+  CCTP_LIST_JOBS: 'CCTP_LIST_JOBS',
+  CCTP_PROCESS: 'CCTP_PROCESS',
+  CCTP_RESUME: 'CCTP_RESUME',
+  CCTP_CANCEL: 'CCTP_CANCEL',
+  // EVM account activity (native + ERC-20 transfers) via the Cyphras indexer proxy
+  FETCH_EVM_ACTIVITY: 'FETCH_EVM_ACTIVITY',
 } as const
 
 export type ServiceType = (typeof SERVICE_TYPES)[keyof typeof SERVICE_TYPES]
+
+// For each private payment it starts, the popup holds a port named this plus a token, and sends
+// the token with the request; once the port goes, the background declines that payment's reviews,
+// including one that arrives later.
+export const SHIELDED_REVIEW_PORT = 'shielded-review:'
 
 export const PASSWORD_RULES = {
   MIN_LENGTH: 8,

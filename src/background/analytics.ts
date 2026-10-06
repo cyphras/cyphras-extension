@@ -1,5 +1,7 @@
 /// <reference types="chrome" />
 
+import { API_ENDPOINTS } from '@constants/backend'
+
 /**
  * Anonymous usage analytics.
  *
@@ -17,7 +19,7 @@ const ANON_ID_KEY = 'cyphras_anon_id'
 const LAST_PING_KEY = 'cyphras_analytics_last_ping'
 const OPT_OUT_KEY = 'cyphras_analytics_opt_out'
 const DAILY_ALARM = 'cyphras_analytics_daily'
-const ENDPOINT = 'https://api.cyphras.com/v1/analytics/event'
+const ENDPOINT = API_ENDPOINTS.analyticsEvent
 
 // Whitelisted Horizon/SDK error codes safe to send - no user data leaks through these
 const SAFE_ERROR_CODES = new Set([

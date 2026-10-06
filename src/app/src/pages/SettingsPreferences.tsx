@@ -14,14 +14,12 @@ import { usePreferences } from '@/context/PreferencesContext'
 import { Toggle } from '@/components/ui/toggle'
 
 const THEME_LABELS = { system: 'System', light: 'Light', dark: 'Dark' }
-const EXPLORER_LABELS = { 'stellar.expert': 'Stellar.expert', stellarchain: 'StellarChain' }
 
 export default function SettingsPreferences() {
   const navigate = useNavigate()
   const {
     currency,
     theme,
-    explorer,
     hideSmallPayments,
     setHideSmallPayments,
     sidebarByDefault,
@@ -86,7 +84,7 @@ export default function SettingsPreferences() {
               <Globe2 size={16} className="text-primary" />
             </div>
             <p className="flex-1 text-sm font-medium text-foreground">Block Explorer</p>
-            <span className="text-xs text-muted-foreground mr-2">{EXPLORER_LABELS[explorer]}</span>
+            <span className="text-xs text-muted-foreground mr-2">Per network</span>
             <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
           </button>
         </div>

@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "116",
   "name": "Cyphras",
   "description": "Cyphras is a non-custodial wallet. Manage accounts, sign transactions, and connect to dApps.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "icons": {
     "16": "icon-16.png",
     "32": "icon-32.png",
@@ -47,13 +48,10 @@
     "alarms",
     "offscreen"
   ],
+  "host_permissions": [
+    "https://api.cyphras.com/*"
+  ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["approval.html"],
-      "matches": ["chrome-extension://*/*"]
-    }
-  ]
+  }
 }

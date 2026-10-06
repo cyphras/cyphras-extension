@@ -1,0 +1,4 @@
+# SHA-256 pins of circuit artifacts in history, which the generic-api-key rule takes for keys. The
+# files are gone, so only these exact findings are ignored.
+3c5499bf474fb8a40c6e4e6ee8fb6fa798f6cf01:src/shielded/circuitHashes.ts:generic-api-key:4
+d69abff3aeb4a8e10af0639b41b7375dba20aa92:src/private/circuitHashes.ts:generic-api-key:7

@@ -6,7 +6,7 @@ import {
   EXTERNAL_SERVICE_TYPES,
 } from '../constants/external'
 
-const ALLOWED_TYPES = new Set(Object.values(EXTERNAL_SERVICE_TYPES))
+const ALLOWED_TYPES: ReadonlySet<string> = new Set(Object.values(EXTERNAL_SERVICE_TYPES))
 
 function isValidRequest(data: unknown): boolean {
   if (!data || typeof data !== 'object') return false
@@ -14,7 +14,7 @@ function isValidRequest(data: unknown): boolean {
   if (d.type !== CYPHRAS_MSG_REQUEST) return false
   if (typeof d.id !== 'string') return false
   if (typeof d.requestType !== 'string') return false
-  if (!ALLOWED_TYPES.has(d.requestType as any)) return false
+  if (!ALLOWED_TYPES.has(d.requestType)) return false
   return true
 }
 
@@ -29,7 +29,6 @@ window.addEventListener('message', (event: MessageEvent) => {
         type: CYPHRAS_INTERNAL_REQUEST,
         id: event.data.id,
         requestType: event.data.requestType,
-        origin: window.location.origin,
         payload: event.data.payload,
       },
       '*'
@@ -49,4 +48,4 @@ window.addEventListener('message', (event: MessageEvent) => {
     )
   }
 })
-;(window as any).isCyphrasInstalled = true
+;(window as Window & { isCyphrasInstalled?: boolean }).isCyphrasInstalled = true

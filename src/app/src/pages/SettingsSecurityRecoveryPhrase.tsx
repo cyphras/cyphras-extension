@@ -120,8 +120,7 @@ export default function SettingsSecurityRecoveryPhrase() {
         ) : (
           <div className="flex flex-col gap-4">
             <p className="text-xs text-muted-foreground px-1">
-              Write these words down in order and store them somewhere safe. They also restore your
-              pending private payments on a new device.
+              Write these words down in order and store them somewhere safe.
             </p>
             <div className="relative rounded-xl bg-muted p-4">
               <div

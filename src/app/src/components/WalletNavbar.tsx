@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useWallet } from '@/context/WalletContext'
 import { useNetwork } from '@/context/NetworkContext'
@@ -6,7 +7,7 @@ import { useWindowMode } from '@/hooks/useWindowMode'
 import { StellarAvatar } from '@/components/StellarAvatar'
 import AccountSwitcher from '@/components/AccountSwitcher'
 import NetworkPicker from '@/components/NetworkPicker'
-import { Settings, ChevronDown, PanelRight, PanelRightClose } from 'lucide-react'
+import { Settings, ChevronDown, PanelRight, PanelRightClose, History } from 'lucide-react'
 
 function networkDotColor(networkId: string, hasFriendbot: boolean) {
   if (networkId === 'mainnet') return 'bg-green-500'
@@ -14,7 +15,8 @@ function networkDotColor(networkId: string, hasFriendbot: boolean) {
   return 'bg-blue-400'
 }
 
-export default function WalletNavbar() {
+// onHistory replaces the History page, as private mode does with its own history.
+export default function WalletNavbar({ onHistory }: { onHistory?: () => void } = {}) {
   const navigate = useNavigate()
   const { status, accounts } = useWallet()
   const { activeNetwork } = useNetwork()
@@ -79,6 +81,13 @@ export default function WalletNavbar() {
 
         <div className="flex items-center gap-0.5 shrink-0">
           <button
+            onClick={onHistory ?? (() => navigate('/history'))}
+            aria-label="History"
+            className="cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
+            <History size={18} />
+          </button>
+          <button
             onClick={() => navigate('/settings')}
             aria-label="Settings"
             className="cursor-pointer rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
@@ -96,8 +105,18 @@ export default function WalletNavbar() {
         </div>
       </div>
 
-      <AccountSwitcher isOpen={accountSwitcherOpen} onClose={() => setAccountSwitcherOpen(false)} />
-      <NetworkPicker isOpen={networkPickerOpen} onClose={() => setNetworkPickerOpen(false)} />
+      {/* In a tab the navbar sits in a blurred sticky bar, which would hold these fixed sheets
+          and park them, closed, over the page below it. */}
+      {createPortal(
+        <>
+          <AccountSwitcher
+            isOpen={accountSwitcherOpen}
+            onClose={() => setAccountSwitcherOpen(false)}
+          />
+          <NetworkPicker isOpen={networkPickerOpen} onClose={() => setNetworkPickerOpen(false)} />
+        </>,
+        document.body
+      )}
     </>
   )
 }

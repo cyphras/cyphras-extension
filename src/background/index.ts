@@ -1,7 +1,76 @@
 import { WINDOW_MODES, STORAGE_KEYS, MESSAGE_TYPES } from '@constants/windowMode'
 import { SERVICE_TYPES, PASSWORD_RULES } from '@constants/services'
+import {
+  BTC_MAINNET_CHAIN,
+  BTC_TESTNET_CHAIN,
+  LEGACY_NETWORK_TO_CHAIN,
+  bitcoinApiUrl,
+} from '@constants/chains'
+import { getCuratedEvmTokens } from './evmAssets'
+import type { ChainBalance, ChainActivity } from '@ext-types/index'
+import { EVM_PROXY_BASE } from '@constants/backend'
+import { signTransactionXdr, signMessageSep53 } from './signers/stellar'
+import { deriveAccountAddresses } from './signers/addresses'
+import { bitcoinAddressFromPublicKey, deriveBitcoinKeyFromMnemonic } from './signers/bitcoin'
+import {
+  broadcastBtcTx,
+  btcActivityOf,
+  btcTxKnown,
+  buildBtcPayment,
+  fetchBtcFeeRates,
+  fetchBtcUtxos,
+  forgetSpent,
+  getSpentOutpoints,
+  outpointsOf,
+  recordSpent,
+  spendableSats,
+  verifyBtcInputs,
+  type BtcPayment,
+  type BtcUtxo,
+  type EsploraTx,
+} from './bitcoin'
+import {
+  deriveEvmPrivateKey,
+  evmAddressFromPrivateKey,
+  signEip1559,
+  erc20TransferData,
+} from './signers/evm'
+import { getBitcoinChainsForEnv, getEvmChainsForEnv, getRegistryChains } from './chainRegistry'
 import { EXTERNAL_SERVICE_TYPES, APPROVAL_PAYLOAD_STORAGE_KEY } from '@constants/external'
-import type { NetworkConfig } from '@constants/networks'
+import { ACTIVE_NETWORK_KEY, type NetworkConfig } from '@constants/networks'
+import {
+  cctpAnchorsForEnv,
+  cctpProxyBase,
+  cctpEvmRpcUrl,
+  CCTP_MAX_FEE_BPS_CEILING,
+  CCTP_FINALITY_STANDARD,
+  CCTP_FINALITY_FAST,
+} from '@constants/cctp'
+import {
+  createCctpJob,
+  listCctpJobs,
+  patchCctpJob,
+  withCctpAccountLock,
+  CctpDuplicateJobError,
+} from './cctp/store'
+import {
+  runCctpBurn,
+  resumeCctpBurn,
+  decimalToBaseUnits,
+  baseUnitsToDecimal,
+  type CctpEnv,
+} from './cctp/burn'
+import { buildCctpFeeBreakdown } from './cctp/quote'
+import { decodeCctpMessage } from './cctp/encoding'
+import {
+  recordPendingEvmTx,
+  updatePendingEvmTx,
+  getPendingEvmTxs,
+  dropIndexedEvmTxs,
+  fetchEvmReceipt,
+} from './evmPending'
+import { refreshCctpBadge } from './cctp/badge'
+import { runCctpProcessorPass } from './cctp/processor'
 import type {
   MessagePayload,
   MessageResponse,
@@ -42,6 +111,7 @@ import {
   getSessionImportedSecrets,
   clearSessionImportedSecrets,
   clearWallet,
+  SESSION_KEY,
   type AccountInfo,
 } from './keyManager'
 import {
@@ -57,26 +127,31 @@ import {
   grantAccess,
   revokeAccess,
   revokeAllAccess,
+  revokeOriginEverywhere,
   getConnectedApps,
 } from './allowlistManager'
 import {
-  prepareSend,
-  revealNote,
-  recoverFromSeed,
-  selfReclaim,
-  processNotes,
-  listNotes,
-  quoteSend,
-  NoteNotReadyError,
-  NoPoolError,
-  type PrivateEnv,
-  type ProcessDeps,
-  type SendParams,
-  type SubmitReveal,
-} from './privatePayments'
-import { NonRepresentableAmountError } from '../private/denominations'
-import { RelayerError } from '../private/relayerClient'
-import { generateProof } from './offscreenProver'
+  closeShieldedWallets,
+  forgetShieldedAccounts,
+  shieldedAccountAction,
+  settleShieldedWallets,
+  shieldedDecide,
+  shieldedDismissReset,
+  shieldedHistory,
+  shieldedLimits,
+  shieldedQuote,
+  shieldedReceiveAddress,
+  shieldedRetry,
+  shieldedShield,
+  shieldedSpend,
+  shieldedStartFresh,
+  shieldedStatus,
+  shieldedSync,
+} from './shielded/wallet'
+import { isKeyDerivationMessage } from '@cyphras/private'
+import { errorView } from './shielded/errors'
+import { watchReviewPort } from './shielded/reviews'
+import { acceptProverPort } from './shielded/prover'
 import {
   trackInstall,
   trackDailyPing,
@@ -106,12 +181,12 @@ import {
   nativeToScVal,
   scValToNative,
   SorobanDataBuilder,
+  authorizeEntry,
   xdr,
   rpc as SorobanRpc,
   contract as StellarContract,
 } from '@stellar/stellar-sdk'
 
-const SESSION_KEY = 'cyphras_session_pubkey'
 const FAILED_ATTEMPTS_KEY = 'cyphras_failed_attempts'
 const LOCKED_UNTIL_KEY = 'cyphras_locked_until'
 const AUTO_LOCK_TIMEOUT_KEY = 'cyphras_auto_lock_timeout'
@@ -166,14 +241,20 @@ function isNonEmptyString(v: unknown): v is string {
 
 async function storeApprovalPayload(id: string, data: Record<string, string>): Promise<void> {
   const result = await chrome.storage.session?.get(APPROVAL_PAYLOAD_STORAGE_KEY)
-  const store: Record<string, Record<string, string>> = result?.[APPROVAL_PAYLOAD_STORAGE_KEY] ?? {}
+  const store =
+    (result?.[APPROVAL_PAYLOAD_STORAGE_KEY] as
+      | Record<string, Record<string, string>>
+      | undefined) ?? {}
   store[id] = data
   await chrome.storage.session?.set({ [APPROVAL_PAYLOAD_STORAGE_KEY]: store })
 }
 
 async function clearApprovalPayload(id: string): Promise<void> {
   const result = await chrome.storage.session?.get(APPROVAL_PAYLOAD_STORAGE_KEY)
-  const store: Record<string, Record<string, string>> = result?.[APPROVAL_PAYLOAD_STORAGE_KEY] ?? {}
+  const store =
+    (result?.[APPROVAL_PAYLOAD_STORAGE_KEY] as
+      | Record<string, Record<string, string>>
+      | undefined) ?? {}
   delete store[id]
   await chrome.storage.session?.set({ [APPROVAL_PAYLOAD_STORAGE_KEY]: store })
 }
@@ -262,56 +343,6 @@ async function sorobanSimulate(rpcUrl: string, txXdr: string): Promise<SorobanSi
   }
 }
 
-// Congestion-aware inclusion fee from fee_stats so a commit bids competitively when the network is
-// busy. Falls back to the base fee when fee_stats is unavailable.
-async function fetchInclusionFeeStroops(horizonUrl: string): Promise<number> {
-  const fallback = parseInt(BASE_FEE, 10)
-  try {
-    const res = await fetch(`${horizonUrl}/fee_stats`)
-    if (!res.ok) return fallback
-    const data = (await res.json()) as { max_fee?: { mode?: string; p10?: string } }
-    const base = Math.max(parseInt(data.max_fee?.p10 ?? '') || fallback, fallback)
-    return Math.max(parseInt(data.max_fee?.mode ?? '') || fallback, base * 5)
-  } catch {
-    return fallback
-  }
-}
-
-// Estimate the per-commit max fee by simulating one commit; never signs or submits. Returns "0" when
-// simulation is unavailable so the caller can show the relayer fee alone rather than a fabricated number.
-async function estimateCommitFeeStroops(
-  net: NetworkConfig,
-  source: string,
-  pool: string,
-  relayerFeeStroops: string
-): Promise<string> {
-  if (!net.sorobanRpcUrl) return '0'
-  try {
-    const inclusionFee = await fetchInclusionFeeStroops(net.horizonUrl)
-    const args = [
-      nativeToScVal(source, { type: 'address' }),
-      nativeToScVal(Buffer.alloc(32), { type: 'bytes' }),
-      nativeToScVal(BigInt(relayerFeeStroops), { type: 'i128' }),
-    ]
-    const op = new Contract(pool).call('commit', ...args)
-    const accountRes = await fetch(`${net.horizonUrl}/accounts/${source}`)
-    if (!accountRes.ok) return '0'
-    const accountData = (await accountRes.json()) as { sequence: string }
-    const baseTx = new TransactionBuilder(new Account(source, accountData.sequence), {
-      fee: String(inclusionFee),
-      networkPassphrase: net.passphrase,
-    })
-      .addOperation(op)
-      .setTimeout(60)
-      .build()
-    const sim = await sorobanSimulate(net.sorobanRpcUrl, baseTx.toEnvelope().toXDR('base64'))
-    if (!sim || sim.error || !sim.minResourceFee) return '0'
-    return String(inclusionFee + parseInt(sim.minResourceFee, 10))
-  } catch {
-    return '0'
-  }
-}
-
 function assembleTx(
   baseTx: ReturnType<TransactionBuilder['build']>,
   sim: SorobanSimResult
@@ -325,9 +356,12 @@ function assembleTx(
     builder.setSorobanData(new SorobanDataBuilder(sim.transactionData).build())
   }
 
-  const auth = (sim.auth ?? []).map((a) => xdr.SorobanAuthorizationEntry.fromXDR(a, 'base64'))
+  // Soroban RPC returns auth under results[0].auth, not at the top level
+  const auth = (sim.results?.[0]?.auth ?? []).map((a) =>
+    xdr.SorobanAuthorizationEntry.fromXDR(a, 'base64')
+  )
   builder.clearOperations()
-  const op = baseTx.operations[0] as ReturnType<typeof Operation.invokeHostFunction>
+  const op = baseTx.operations[0] as Operation.InvokeHostFunction
   builder.addOperation(Operation.invokeHostFunction({ ...op, auth }))
 
   return builder.build()
@@ -368,7 +402,7 @@ function decodeScValResult(resultXdr: string): unknown {
   }
 }
 
-function formatSpecType(typeDef: any): string {
+function formatSpecType(typeDef: xdr.ScSpecTypeDef): string {
   const raw: string = typeDef.switch().name // e.g. "scSpecTypeU128", "scSpecTypeBytesN"
   const name = raw.replace('scSpecType', '').toLowerCase()
   if (name === 'udt') return typeDef.udt().name().toString()
@@ -378,7 +412,7 @@ function formatSpecType(typeDef: any): string {
   if (name === 'map')
     return `Map<${formatSpecType(typeDef.map().keyType())}, ${formatSpecType(typeDef.map().valueType())}>`
   if (name === 'tuple')
-    return `Tuple<${(typeDef.tuple().valueTypes() as any[]).map(formatSpecType).join(', ')}>`
+    return `Tuple<${typeDef.tuple().valueTypes().map(formatSpecType).join(', ')}>`
   return name
 }
 
@@ -404,59 +438,10 @@ async function requireUnlockedAndAllowed(
   return resolvedPubkey
 }
 
-const PRIVATE_ALARM = 'cyphras_private_processor'
-
-function setupPrivateProcessorAlarm(): void {
-  chrome.alarms.get(PRIVATE_ALARM, (existing: chrome.alarms.Alarm | undefined) => {
-    if (!existing) {
-      chrome.alarms.create(PRIVATE_ALARM, { periodInMinutes: 1 })
-    }
-  })
-}
-
-// Map private-payment internals to user-safe copy. Raw RPC/relayer/XDR strings leak topology, so
-// anything unrecognized falls back to a generic message instead of being passed through.
-function friendlyPrivateError(err: unknown, asset: string): string {
-  if (err instanceof NoPoolError) {
-    return `No privacy pool is available for ${asset} yet.`
-  }
-  if (err instanceof NonRepresentableAmountError) {
-    return "This amount can't be split into the available privacy denominations. Try a rounder amount."
-  }
-  return 'Private payment service is temporarily unavailable. Try again shortly.'
-}
-
-// A reveal pays via SAC transfer (cannot fund a new account; wrapped assets need a trustline). Verify
-// both before commit so funds never enter an undeliverable pool. Returns null on OK or transient error.
-async function recipientReceiveError(
-  net: NetworkConfig,
-  recipient: string,
-  assetCfg: { asset: string; issuer?: string }
-): Promise<string | null> {
-  let acc: { balances?: { asset_code?: string; asset_issuer?: string }[] }
-  try {
-    const res = await fetch(`${net.horizonUrl}/accounts/${recipient}`)
-    if (res.status === 404) {
-      return 'Recipient account is not activated yet. They need to fund it first.'
-    }
-    if (!res.ok) {
-      return null
-    }
-    acc = (await res.json()) as typeof acc
-  } catch {
-    return null
-  }
-  // Any existing account can receive the native asset; no trustline needed.
-  if (!assetCfg.issuer) {
-    return null
-  }
-  const hasTrustline = (acc.balances ?? []).some(
-    (b) => b.asset_code === assetCfg.asset && b.asset_issuer === assetCfg.issuer
-  )
-  if (!hasTrustline) {
-    return `Recipient has no ${assetCfg.asset} trustline yet. They need to add it before they can receive.`
-  }
-  return null
+// Shielded failures carry a message written for the user and a code the popup can act on.
+function shieldedFailure(err: unknown): ServiceResponse {
+  const view = errorView(err)
+  return { error: view.message, shieldedError: view }
 }
 
 // A payment cannot create an unfunded destination, so a never-funded account is created with XLM
@@ -486,213 +471,154 @@ async function buildTransferOperation(
   return Operation.payment({ destination, asset, amount })
 }
 
-// Builds the shared private-payment env. Note derivation keys off the active account's secret, so the
-// secret must control the active account; a mismatch is refused. Returns null when locked or mismatched.
-async function buildPrivateEnv(net: NetworkConfig): Promise<PrivateEnv | null> {
-  const secret = await getSessionSecret()
-  const session = await chrome.storage.session?.get(SESSION_KEY)
-  const source = session?.[SESSION_KEY] as string | undefined
-  if (!secret || !source) {
-    return null
-  }
-  let derivedPublicKey: string
-  try {
-    derivedPublicKey = Keypair.fromSecret(secret).publicKey()
-  } catch {
-    return null
-  }
-  if (derivedPublicKey !== source) {
-    return null
-  }
-  return {
-    factory: {
-      factoryId: net.privatePoolFactory ?? '',
-      rpcUrl: net.sorobanRpcUrl,
-      networkPassphrase: net.passphrase,
-    },
-    relayerUrl: net.relayerUrl ?? '',
-    network: net.id,
-    source,
-    secret,
-    horizonUrl: net.horizonUrl,
-    tokens: net.privateAssets?.map((a) => a.token) ?? [],
-    // Same timeout used to build the commit tx, so the resubmit window outlasts the tx validity
-    // window and a still-pending commit is never double-submitted.
-    txTimeout: net.txTimeout ?? 90,
-  }
-}
+const CCTP_ALARM = 'cyphras_cctp_processor'
 
-// Build the env + deps the background note processor needs, or null when the wallet is locked or the
-// active network has no private-payment config.
-async function buildPrivateContext(): Promise<{ env: PrivateEnv; deps: ProcessDeps } | null> {
-  const net = await getActiveNetwork()
-  if (!net.sorobanRpcUrl || !net.privatePoolFactory || !net.relayerUrl) {
-    return null
-  }
-  const rpcUrl = net.sorobanRpcUrl
-  const env = await buildPrivateEnv(net)
-  if (!env) {
-    return null
-  }
-  const deps: ProcessDeps = {
-    submitCommit: async (pool, innerHex, relayerFee, onBroadcast) => {
-      // Re-read the key at sign time so a wallet locked since the pass started aborts instead of
-      // signing with a stale secret.
-      const freshSecret = await getSessionSecret()
-      if (!freshSecret) {
-        throw new Error('wallet locked')
-      }
-      // Same congestion-aware inclusion fee the quote estimated, so the confirmed max fee matches what is paid.
-      const inclusionFee = await fetchInclusionFeeStroops(net.horizonUrl)
-      const args = [
-        nativeToScVal(env.source, { type: 'address' }),
-        nativeToScVal(Buffer.from(innerHex, 'hex'), { type: 'bytes' }),
-        nativeToScVal(relayerFee, { type: 'i128' }),
-      ]
-      let feeStroops: string | undefined
-      const txHash = await invokeSignedContract(
-        net,
-        freshSecret,
-        env.source,
-        pool,
-        'commit',
-        args,
-        onBroadcast,
-        String(inclusionFee),
-        (fee) => {
-          feeStroops = fee
-        }
-      )
-      return { txHash, feeStroops }
-    },
-    generateProof: (inputs) => generateProof(inputs, env.network),
-    isUnlocked: async () => {
-      const s = await chrome.storage.session?.get(SESSION_KEY)
-      return !!s?.[SESSION_KEY]
-    },
-    getTxStatus: async (txHash) => {
-      const res = await new SorobanRpc.Server(rpcUrl).getTransaction(txHash)
-      if (res.status === 'SUCCESS') {
-        return 'success'
-      }
-      if (res.status === 'FAILED') {
-        return 'failed'
-      }
-      return 'not_found'
-    },
-  }
-  return { env, deps }
-}
-
-// Sign and submit pool.reveal from the active account for a self-reclaim (recipient = relayer = self),
-// sourced and paid by the user, bypassing the relayer entirely.
-function makeSubmitReveal(net: NetworkConfig, source: string): SubmitReveal {
-  return async (pool, proved) => {
-    const freshSecret = await getSessionSecret()
-    if (!freshSecret) {
-      throw new Error('wallet locked')
+function setupCctpProcessorAlarm(): void {
+  chrome.alarms.get(CCTP_ALARM, (existing: chrome.alarms.Alarm | undefined) => {
+    if (!existing) {
+      chrome.alarms.create(CCTP_ALARM, { periodInMinutes: 1 })
     }
-    const inclusionFee = await fetchInclusionFeeStroops(net.horizonUrl)
-    const bytes = (hex: string) => nativeToScVal(Buffer.from(hex, 'hex'), { type: 'bytes' })
-    const args = [
-      bytes(proved.proof),
-      bytes(proved.root),
-      bytes(proved.nullifierHash),
-      bytes(proved.amountHash),
-      nativeToScVal(proved.recipient, { type: 'address' }),
-      nativeToScVal(proved.relayer, { type: 'address' }),
-      nativeToScVal(BigInt(proved.xlmFee), { type: 'i128' }),
-    ]
-    const txHash = await invokeSignedContract(
-      net,
-      freshSecret,
-      source,
-      pool,
-      'reveal',
-      args,
-      undefined,
-      String(inclusionFee)
-    )
-    return { txHash }
+  })
+}
+
+// Shared by CCTP_QUOTE (form preview) and CCTP_START (the quote a job is created with).
+async function fetchCctpFeeQuote(
+  networkId: string,
+  direction: 'stellar-to-evm' | 'evm-to-stellar',
+  amount: string,
+  speed: 'standard' | 'fast'
+): Promise<string> {
+  const srcDomain = direction === 'stellar-to-evm' ? 27 : 0
+  const dstDomain = direction === 'stellar-to-evm' ? 0 : 27
+  const feesRes = await fetch(
+    `${cctpProxyBase(networkId as 'mainnet' | 'testnet')}/fees/${srcDomain}/${dstDomain}`
+  )
+  // The proxy fronts Circle's API through a CDN that answers outages with an
+  // HTML page, so a parse failure is the upstream being down, not our bug.
+  const fees = (await feesRes.json().catch(() => null)) as
+    | { finalityThreshold: number; minimumFee: number }[]
+    | null
+  if (!feesRes.ok || !Array.isArray(fees))
+    throw new Error('Circle fee service is unavailable right now, try again shortly')
+  const wantThreshold = speed === 'fast' ? CCTP_FINALITY_FAST : CCTP_FINALITY_STANDARD
+  const tier = fees.find((f) => f.finalityThreshold === wantThreshold)
+  if (!tier) throw new Error(`no ${speed}-transfer fee quote available`)
+  const bps = BigInt(tier.minimumFee)
+  if (bps < 0n || bps > CCTP_MAX_FEE_BPS_CEILING) {
+    throw new Error('quoted fee is outside the safety ceiling')
+  }
+  const amountBase = decimalToBaseUnits(amount, 6)
+  return baseUnitsToDecimal((amountBase * bps) / 10000n, 6)
+}
+
+// Keys for the job's own account, not the active one. Null means it cannot sign right now
+// (locked, unsupported network, or that wallet's mnemonic not in session), not an error.
+async function buildCctpSigningEnv(networkId: string, stellarPk: string): Promise<CctpEnv | null> {
+  const anchors = cctpAnchorsForEnv(networkId)
+  if (!anchors) return null
+  const networks = await getNetworks()
+  const net = networks.find((n) => n.id === networkId)
+  if (!net) return null
+
+  const store = await getAccountsStore()
+  const account = store.accounts.find((a) => a.publicKey === stellarPk)
+  if (!account || account.index < 0) return null
+  const mnemonic =
+    account.walletId === 'primary'
+      ? await getSessionMnemonic()
+      : (await getSessionExtraHDMnemonics())[account.walletId]
+  if (!mnemonic) return null
+
+  return {
+    networkId,
+    horizonUrl: net.horizonUrl,
+    sorobanRpcUrl: net.sorobanRpcUrl,
+    passphrase: net.passphrase,
+    txTimeout: net.txTimeout ?? 90,
+    evmRpcUrl: cctpEvmRpcUrl(anchors),
+    evmChainId: anchors.evm.chainId,
+    anchors,
+    stellarSecret: (await deriveKeypairRaw(mnemonic, account.index)).secret,
+    evmPrivateKey: deriveEvmPrivateKey(mnemonic, account.index),
   }
 }
 
-// A relayer/network blip (5xx, offline) is expected and self-heals on the next tick, so it is logged
-// quietly rather than surfaced as an error; only an unexpected fault is treated as a real failure.
-function isTransientPrivateError(err: unknown): boolean {
-  return err instanceof RelayerError || (err instanceof TypeError && /fetch/i.test(err.message))
-}
+let cctpRunning = false
+let cctpRerun = false
 
-// Coalesce concurrent triggers into one active pass plus at most one queued rerun. Serialised storage
-// writes are guaranteed by processNotes' per-source lock; this flag only avoids redundant passes.
-let privateRunning = false
-let privateRerun = false
-
-async function kickPrivateProcessor(): Promise<void> {
-  if (privateRunning) {
-    privateRerun = true
+// Each pass scans every account and network's jobs, not just the active scope, so funds in
+// flight never stall after an account or network switch.
+async function kickCctpProcessor(): Promise<void> {
+  if (cctpRunning) {
+    cctpRerun = true
     return
   }
-  privateRunning = true
+  cctpRunning = true
   try {
     do {
-      privateRerun = false
-      const ctx = await buildPrivateContext()
-      if (!ctx) {
-        return
-      }
-      await processNotes(ctx.env, ctx.deps)
-    } while (privateRerun)
+      cctpRerun = false
+      const networks = await getNetworks()
+      const networkConfigs = new Map(
+        networks.map((n) => [
+          n.id,
+          {
+            horizonUrl: n.horizonUrl,
+            sorobanRpcUrl: n.sorobanRpcUrl,
+            passphrase: n.passphrase,
+            txTimeout: n.txTimeout ?? 90,
+          },
+        ])
+      )
+      await runCctpProcessorPass(
+        {
+          isUnlocked: async () => {
+            const s = await chrome.storage.session?.get(SESSION_KEY)
+            return !!s?.[SESSION_KEY]
+          },
+          buildSigningEnv: buildCctpSigningEnv,
+        },
+        networkConfigs
+      )
+    } while (cctpRerun)
   } catch (err) {
-    if (isTransientPrivateError(err)) {
-      console.debug('private note processor: relayer/network unavailable, retrying later', err)
-    } else {
-      console.error('private note processor failed', err)
-    }
+    console.error('cctp processor failed', err)
   } finally {
-    privateRunning = false
+    cctpRunning = false
   }
 }
 
-// Best-effort: rebuild any note this account committed on-chain that is missing locally (cleared
-// storage, reinstall, new device), then process them. Never throws.
-let privateRecovering = false
-const lastRecoveryAt = new Map<string, number>()
-const RECOVERY_THROTTLE_MS = 120_000
+// The badge does not survive a browser restart.
+void refreshCctpBadge()
 
-// force re-scans now (unlock / account switch); throttled callers (a History refresh poll) re-scan at
-// most once per window so polling does not hammer Horizon.
-async function kickPrivateRecovery(force = false): Promise<void> {
-  if (privateRecovering) {
-    return
-  }
-  privateRecovering = true
-  try {
-    const ctx = await buildPrivateContext()
-    if (ctx) {
-      const last = lastRecoveryAt.get(ctx.env.source) ?? 0
-      if (force || Date.now() - last >= RECOVERY_THROTTLE_MS) {
-        lastRecoveryAt.set(ctx.env.source, Date.now())
-        await recoverFromSeed(ctx.env)
-      }
-    }
-  } catch (err) {
-    if (isTransientPrivateError(err)) {
-      console.debug('private note recovery: relayer/network unavailable, retrying later', err)
-    } else {
-      console.error('private note recovery failed', err)
-    }
-  } finally {
-    privateRecovering = false
-  }
-  void kickPrivateProcessor()
+// Content scripts never read storage, so keep the allowlist and the encrypted vault
+// out of their reach.
+void chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
+
+// Private data this release has no reader for: the fixed-denomination send's alarm and records,
+// the notes kept under cyphras_shielded_notes_, and ledger close times kept under
+// cyphras_shielded_ledger_times_. The fixed-denomination send's notes stay, since a deposit made
+// before the update can only ever be withdrawn with them. The sealed records of every v2 vault
+// stay too, whether this release opens the vault or not, since a payment in flight may need them.
+async function removeRetiredPrivateData(): Promise<void> {
+  await chrome.alarms.clear('cyphras_private_processor')
+  const all = await chrome.storage.local.get(null)
+  const stale = Object.keys(all).filter(
+    (k) =>
+      (k.startsWith('cyphras_private_') &&
+        k !== 'cyphras_private_hint_seen' &&
+        !k.startsWith('cyphras_private_notes_')) ||
+      k.startsWith('cyphras_shielded_notes_') ||
+      k.startsWith('cyphras_shielded_ledger_times_')
+  )
+  if (stale.length > 0) await chrome.storage.local.remove(stale)
 }
 
 chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason === 'update') await removeRetiredPrivateData()
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false })
   chrome.sidePanel.setOptions({ path: 'wallet.html?ctx=sidepanel', enabled: true })
   setupAnalyticsAlarm()
-  setupPrivateProcessorAlarm()
+  setupCctpProcessorAlarm()
   if (details.reason === 'install') trackInstall()
 
   const walletExists = await hasWallet()
@@ -705,24 +631,23 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === DAILY_ALARM) trackDailyPing()
-  if (alarm.name === PRIVATE_ALARM) void kickPrivateProcessor()
+  if (alarm.name === CCTP_ALARM) void kickCctpProcessor()
 })
 
 // Re-register alarms on service-worker restart (MV3 workers can be killed)
 setupAnalyticsAlarm()
-setupPrivateProcessorAlarm()
+setupCctpProcessorAlarm()
 
-// Resume processing on unlock or account switch: SESSION_KEY appearing means the key needed for
-// commit/reveal is back.
+// The UI shows the newly active network's bridges right away, so advance them now rather than
+// on the next one-minute alarm.
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'session' && changes[SESSION_KEY]?.newValue) {
-    void kickPrivateRecovery(true)
+  if (area === 'local' && changes[ACTIVE_NETWORK_KEY]) {
+    void kickCctpProcessor()
   }
 })
 
-// Resume on worker startup, picking up any note left mid-flight by a killed worker (session storage
-// and the note store survive the restart). No-op while locked.
-void kickPrivateProcessor()
+// Resume any CCTP bridge left mid-flight by a killed worker; keyless steps run even while locked.
+void kickCctpProcessor()
 
 // Restore sidebar-by-default behavior on service-worker restart
 chrome.storage.local.get('cyphras_sidebar_by_default', (result) => {
@@ -734,6 +659,7 @@ chrome.storage.local.get('cyphras_sidebar_by_default', (result) => {
 
 function lockSession() {
   chrome.storage.session?.remove(SESSION_KEY)
+  closeShieldedWallets()
   if (pendingRequests.size === 0) {
     clearSessionSecret()
     clearSessionMnemonic()
@@ -750,6 +676,9 @@ chrome.idle.onStateChanged.addListener((state) => {
 })
 
 chrome.runtime.onConnect.addListener((port) => {
+  if (!port.sender || !isExtensionPage(port.sender)) return
+  if (watchReviewPort(port) || acceptProverPort(port)) return
+
   if (port.name === 'wallet-popup') {
     port.onDisconnect.addListener(async () => {
       const seconds = await getIdleTimeoutSeconds()
@@ -775,28 +704,92 @@ chrome.runtime.onConnect.addListener((port) => {
   })
 })
 
-chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
+// Runtime messages are untyped at the chrome boundary; the router only reads
+// `type` and hands each message to a handler that knows its real shape.
+interface RuntimeMessage {
+  type?: string
+  [key: string]: unknown
+}
+
+// type aliases, not interfaces: only aliases get the implicit index
+// signature that makes the cast from RuntimeMessage compile
+type ApprovalResponseMessage = {
+  id: string
+  approved: boolean
+}
+
+const EXTENSION_ORIGIN = new URL(chrome.runtime.getURL('')).origin
+
+// Chrome fills in MessageSender itself, so it is the only trustworthy answer to
+// "who is asking"; every field of the message body can be forged by a page.
+function isExtensionPage(sender: chrome.runtime.MessageSender): boolean {
+  return sender.id === chrome.runtime.id && sender.origin === EXTENSION_ORIGIN
+}
+
+const LOOPBACK_HOST_RE = /^(localhost|.+\.localhost|127(\.\d{1,3}){3}|\[::1\])$/
+
+// Only pages with a stable identity can hold a grant: https everywhere, plain http
+// only on loopback, where local dApp development runs and no network can inject.
+// A prerendering page has not been shown to the user, so it cannot ask for anything.
+function webOriginOf(sender: chrome.runtime.MessageSender): string | null {
+  if (sender.id !== chrome.runtime.id || !sender.tab || !sender.origin) return null
+  if (sender.documentLifecycle && sender.documentLifecycle !== 'active') return null
+  let url: URL
+  try {
+    url = new URL(sender.origin)
+  } catch {
+    return null
+  }
+  if (url.protocol === 'https:') return sender.origin
+  if (url.protocol === 'http:' && LOOPBACK_HOST_RE.test(url.hostname)) return sender.origin
+  return null
+}
+
+chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
   if (message.type === 'EXTERNAL_REQUEST') {
-    handleExternalRequest(message, sender, sendResponse)
+    const origin = webOriginOf(sender)
+    if (!origin) {
+      sendResponse({
+        error: { code: 'NOT_ALLOWED', message: 'Requests must come from a web page' },
+      })
+      return false
+    }
+    handleExternalRequest(message as ExternalRequestMessage, origin, sendResponse)
     return true
   }
 
+  if (message.type === 'GET_WALLET_STATE_FOR_BROADCAST') {
+    const origin = webOriginOf(sender)
+    if (!origin) return false
+    handleGetWalletStateForBroadcast(origin, sendResponse)
+    return true
+  }
+
+  // Everything else drives the wallet itself (approvals, keys, signing), so only
+  // the wallet's own pages and approval windows may send it.
+  if (!isExtensionPage(sender)) return false
+
   if (message.type === 'APPROVAL_RESPONSE') {
-    const resolver = pendingRequests.get(message.id)
+    const { id, approved } = message as ApprovalResponseMessage
+    // Only the window opened for this request may answer it.
+    const windowId = sender.tab?.windowId
+    if (windowId === undefined || approvalWindowToRequest.get(windowId) !== id) {
+      sendResponse({ ok: false })
+      return true
+    }
+    const resolver = pendingRequests.get(id)
     if (resolver) {
-      pendingRequests.delete(message.id)
-      resolver(message.approved)
+      pendingRequests.delete(id)
+      resolver(approved)
     }
     sendResponse({ ok: true })
     return true
   }
 
-  if (message.type === 'GET_WALLET_STATE_FOR_BROADCAST') {
-    handleGetWalletStateForBroadcast(sendResponse)
-    return true
-  }
-
-  if ('type' in message && Object.values(SERVICE_TYPES).includes(message.type as any)) {
+  if (
+    typeof message.type === 'string' &&
+    (Object.values(SERVICE_TYPES) as string[]).includes(message.type)
+  ) {
     handleService(message as ServicePayload, sendResponse)
     return true
   }
@@ -806,13 +799,17 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
 })
 
 async function handleGetWalletStateForBroadcast(
+  origin: string,
   sendResponse: (r: Record<string, unknown>) => void
 ) {
   const session = await chrome.storage.session?.get(SESSION_KEY)
-  const pubkey = session?.[SESSION_KEY] ?? null
+  const pubkey = (session?.[SESSION_KEY] as string | undefined) ?? null
   const activeNetwork = await getActiveNetwork()
+  // Every open tab hears that the wallet changed, but only a site connected to
+  // this account on this network learns which account it changed to.
+  const allowed = pubkey ? await isAllowed(origin, pubkey, activeNetwork.id) : false
   sendResponse({
-    address: pubkey,
+    address: allowed ? pubkey : null,
     network: activeNetwork.id,
     networkPassphrase: activeNetwork.passphrase,
   })
@@ -882,6 +879,76 @@ function notifyTabsWalletChanged() {
   })
 }
 
+// Converts a wei-style integer amount to a trimmed decimal string without
+// float precision loss.
+function weiToDecimal(value: bigint, decimals: number): string {
+  const base = 10n ** BigInt(decimals)
+  const whole = value / base
+  const frac = (value % base).toString().padStart(decimals, '0').replace(/0+$/, '')
+  return frac === '' ? whole.toString() : `${whole}.${frac}`
+}
+
+// Inverse of weiToDecimal; throws on malformed or over-precise input.
+function decimalToWei(value: string, decimals: number): bigint {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(value.trim())
+  if (!match) throw new Error('Invalid amount')
+  const [, whole, frac = ''] = match
+  if (frac.length > decimals) throw new Error('Too many decimal places')
+  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, '0') || '0')
+}
+
+// The account's address on an enabled Bitcoin chain of the active environment. Rejecting
+// other chain ids keeps a mainnet request from ever running while testnet is active.
+async function resolveBtcContext(publicKey: string, chainId: string) {
+  const network = await getActiveNetwork()
+  const chain = (await getBitcoinChainsForEnv(network.id)).find((c) => c.id === chainId)
+  // Only the two shipped chain ids; the network (and so key path and address format) comes
+  // from the id itself, never from a registry flag.
+  if (!chain || (chainId !== BTC_MAINNET_CHAIN && chainId !== BTC_TESTNET_CHAIN)) {
+    throw new Error('Bitcoin is not available on this network')
+  }
+  const testnet = chainId === BTC_TESTNET_CHAIN
+  const account = (await getAccountsStore()).accounts.find((a) => a.publicKey === publicKey)
+  const from = testnet ? account?.addresses?.bitcoinTestnet : account?.addresses?.bitcoin
+  if (!account || !from) throw new Error('No Bitcoin address for this account yet')
+  return { networkId: network.id, account, from, apiUrl: bitcoinApiUrl(chainId), testnet }
+}
+
+function btcQuoteOf(payment: BtcPayment, utxos: BtcUtxo[]) {
+  const { confirmed, pending } = spendableSats(utxos)
+  return {
+    feeSats: payment.feeSats.toString(),
+    sendSats: payment.sendSats.toString(),
+    vsize: payment.vsize,
+    spendableSats: confirmed.toString(),
+    pendingSats: pending.toString(),
+  }
+}
+
+// An account made before an address type existed lacks it, and deriving one needs the
+// mnemonic, which only the unlocked session holds; so this runs after unlock and after
+// account creation. Imported-secret accounts (index -1) have no mnemonic and stay
+// Stellar-only.
+async function backfillDerivedAddresses(): Promise<void> {
+  try {
+    const store = await getAccountsStore()
+    const primary = await getSessionMnemonic()
+    const extras = await getSessionExtraHDMnemonics()
+    let changed = false
+    for (const account of store.accounts) {
+      const known = account.addresses
+      if (account.index < 0 || (known?.evm && known.bitcoin && known.bitcoinTestnet)) continue
+      const mnemonic = account.walletId === 'primary' ? primary : extras[account.walletId]
+      if (!mnemonic) continue
+      account.addresses = { ...known, ...deriveAccountAddresses(mnemonic, account.index) }
+      changed = true
+    }
+    if (changed) await saveAccountsStore(store)
+  } catch {
+    // Best-effort: a failed backfill retries on the next unlock.
+  }
+}
+
 // Resolves immediately with null if the user closes the window.
 async function openAndWaitForUnlock(timeoutMs = 2 * 60 * 1000): Promise<string | null> {
   return new Promise((resolve) => {
@@ -911,7 +978,7 @@ async function openAndWaitForUnlock(timeoutMs = 2 * 60 * 1000): Promise<string |
       if (area !== 'session') return
       if (!('cyphras_session_pubkey' in changes)) return
       const newValue = changes['cyphras_session_pubkey']?.newValue
-      if (!newValue) return
+      if (!isNonEmptyString(newValue)) return
       finish(newValue)
     }
 
@@ -933,16 +1000,39 @@ async function openAndWaitForUnlock(timeoutMs = 2 * 60 * 1000): Promise<string |
   })
 }
 
+type ExternalRequestMessage = {
+  requestType: string
+  payload?: Record<string, unknown>
+}
+
+// A dApp may name a network, but the wallet only signs for the one its approval
+// window shows: a different passphrase yields a signature valid on that network.
+function rejectForeignNetwork(
+  payload: Record<string, unknown> | undefined,
+  activePassphrase: string,
+  sendResponse: (r: Record<string, unknown>) => void
+): boolean {
+  const requested = payload?.networkPassphrase
+  if (requested === undefined || requested === activePassphrase) return false
+  sendResponse({
+    error: { code: 'NETWORK_MISMATCH', message: 'Switch the wallet to the requested network' },
+  })
+  return true
+}
+
 async function handleExternalRequest(
-  message: any,
-  _sender: chrome.runtime.MessageSender,
+  message: ExternalRequestMessage,
+  origin: string,
   sendResponse: (r: Record<string, unknown>) => void
 ) {
   try {
-    const { id, requestType, origin, payload } = message
+    const { requestType, payload } = message
+    // Approvals are keyed by an id the wallet picks. A page-picked id could match
+    // another pending request and change what an open approval window signs.
+    const id = crypto.randomUUID()
 
     const session = await chrome.storage.session?.get(SESSION_KEY)
-    const pubkey: string | null = session?.[SESSION_KEY] ?? null
+    const pubkey = (session?.[SESSION_KEY] as string | undefined) ?? null
 
     switch (requestType) {
       case EXTERNAL_SERVICE_TYPES.IS_CONNECTED: {
@@ -1124,14 +1214,19 @@ async function handleExternalRequest(
 
       case EXTERNAL_SERVICE_TYPES.GET_NETWORK_DETAILS: {
         const activeNetwork = await getActiveNetwork()
+        // A user-added network's URLs can carry a provider API key, so only a site
+        // connected to the account sees them.
+        const showUrls =
+          activeNetwork.isDefault ||
+          (!!pubkey && (await isAllowed(origin, pubkey, activeNetwork.id)))
         sendResponse({
           result: {
             network: activeNetwork.id,
             networkName: activeNetwork.name,
-            networkUrl: activeNetwork.horizonUrl,
+            networkUrl: showUrls ? activeNetwork.horizonUrl : undefined,
             networkPassphrase: activeNetwork.passphrase,
-            sorobanRpcUrl: activeNetwork.sorobanRpcUrl,
-            friendbotUrl: activeNetwork.friendbotUrl,
+            sorobanRpcUrl: showUrls ? activeNetwork.sorobanRpcUrl : undefined,
+            friendbotUrl: showUrls ? activeNetwork.friendbotUrl : undefined,
           },
         })
         break
@@ -1154,7 +1249,8 @@ async function handleExternalRequest(
         }
 
         const activeNetwork = await getActiveNetwork()
-        const networkPassphrase = (payload?.networkPassphrase as string) ?? activeNetwork.passphrase
+        if (rejectForeignNetwork(payload, activeNetwork.passphrase, sendResponse)) return
+        const networkPassphrase = activeNetwork.passphrase
 
         // Store full XDR in session storage - approval window reads from there (no truncation)
         await storeApprovalPayload(id, { xdr, origin })
@@ -1169,12 +1265,10 @@ async function handleExternalRequest(
         }
 
         try {
-          const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase)
-          const keypair = Keypair.fromSecret(sessionSecret)
-          tx.sign(keypair)
+          const signedTxXdr = signTransactionXdr(xdr, networkPassphrase, sessionSecret)
           trackSign('transaction')
           sendResponse({
-            result: { signedTxXdr: tx.toEnvelope().toXDR('base64'), signerAddress: txPubkey },
+            result: { signedTxXdr, signerAddress: txPubkey },
           })
         } catch {
           trackError('SIGN_FAILED')
@@ -1203,6 +1297,19 @@ async function handleExternalRequest(
           sendResponse({ error: { code: 'INVALID_PARAMS', message: 'message is required' } })
           return
         }
+        // A signature of this message is the seed of a private account that anyone holding it can
+        // spend, and the user's own private balance never needs it, so no site gets one, whatever
+        // form the message comes in.
+        if (isKeyDerivationMessage(msg)) {
+          sendResponse({
+            error: {
+              code: 'NOT_ALLOWED',
+              message:
+                'Cyphras does not sign the private account message: whoever holds that signature can spend the private balance it creates',
+            },
+          })
+          return
+        }
 
         await storeApprovalPayload(id, { message: msg, origin })
         const msgParams = new URLSearchParams({ id, origin })
@@ -1216,10 +1323,7 @@ async function handleExternalRequest(
         }
 
         try {
-          const keypair = Keypair.fromSecret(sessionSecret)
-          const msgBytes = new TextEncoder().encode(msg)
-          const signature = keypair.sign(msgBytes)
-          const signatureBase64 = btoa(String.fromCharCode(...signature))
+          const signatureBase64 = signMessageSep53(msg, sessionSecret)
           trackSign('message')
           sendResponse({ result: { signature: signatureBase64, signerAddress: msgPubkey } })
         } catch {
@@ -1289,7 +1393,8 @@ async function handleExternalRequest(
         }
 
         const activeNetwork = await getActiveNetwork()
-        const sasPassphrase = (payload?.networkPassphrase as string) ?? activeNetwork.passphrase
+        if (rejectForeignNetwork(payload, activeNetwork.passphrase, sendResponse)) return
+        const sasPassphrase = activeNetwork.passphrase
 
         await storeApprovalPayload(id, { xdr: sasXdr, origin })
         const sasParams = new URLSearchParams({ id, origin })
@@ -1483,7 +1588,8 @@ async function handleExternalRequest(
         }
 
         const activeNetwork = await getActiveNetwork()
-        const saePassphrase = (payload?.networkPassphrase as string) ?? activeNetwork.passphrase
+        if (rejectForeignNetwork(payload, activeNetwork.passphrase, sendResponse)) return
+        const saePassphrase = activeNetwork.passphrase
 
         await storeApprovalPayload(id, { entryXdr, origin })
         const saeParams = new URLSearchParams({ id, origin })
@@ -1498,47 +1604,18 @@ async function handleExternalRequest(
         }
 
         try {
-          const { xdr: stellarXdr } = await import('@stellar/stellar-sdk')
           const keypair = Keypair.fromSecret(saeSecret)
-
-          const entry = stellarXdr.SorobanAuthorizationEntry.fromXDR(entryXdr, 'base64')
-          const preimage = stellarXdr.HashIdPreimage.fromXDR(
-            stellarXdr.HashIdPreimage.envelopeTypeSorobanAuthorization(
-              new stellarXdr.HashIdPreimageSorobanAuthorization({
-                networkId: Buffer.from(
-                  new TextEncoder().encode(saePassphrase).slice(0, 32)
-                ).subarray(0, 32),
-                invocation: entry.credentials().address().invocation(),
-                nonce: entry.credentials().address().nonce(),
-                signatureExpirationLedger: entry
-                  .credentials()
-                  .address()
-                  .signatureExpirationLedger(),
-              })
-            ).toXDR()
+          const entry = xdr.SorobanAuthorizationEntry.fromXDR(entryXdr, 'base64')
+          // the entry's own expiration is passed back so the SDK signs it unchanged
+          const signed = await authorizeEntry(
+            entry,
+            keypair,
+            entry.credentials().address().signatureExpirationLedger(),
+            saePassphrase
           )
-
-          const hash = Buffer.from(await crypto.subtle.digest('SHA-256', preimage.toXDR()))
-          const signature = keypair.sign(hash)
-
-          entry
-            .credentials()
-            .address()
-            .signature(
-              stellarXdr.ScVal.scvMap([
-                new stellarXdr.ScMapEntry({
-                  key: stellarXdr.ScVal.scvSymbol('public_key'),
-                  val: stellarXdr.ScVal.scvBytes(Buffer.from(keypair.rawPublicKey())),
-                }),
-                new stellarXdr.ScMapEntry({
-                  key: stellarXdr.ScVal.scvSymbol('signature'),
-                  val: stellarXdr.ScVal.scvBytes(Buffer.from(signature)),
-                }),
-              ])
-            )
-
-          const signedEntryXdr = entry.toXDR('base64')
-          sendResponse({ result: { signedAuthEntry: signedEntryXdr, signerAddress: saePubkey } })
+          sendResponse({
+            result: { signedAuthEntry: signed.toXDR('base64'), signerAddress: saePubkey },
+          })
         } catch {
           sendResponse({
             error: {
@@ -1705,12 +1782,8 @@ async function handleExternalRequest(
       }
 
       case EXTERNAL_SERVICE_TYPES.REVOKE_ALL_ACCESS: {
-        if (!pubkey) {
-          sendResponse({ error: { code: 'NOT_CONNECTED', message: 'Wallet is locked' } })
-          return
-        }
-        const { id: raaNetId } = await getActiveNetwork()
-        await revokeAllAccess(pubkey, raaNetId)
+        // A site can only disconnect itself, on every account and network.
+        await revokeOriginEverywhere(origin)
         notifyTabsWalletChanged()
         sendResponse({ result: { ok: true } })
         break
@@ -2338,8 +2411,9 @@ async function handleExternalRequest(
       }
 
       case EXTERNAL_SERVICE_TYPES.SIMULATE_CONTRACT: {
-        // Read-only simulation needs no signing: use the session pubkey if unlocked, else a placeholder
-        // (the sequence number does not affect simulation output).
+        // Read-only simulation needs no signing. The session pubkey is the source only for
+        // a site connected to it: simulation costs differ when a call authorizes its own
+        // source, so any other site could test guessed addresses against the user's.
         const scContractId = payload?.contractId as string
         const scMethod = payload?.method as string
         const scArgSpecs = (payload?.args ?? []) as ScValSpec[]
@@ -2365,7 +2439,11 @@ async function handleExternalRequest(
 
           const scArgs = scArgSpecs.map(scValSpecToXdr)
           const scOp = new Contract(scContractId).call(scMethod, ...scArgs)
-          const scAccount = new Account(pubkey ?? Keypair.random().publicKey(), '0')
+          const scSource =
+            pubkey && (await isAllowed(origin, pubkey, scNetwork.id))
+              ? pubkey
+              : Keypair.random().publicKey()
+          const scAccount = new Account(scSource, '0')
 
           const scBaseTx = new TransactionBuilder(scAccount, {
             fee: BASE_FEE,
@@ -2415,7 +2493,7 @@ async function handleExternalRequest(
               fee: scTotalFee,
               minResourceFee: scSim?.minResourceFee,
               error: scSim?.error,
-              requiresAuth: (scSim?.auth ?? []).length > 0,
+              requiresAuth: (scSim?.results?.[0]?.auth ?? []).length > 0,
               stateChanging: scStateChanging,
             },
           })
@@ -2624,15 +2702,15 @@ async function handleExternalRequest(
 
           const spec = StellarContract.Spec.fromWasm(wasmBytes)
 
-          const functions = spec.funcs().map((f: any) => ({
+          const functions = spec.funcs().map((f) => ({
             name: f.name().toString(),
             doc: f.doc().toString().trim() || undefined,
-            inputs: f.inputs().map((i: any) => ({
+            inputs: f.inputs().map((i) => ({
               name: i.name().toString(),
               type: formatSpecType(i.type()),
               doc: i.doc().toString().trim() || undefined,
             })),
-            outputs: (f.outputs() as any[]).map(formatSpecType),
+            outputs: f.outputs().map(formatSpecType),
           }))
 
           const structKind = xdr.ScSpecEntryKind.scSpecEntryUdtStructV0().value
@@ -2640,14 +2718,14 @@ async function handleExternalRequest(
           const unionKind = xdr.ScSpecEntryKind.scSpecEntryUdtUnionV0().value
           const voidCaseKind = xdr.ScSpecUdtUnionCaseV0Kind.scSpecUdtUnionCaseVoidV0().value
 
-          const structs = (spec.entries as any[])
-            .filter((e: any) => e.switch().value === structKind)
-            .map((e: any) => {
+          const structs = spec.entries
+            .filter((e) => e.switch().value === structKind)
+            .map((e) => {
               const s = e.udtStructV0()
               return {
                 name: s.name().toString(),
                 doc: s.doc()?.toString().trim() || undefined,
-                fields: (s.fields() as any[]).map((field: any) => ({
+                fields: s.fields().map((field) => ({
                   name: field.name().toString(),
                   type: formatSpecType(field.type()),
                   doc: field.doc()?.toString().trim() || undefined,
@@ -2655,32 +2733,32 @@ async function handleExternalRequest(
               }
             })
 
-          const enums = (spec.entries as any[])
-            .filter((e: any) => e.switch().value === enumKind)
-            .map((e: any) => {
+          const enums = spec.entries
+            .filter((e) => e.switch().value === enumKind)
+            .map((e) => {
               const en = e.udtEnumV0()
               return {
                 name: en.name().toString(),
                 doc: en.doc()?.toString().trim() || undefined,
-                cases: (en.cases() as any[]).map((c: any) => ({
+                cases: en.cases().map((c) => ({
                   name: c.name().toString(),
-                  value: c.value() as number,
+                  value: c.value(),
                 })),
               }
             })
 
-          const unions = (spec.entries as any[])
-            .filter((e: any) => e.switch().value === unionKind)
-            .map((e: any) => {
+          const unions = spec.entries
+            .filter((e) => e.switch().value === unionKind)
+            .map((e) => {
               const u = e.udtUnionV0()
               return {
                 name: u.name().toString(),
                 doc: u.doc()?.toString().trim() || undefined,
-                cases: (u.cases() as any[]).map((c: any) => {
+                cases: u.cases().map((c) => {
                   const isVoid = c.switch().value === voidCaseKind
                   const name = c.value().name().toString()
                   if (isVoid) return { name, types: [] as string[] }
-                  const types = (c.tupleCase().type() as any[]).map(formatSpecType)
+                  const types = c.tupleCase().type().map(formatSpecType)
                   return { name, types }
                 }),
               }
@@ -2705,12 +2783,12 @@ async function handleExternalRequest(
 
 async function getFailedAttempts(): Promise<number> {
   const result = await chrome.storage.local.get(FAILED_ATTEMPTS_KEY)
-  return result[FAILED_ATTEMPTS_KEY] ?? 0
+  return (result[FAILED_ATTEMPTS_KEY] as number | undefined) ?? 0
 }
 
 async function getLockedUntil(): Promise<number> {
   const result = await chrome.storage.local.get(LOCKED_UNTIL_KEY)
-  return result[LOCKED_UNTIL_KEY] ?? 0
+  return (result[LOCKED_UNTIL_KEY] as number | undefined) ?? 0
 }
 
 async function incrementFailedAttempts(): Promise<number> {
@@ -2743,116 +2821,6 @@ async function checkLockout(): Promise<{ locked: boolean; minutesLeft?: number }
   return { locked: false }
 }
 
-// Build, sign, submit, and confirm a contract call signed by the active account. Mirrors the
-// INVOKE_CONTRACT path without an approval window: the private-send confirm screen is the approval.
-async function invokeSignedContract(
-  net: NetworkConfig,
-  secret: string,
-  source: string,
-  contractId: string,
-  method: string,
-  args: xdr.ScVal[],
-  onBroadcast?: (hash: string) => Promise<void>,
-  // Inclusion-fee bid in stroops; defaults to the base fee. A commit passes a congestion-aware value
-  // so it is not outbid when the network is busy.
-  inclusionFee?: string,
-  // Reports the confirmed tx's fee_charged (stroops) on SUCCESS so the caller can persist the exact cost; not fired on the broadcast-but-unconfirmed path.
-  onConfirmed?: (feeStroops: string) => void
-): Promise<string> {
-  if (!net.sorobanRpcUrl) {
-    throw new Error('Soroban RPC not configured for this network')
-  }
-  const op = new Contract(contractId).call(method, ...args)
-  const accountRes = await fetch(`${net.horizonUrl}/accounts/${source}`)
-  if (!accountRes.ok) throw new Error('Failed to load account')
-  const accountData = (await accountRes.json()) as { sequence: string }
-  const baseTx = new TransactionBuilder(new Account(source, accountData.sequence), {
-    fee: inclusionFee ?? BASE_FEE,
-    networkPassphrase: net.passphrase,
-  })
-    .addOperation(op)
-    .setTimeout(net.txTimeout ?? 90)
-    .build()
-
-  const sim = await sorobanSimulate(net.sorobanRpcUrl, baseTx.toEnvelope().toXDR('base64'))
-  if (!sim) throw new Error('Soroban simulation failed')
-  if (sim.error) throw new Error(sim.error)
-
-  const baseFee = parseInt(baseTx.fee, 10)
-  const resourceFee = parseInt(sim.minResourceFee ?? '0', 10)
-  const builder = TransactionBuilder.cloneFrom(baseTx, { fee: String(baseFee + resourceFee) })
-  if (sim.transactionData) {
-    builder.setSorobanData(new SorobanDataBuilder(sim.transactionData).build())
-  }
-  // Soroban RPC returns auth under results[0].auth, not the top level. commit's auth is the source
-  // account, satisfied by the envelope signature; attach it or require_auth traps on-chain.
-  const auth = (sim.results?.[0]?.auth ?? []).map((a) =>
-    xdr.SorobanAuthorizationEntry.fromXDR(a, 'base64')
-  )
-  builder.clearOperations()
-  const baseOp = baseTx.operations[0] as ReturnType<typeof Operation.invokeHostFunction>
-  builder.addOperation(Operation.invokeHostFunction({ ...baseOp, auth }))
-  const assembled = builder.build()
-  assembled.sign(Keypair.fromSecret(secret))
-
-  const sendRes = await fetch(net.sorobanRpcUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'sendTransaction',
-      params: { transaction: assembled.toEnvelope().toXDR('base64') },
-    }),
-  })
-  const sendData = (await sendRes.json()) as {
-    result?: { hash?: string }
-    error?: { message: string }
-  }
-  if (sendData.error || !sendData.result?.hash) {
-    throw new Error(sendData.error?.message ?? 'Failed to send transaction')
-  }
-  const hash = sendData.result.hash
-  // Surface the hash before the slow confirmation poll so the caller can persist it and avoid
-  // resubmitting if the worker is killed mid-confirmation.
-  if (onBroadcast) {
-    await onBroadcast(hash)
-  }
-
-  const server = new SorobanRpc.Server(net.sorobanRpcUrl)
-  const attempts = Math.ceil((net.txTimeout ?? 90) / 2)
-  for (let i = 0; i < attempts; i++) {
-    await new Promise((r) => setTimeout(r, 2000))
-    const poll = await server.getTransaction(hash)
-    if (poll.status === 'SUCCESS') {
-      if (onConfirmed) {
-        try {
-          const result = (poll as { resultXdr?: { feeCharged(): { toString(): string } } })
-            .resultXdr
-          if (result) {
-            onConfirmed(result.feeCharged().toString())
-          }
-        } catch {
-          /* the fee is a display-only extra; a parse miss just falls back to a Horizon fetch */
-        }
-      }
-      return hash
-    }
-    if (poll.status === 'FAILED') {
-      let detail = ''
-      try {
-        detail = `: ${(poll as { resultXdr?: { toXDR(f: string): string } }).resultXdr?.toXDR('base64') ?? ''}`
-      } catch {
-        /* ignore */
-      }
-      throw new Error(`Transaction failed on-chain ${hash}${detail}`)
-    }
-  }
-  // Broadcast but unconfirmed: the commit may still land, so return the hash and let the caller
-  // reconcile against the relayer's indexed leaves.
-  return hash
-}
-
 async function handleService(message: ServicePayload, sendResponse: (r: ServiceResponse) => void) {
   switch (message.type) {
     case SERVICE_TYPES.CREATE_WALLET: {
@@ -2866,7 +2834,15 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       const publicKey = keypair.publicKey()
       await encryptAndStoreMnemonic(mnemonic, message.password)
       await saveAccountsStore({
-        accounts: [{ index: 0, publicKey, label: 'Account 1', walletId: 'primary' }],
+        accounts: [
+          {
+            index: 0,
+            publicKey,
+            label: 'Account 1',
+            walletId: 'primary',
+            addresses: { stellar: publicKey, ...deriveAccountAddresses(mnemonic, 0) },
+          },
+        ],
         activeIndex: 0,
         activePublicKey: publicKey,
       })
@@ -2888,7 +2864,15 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       const publicKey = keypair.publicKey()
       await encryptAndStoreMnemonic(message.mnemonic, message.password)
       await saveAccountsStore({
-        accounts: [{ index: 0, publicKey, label: 'Account 1', walletId: 'primary' }],
+        accounts: [
+          {
+            index: 0,
+            publicKey,
+            label: 'Account 1',
+            walletId: 'primary',
+            addresses: { stellar: publicKey, ...deriveAccountAddresses(message.mnemonic, 0) },
+          },
+        ],
         activeIndex: 0,
         activePublicKey: publicKey,
       })
@@ -2922,8 +2906,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         // Migration: add walletId='primary' to accounts that predate multi-wallet
         let needsSave = false
         for (const account of store.accounts) {
-          if (!(account as any).walletId) {
-            ;(account as any).walletId = 'primary'
+          if (!account.walletId) {
+            account.walletId = 'primary'
             needsSave = true
           }
         }
@@ -3017,6 +3001,9 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         await storeSessionMnemonic(mnemonic)
         await resetFailedAttempts()
         sendResponse({ publicKey: activePublicKey, isUnlocked: true })
+        // Fire-and-forget: EVM addresses backfill from the session mnemonics
+        // without delaying the unlock response.
+        void backfillDerivedAddresses()
         break
       }
 
@@ -3061,6 +3048,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       await clearSessionMnemonic()
       await clearSessionExtraHDMnemonics()
       await clearSessionImportedSecrets()
+      closeShieldedWallets()
       notifyTabsWalletChanged()
       sendResponse({ isUnlocked: false })
       break
@@ -3079,6 +3067,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       await clearSessionMnemonic()
       await clearSessionExtraHDMnemonics()
       await clearSessionImportedSecrets()
+      await settleShieldedWallets()
       await clearWallet()
       await chrome.storage.local.remove([
         FAILED_ATTEMPTS_KEY,
@@ -3086,7 +3075,13 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         'cyphras_allowlist',
       ])
       const allLocal = await chrome.storage.local.get(null)
-      const assetKeys = Object.keys(allLocal).filter((k) => k.startsWith('cyphras_custom_assets_'))
+      const assetKeys = Object.keys(allLocal).filter(
+        (k) =>
+          k.startsWith('cyphras_custom_assets_') ||
+          k.startsWith('cyphras_balance_snapshot_') ||
+          k.startsWith('cyphras_shielded_') ||
+          k.startsWith('cyphras_private_')
+      )
       if (assetKeys.length > 0) await chrome.storage.local.remove(assetKeys)
       notifyTabsWalletChanged()
       sendResponse({ ok: true })
@@ -3097,7 +3092,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       const walletExists = await hasWallet()
       const legacy = await isLegacyWallet()
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY] ?? null
+      const pubkey = (session?.[SESSION_KEY] as string | undefined) ?? null
       const failedAttempts = await getFailedAttempts()
       const lockedUntil = await getLockedUntil()
       sendResponse({
@@ -3208,7 +3203,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
 
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY]
+      const pubkey = session?.[SESSION_KEY] as string | undefined
       if (!pubkey) {
         sendResponse({ error: 'Wallet locked' })
         return
@@ -3258,7 +3253,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
 
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY]
+      const pubkey = session?.[SESSION_KEY] as string | undefined
       if (!pubkey) {
         sendResponse({ error: 'Wallet locked' })
         return
@@ -3317,220 +3312,253 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       break
     }
 
-    case SERVICE_TYPES.PRIVATE_QUOTE: {
-      const pqNet = await getActiveNetwork()
-      if (!pqNet.relayerUrl || !pqNet.privatePoolFactory) {
-        sendResponse({ error: 'Private payments are not available on this network' })
+    case SERVICE_TYPES.SHIELDED_RECEIVE_ADDRESS: {
+      // poolId is optional here: one account has the same private address in every pool.
+      const m = message as unknown as { poolId?: string }
+      try {
+        const net = await getActiveNetwork()
+        const poolId = isNonEmptyString(m.poolId) ? m.poolId : undefined
+        sendResponse({ shieldedAddress: await shieldedReceiveAddress(net, poolId) })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_STATUS:
+    case SERVICE_TYPES.SHIELDED_SYNC: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
         return
       }
-      const pqEnv = await buildPrivateEnv(pqNet)
-      if (!pqEnv) {
-        sendResponse({ error: 'Wallet locked' })
+      try {
+        const net = await getActiveNetwork()
+        const status =
+          message.type === SERVICE_TYPES.SHIELDED_SYNC
+            ? await shieldedSync(net, m.poolId)
+            : await shieldedStatus(net, m.poolId)
+        sendResponse({ shieldedStatus: status })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_SHIELD: {
+      const m = message as unknown as {
+        poolId?: string
+        amount?: string
+        whileSubmitting?: boolean
+      }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
         return
       }
-      const pq = message as unknown as { asset: string; amount: string; recipient?: string }
-      if (!/^[0-9]+$/.test(pq.amount)) {
+      if (!m.amount || !/^[1-9][0-9]*$/.test(m.amount)) {
         sendResponse({ error: 'amount must be a positive integer in stroops' })
         return
       }
       try {
-        // Block early (at the quote step) if the recipient cannot receive, before the user confirms.
-        const pqAsset = pqNet.privateAssets?.find((a) => a.asset === pq.asset)
-        if (pq.recipient && pqAsset) {
-          const pqRecvErr = await recipientReceiveError(pqNet, pq.recipient, pqAsset)
-          if (pqRecvErr) {
-            sendResponse({ error: pqRecvErr })
-            return
-          }
-        }
-        const quote = await quoteSend(pq.asset, BigInt(pq.amount), pqEnv)
-        const commitFeeStroops = await estimateCommitFeeStroops(
-          pqNet,
-          pqEnv.source,
-          quote.samplePool,
-          quote.feeStroops
+        const net = await getActiveNetwork()
+        const receipt = await shieldedShield(
+          net,
+          m.poolId,
+          BigInt(m.amount),
+          m.whileSubmitting === true
         )
-        sendResponse({
-          privateQuote: {
-            feeStroops: quote.feeStroops,
-            pieces: quote.pieces,
-            totalNotes: quote.totalNotes,
-            commitFeeStroops,
-          },
-        })
+        sendResponse({ shieldedReceipt: receipt })
       } catch (err) {
-        sendResponse({ error: friendlyPrivateError(err, pq.asset) })
+        sendResponse(shieldedFailure(err))
       }
       break
     }
 
-    case SERVICE_TYPES.PRIVATE_PREPARE_SEND: {
-      const ppNet = await getActiveNetwork()
-      if (!ppNet.sorobanRpcUrl || !ppNet.privatePoolFactory || !ppNet.relayerUrl) {
-        sendResponse({ error: 'Private payments are not available on this network' })
+    case SERVICE_TYPES.SHIELDED_START_FRESH: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
         return
       }
-      const ppEnv = await buildPrivateEnv(ppNet)
-      if (!ppEnv) {
-        sendResponse({ error: 'Wallet locked' })
+      try {
+        const net = await getActiveNetwork()
+        sendResponse({ shieldedStatus: await shieldedStartFresh(net, m.poolId) })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_HISTORY: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
         return
       }
+      try {
+        const net = await getActiveNetwork()
+        sendResponse({ shieldedHistory: await shieldedHistory(net, m.poolId) })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_DISMISS_RESET: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      try {
+        const net = await getActiveNetwork()
+        await shieldedDismissReset(net, m.poolId)
+        sendResponse({ ok: true })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_LIMITS: {
+      const m = message as unknown as { poolId?: string }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      try {
+        const net = await getActiveNetwork()
+        sendResponse({ shieldedLimits: await shieldedLimits(net, m.poolId) })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_QUOTE: {
+      const m = message as unknown as { poolId?: string; kind?: string; selfRelay?: boolean }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      if (m.kind !== 'send' && m.kind !== 'unshield') {
+        sendResponse({ error: "kind must be 'send' or 'unshield'" })
+        return
+      }
+      try {
+        const net = await getActiveNetwork()
+        const selfRelay = m.kind === 'unshield' && m.selfRelay === true
+        sendResponse({ shieldedQuote: await shieldedQuote(net, m.poolId, m.kind, selfRelay) })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_SPEND: {
       const m = message as unknown as {
-        recipient: string
-        asset: string
-        amount: string
-        privacyLevel: SendParams['privacyLevel']
+        poolId?: string
+        holder?: string
+        kind?: string
+        to?: string
+        amount?: string
+        selfRelay?: boolean
       }
-      try {
-        // amount is in stroops to match the pool denominations; reject non-integers before BigInt.
-        if (!/^[0-9]+$/.test(m.amount)) {
-          sendResponse({ error: 'amount must be a positive integer in stroops' })
-          return
-        }
-        // The SAC is a trust anchor: resolve it from shipped config, never the message, so a caller
-        // cannot make the commit move a different asset than the user chose.
-        const ppAsset = ppNet.privateAssets?.find((a) => a.asset === m.asset)
-        if (!ppAsset) {
-          sendResponse({ error: `asset ${m.asset} is not available for private payments` })
-          return
-        }
-        // Recipient receivability is checked at the preceding quote step, and a failed reveal is
-        // recoverable, so it is not rechecked here to avoid a redundant round-trip.
-        const created = await prepareSend(
-          {
-            recipient: m.recipient,
-            asset: m.asset,
-            token: ppAsset.token,
-            amount: BigInt(m.amount),
-            privacyLevel: m.privacyLevel,
-          },
-          ppEnv
-        )
-        sendResponse({ notes: created })
-        // Commit and reveal run in the background processor so the send returns instantly and keeps
-        // progressing even if this page closes or the worker restarts.
-        void kickPrivateProcessor()
-      } catch (err) {
-        sendResponse({ error: friendlyPrivateError(err, m.asset) })
-      }
-      break
-    }
-
-    case SERVICE_TYPES.PRIVATE_REVEAL_NOTE: {
-      const prNet = await getActiveNetwork()
-      if (!prNet.sorobanRpcUrl || !prNet.privatePoolFactory || !prNet.relayerUrl) {
-        sendResponse({ error: 'Private payments are not available on this network' })
+      if (!isNonEmptyString(m.poolId) || !isNonEmptyString(m.holder)) {
+        sendResponse({ error: 'poolId and holder are required' })
         return
       }
-      const prEnv = await buildPrivateEnv(prNet)
-      if (!prEnv) {
-        sendResponse({ error: 'Wallet locked' })
+      if (m.kind !== 'send' && m.kind !== 'unshield') {
+        sendResponse({ error: "kind must be 'send' or 'unshield'" })
+        return
+      }
+      if (!isNonEmptyString(m.to)) {
+        sendResponse({ error: 'to is required' })
+        return
+      }
+      if (!m.amount || !/^[1-9][0-9]*$/.test(m.amount)) {
+        sendResponse({ error: 'amount must be a positive integer in stroops' })
         return
       }
       try {
-        const m = message as unknown as {
-          counter: number
-          privacyLevel: SendParams['privacyLevel']
-        }
-        if (!Number.isInteger(m.counter) || m.counter < 0) {
-          sendResponse({ error: 'counter must be a non-negative integer' })
-          return
-        }
-        await revealNote(Number(m.counter), prEnv, {
-          generateProof: (inputs) => generateProof(inputs, prEnv.network),
+        const net = await getActiveNetwork()
+        const step = await shieldedSpend(net, m.poolId, m.holder, {
+          kind: m.kind,
+          to: m.to.trim(),
+          amount: BigInt(m.amount),
+          selfRelay: m.kind === 'unshield' && m.selfRelay === true,
         })
-        sendResponse({ ok: true })
-        // The reveal is now scheduled; let the processor confirm delivery and pick up other notes.
-        void kickPrivateProcessor()
+        sendResponse({ shieldedStep: step })
       } catch (err) {
-        const notReady = err instanceof NoteNotReadyError
-        sendResponse({
-          error: (err as Error).message,
-          code: notReady ? 'NOT_READY' : 'REVEAL_FAILED',
-        })
+        sendResponse(shieldedFailure(err))
       }
       break
     }
 
-    case SERVICE_TYPES.PRIVATE_SELF_RECLAIM: {
-      const sclNet = await getActiveNetwork()
-      if (!sclNet.sorobanRpcUrl || !sclNet.privatePoolFactory || !sclNet.relayerUrl) {
-        sendResponse({ error: 'Private payments are not available on this network' })
-        return
+    case SERVICE_TYPES.SHIELDED_RETRY: {
+      const m = message as unknown as {
+        poolId?: string
+        holder?: string
+        planId?: string
+        selfRelay?: boolean
       }
-      const sclEnv = await buildPrivateEnv(sclNet)
-      if (!sclEnv) {
-        sendResponse({ error: 'Wallet locked' })
+      if (
+        !isNonEmptyString(m.poolId) ||
+        !isNonEmptyString(m.holder) ||
+        !isNonEmptyString(m.planId)
+      ) {
+        sendResponse({ error: 'poolId, holder and planId are required' })
         return
       }
       try {
-        const m = message as unknown as { counter: number }
-        if (!Number.isInteger(m.counter) || m.counter < 0) {
-          sendResponse({ error: 'counter must be a non-negative integer' })
-          return
-        }
-        await selfReclaim(Number(m.counter), sclEnv, {
-          generateProof: (inputs) => generateProof(inputs, sclEnv.network),
-          submitReveal: makeSubmitReveal(sclNet, sclEnv.source),
-        })
-        sendResponse({ ok: true })
-        void kickPrivateProcessor()
+        const net = await getActiveNetwork()
+        const step = await shieldedRetry(net, m.poolId, m.holder, m.planId, m.selfRelay === true)
+        sendResponse({ shieldedStep: step })
       } catch (err) {
-        const notReady = err instanceof NoteNotReadyError
-        sendResponse({
-          error: (err as Error).message,
-          code: notReady ? 'NOT_READY' : 'RECLAIM_FAILED',
-        })
+        sendResponse(shieldedFailure(err))
       }
       break
     }
 
-    case SERVICE_TYPES.PRIVATE_RECOVER_FROM_SEED: {
-      const rsNet = await getActiveNetwork()
-      if (!rsNet.sorobanRpcUrl || !rsNet.privatePoolFactory || !rsNet.relayerUrl) {
-        sendResponse({ error: 'Private payments are not available on this network' })
+    case SERVICE_TYPES.SHIELDED_CANCEL:
+    case SERVICE_TYPES.SHIELDED_REFUND:
+    case SERVICE_TYPES.SHIELDED_CLAIM: {
+      const m = message as unknown as { poolId?: string; id?: number }
+      if (
+        !isNonEmptyString(m.poolId) ||
+        typeof m.id !== 'number' ||
+        !Number.isSafeInteger(m.id) ||
+        m.id < 0
+      ) {
+        sendResponse({ error: 'poolId and id are required' })
         return
       }
-      const rsEnv = await buildPrivateEnv(rsNet)
-      if (!rsEnv) {
-        sendResponse({ error: 'Wallet locked' })
+      const action =
+        message.type === SERVICE_TYPES.SHIELDED_CANCEL
+          ? 'cancel'
+          : message.type === SERVICE_TYPES.SHIELDED_REFUND
+            ? 'refund'
+            : 'claim'
+      try {
+        const net = await getActiveNetwork()
+        sendResponse({ txHash: await shieldedAccountAction(net, m.poolId, action, m.id) })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_DECIDE: {
+      const m = message as unknown as { reviewId?: string; approve?: boolean }
+      if (!isNonEmptyString(m.reviewId) || typeof m.approve !== 'boolean') {
+        sendResponse({ error: 'reviewId and approve are required' })
         return
       }
       try {
-        const recovered = await recoverFromSeed(rsEnv)
-        sendResponse({ recovered: recovered.length })
-        // Recovered notes are committed; let the processor reveal them back to the owner.
-        void kickPrivateProcessor()
+        sendResponse({ shieldedStep: await shieldedDecide(m.reviewId, m.approve) })
       } catch (err) {
-        sendResponse({ error: (err as Error).message })
+        sendResponse(shieldedFailure(err))
       }
-      break
-    }
-
-    case SERVICE_TYPES.PRIVATE_LIST_NOTES: {
-      const plNet = await getActiveNetwork()
-      const plEnv = await buildPrivateEnv(plNet)
-      if (!plEnv) {
-        sendResponse({ error: 'Wallet locked' })
-        return
-      }
-      // Viewing history surfaces on-chain notes missing locally without needing a lock/unlock; throttled
-      // and not awaited, so the list returns now and a recovered note shows on the next poll.
-      void kickPrivateRecovery()
-      try {
-        const notes = await listNotes(plEnv)
-        sendResponse({ notes })
-      } catch (err) {
-        sendResponse({ error: (err as Error).message })
-      }
-      break
-    }
-
-    case SERVICE_TYPES.PRIVATE_PROCESS_NOTES: {
-      // Manual nudge for the background processor (e.g. opening Private Notes or a manual retry).
-      // No-ops if the wallet is locked or private payments are unavailable on this network.
-      void kickPrivateProcessor()
-      sendResponse({ ok: true })
       break
     }
 
@@ -3548,7 +3576,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
 
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY]
+      const pubkey = session?.[SESSION_KEY] as string | undefined
       if (!pubkey) {
         sendResponse({ error: 'Wallet locked' })
         return
@@ -3612,7 +3640,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
 
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY]
+      const pubkey = session?.[SESSION_KEY] as string | undefined
       if (!pubkey) {
         sendResponse({ error: 'Wallet locked' })
         return
@@ -3715,7 +3743,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
 
       const session = await chrome.storage.session?.get(SESSION_KEY)
-      const pubkey = session?.[SESSION_KEY]
+      const pubkey = session?.[SESSION_KEY] as string | undefined
       if (!pubkey) {
         sendResponse({ error: 'Wallet locked' })
         return
@@ -3728,40 +3756,32 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           toAssetCode,
           toAssetIssuer,
           amount,
-          slippage,
           fee,
           timeout,
+          destMin,
+          path,
         } = message.swap
+
+        // Sign exactly what the user reviewed. Re-quoting here would apply the
+        // slippage to a fresh price, so a market that moved meanwhile could fill
+        // far below the minimum shown; with the reviewed floor it fails instead.
+        if (
+          !destMin ||
+          !/^\d+(\.\d{1,7})?$/.test(destMin) ||
+          !(parseFloat(destMin) > 0) ||
+          !Array.isArray(path) ||
+          path.length > 5
+        ) {
+          sendResponse({ error: 'Review the swap again before signing' })
+          return
+        }
 
         const fromAsset =
           fromAssetCode === 'XLM' ? Asset.native() : new Asset(fromAssetCode, fromAssetIssuer)
         const toAsset =
           toAssetCode === 'XLM' ? Asset.native() : new Asset(toAssetCode, toAssetIssuer)
-
-        const pathsRes = await fetch(
-          `${message.horizonUrl}/paths/strict-send?source_asset_type=${fromAssetCode === 'XLM' ? 'native' : 'credit_alphanum12'}&source_asset_code=${fromAssetCode === 'XLM' ? '' : fromAssetCode}&source_asset_issuer=${fromAssetIssuer}&source_amount=${amount}&destination_assets=${toAssetCode === 'XLM' ? 'native' : `${toAssetCode}:${toAssetIssuer}`}`
-        )
-
-        if (!pathsRes.ok) throw new Error('No swap path found')
-
-        const pathsData = (await pathsRes.json()) as {
-          _embedded: {
-            records: Array<{
-              destination_amount: string
-              path: Array<{ asset_type: string; asset_code?: string; asset_issuer?: string }>
-            }>
-          }
-        }
-
-        const records = pathsData._embedded?.records ?? []
-        if (records.length === 0) throw new Error('No swap path found')
-
-        const bestPath = records[0]
-        const destinationAmount = bestPath.destination_amount
-        const slippageNum = parseFloat(slippage) / 100
-        const destMin = (parseFloat(destinationAmount) * (1 - slippageNum)).toFixed(7)
-        const pathAssets = bestPath.path.map((p) =>
-          p.asset_type === 'native' ? Asset.native() : new Asset(p.asset_code!, p.asset_issuer!)
+        const pathAssets = path.map((p) =>
+          p.assetIssuer ? new Asset(p.assetCode, p.assetIssuer) : Asset.native()
         )
 
         const res = await fetch(`${message.horizonUrl}/accounts/${pubkey}`)
@@ -3797,12 +3817,14 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
         const submitData = (await submitRes.json()) as {
           hash?: string
-          extras?: { result_codes?: { transaction?: string } }
+          extras?: { result_codes?: { transaction?: string; operations?: string[] } }
         }
 
         if (!submitRes.ok) {
-          const errMsg = submitData?.extras?.result_codes?.transaction ?? 'Swap failed'
-          sendResponse({ error: errMsg })
+          // tx_failed alone says nothing; the operation code names the cause.
+          const codes = submitData?.extras?.result_codes
+          const opCode = codes?.operations?.find((c) => c !== 'op_success')
+          sendResponse({ error: opCode ?? codes?.transaction ?? 'Swap failed' })
           return
         }
 
@@ -3864,8 +3886,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       // Migration: add walletId and activePublicKey for pre-multi-wallet data
       let needsSave = false
       for (const account of store.accounts) {
-        if (!(account as any).walletId) {
-          ;(account as any).walletId = 'primary'
+        if (!account.walletId) {
+          account.walletId = 'primary'
           needsSave = true
         }
       }
@@ -3908,13 +3930,10 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         }
       }
 
-      let addMnemonic: string | null = null
-      if (targetWalletId === 'primary') {
-        addMnemonic = await getSessionMnemonic()
-      } else {
-        const extraMnemonics = await getSessionExtraHDMnemonics()
-        addMnemonic = extraMnemonics[targetWalletId] ?? null
-      }
+      const addMnemonic =
+        targetWalletId === 'primary'
+          ? await getSessionMnemonic()
+          : ((await getSessionExtraHDMnemonics())[targetWalletId] ?? null)
 
       if (!addMnemonic) {
         sendResponse({
@@ -3939,6 +3958,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         publicKey,
         label,
         walletId: targetWalletId,
+        addresses: { stellar: publicKey, ...deriveAccountAddresses(addMnemonic, nextIndex) },
       }
       store.accounts.push(newAccount)
       await saveAccountsStore(store)
@@ -3960,7 +3980,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         return
       }
 
-      let switchSecret: string | null = null
+      let switchSecret: string | null
       if (!target.walletId || target.walletId === 'primary') {
         const sessionMnemonic = await getSessionMnemonic()
         if (!sessionMnemonic) {
@@ -4070,6 +4090,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       store.accounts = store.accounts.filter((a) => a.publicKey !== removeTarget.publicKey)
       await saveAccountsStore(store)
+      forgetShieldedAccounts((a) => a.publicKey === removeTarget.publicKey)
 
       if (removeTarget.walletId?.startsWith('sk:')) {
         const importedKeys = await getImportedKeys()
@@ -4105,6 +4126,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       const { secret: newSecret } = await deriveKeypairRaw(newMnemonic, 0)
       const newPubkey = Keypair.fromSecret(newSecret).publicKey()
+      const store = await getAccountsStore()
       const newAccount: AccountInfo = {
         index: 0,
         publicKey: newPubkey,
@@ -4112,7 +4134,6 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         walletId: newWalletId,
       }
 
-      const store = await getAccountsStore()
       store.accounts.push(newAccount)
       await saveAccountsStore(store)
 
@@ -4122,6 +4143,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       trackWalletCreated('hd_wallet')
       trackAccountAdded('hd_derive')
+      void backfillDerivedAddresses()
       sendResponse({ account: newAccount, mnemonic: newMnemonic })
       break
     }
@@ -4172,6 +4194,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       trackWalletCreated('hd_wallet')
       trackAccountAdded('hd_derive')
+      void backfillDerivedAddresses()
       sendResponse({ account: importedAccount })
       break
     }
@@ -4275,6 +4298,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
 
       store.accounts = store.accounts.filter((a) => a.walletId !== message.walletId)
       await saveAccountsStore(store)
+      forgetShieldedAccounts((a) => a.walletId === message.walletId)
 
       if (message.walletId.startsWith('sk:')) {
         const importedKeys = await getImportedKeys()
@@ -4417,18 +4441,888 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         () => null
       )
       if (!res || !res.ok) {
-        sendResponse({ unfunded: !res || res.status === 404, rawBalances: null, subentryCount: 0 })
+        sendResponse({ unfunded: !res || res.status === 404, balances: null, subentryCount: 0 })
         return
       }
       const data = (await res.json()) as {
-        balances: Array<{ balance: string; asset_type: string; asset_code?: string }>
+        balances: Array<{
+          balance: string
+          asset_type: string
+          asset_code?: string
+          asset_issuer?: string
+          selling_liabilities?: string
+        }>
         subentry_count?: number
+        num_sponsoring?: number
+        num_sponsored?: number
       }
+      // Stellar minimum balance: (2 + subentries + sponsoring - sponsored) base
+      // reserves of 0.5 XLM. A Max that ignores sponsorships or open offers
+      // fails with op_underfunded, so the locked part travels with each balance.
+      const reserveUnits =
+        2 + (data.subentry_count ?? 0) + (data.num_sponsoring ?? 0) - (data.num_sponsored ?? 0)
+      const stroopsOf = (v: string | undefined) => decimalToBaseUnits(v && v !== '' ? v : '0', 7)
+      // Horizon's wire shape stops here; the app only sees ChainBalance.
+      const chain = LEGACY_NETWORK_TO_CHAIN[network.id] ?? network.id
       sendResponse({
         unfunded: false,
-        rawBalances: data.balances,
+        balances: data.balances.map((b) => ({
+          chain,
+          code: b.asset_type === 'native' ? 'XLM' : (b.asset_code ?? ''),
+          issuer: b.asset_issuer ?? '',
+          amount: b.balance,
+          decimals: 7,
+          isNative: b.asset_type === 'native',
+          locked: baseUnitsToDecimal(
+            (b.asset_type === 'native' ? BigInt(Math.max(reserveUnits, 0)) * 5_000_000n : 0n) +
+              stroopsOf(b.selling_liabilities),
+            7
+          ),
+        })),
         subentryCount: data.subentry_count ?? 0,
       })
+      break
+    }
+
+    case SERVICE_TYPES.FETCH_EVM_ACTIVITY: {
+      if (!message.publicKey) {
+        sendResponse({ error: 'publicKey required' })
+        return
+      }
+      const network = await getActiveNetwork()
+      const store = await getAccountsStore()
+      const evmAddress = store.accounts.find((a) => a.publicKey === message.publicKey)?.addresses
+        ?.evm
+      if (!evmAddress) {
+        sendResponse({ activity: [] })
+        return
+      }
+      const me = evmAddress.toLowerCase()
+      const chains = await getEvmChainsForEnv(network.id)
+      const activity: ChainActivity[] = []
+      // Best-effort per chain: one indexer being down must not blank the others.
+      await Promise.allSettled(
+        chains.map(async (chainEntry) => {
+          const res = await fetch(
+            `${EVM_PROXY_BASE}/${chainEntry.id}/activity?address=${me}&limit=50`,
+            { signal: AbortSignal.timeout(12000) }
+          )
+          if (!res.ok) return
+          const data = (await res.json()) as {
+            items?: Array<{
+              hash: string
+              timestamp: number
+              from: string
+              to: string
+              status: 'success' | 'failed'
+              kind: 'native' | 'erc20' | 'contract'
+              value: string
+              token?: { address: string; symbol: string; decimals: number }
+              fee?: string
+              method?: string
+            }>
+          }
+          const native = chainEntry.nativeCurrency
+          for (const it of data.items ?? []) {
+            const from = it.from.toLowerCase()
+            const to = it.to.toLowerCase()
+            const decimals = it.token?.decimals ?? native.decimals
+            activity.push({
+              chain: chainEntry.id,
+              hash: it.hash,
+              timestamp: new Date(it.timestamp * 1000).toISOString(),
+              from,
+              to,
+              direction: from === me && to === me ? 'self' : from === me ? 'out' : 'in',
+              status: it.status,
+              kind: it.kind,
+              amount: weiToDecimal(BigInt(it.value || '0'), decimals),
+              code: it.token?.symbol || native.symbol,
+              tokenAddress: it.token?.address,
+              fee: it.fee ? weiToDecimal(BigInt(it.fee), native.decimals) : undefined,
+              feeCode: native.symbol,
+              method: it.method || undefined,
+            })
+          }
+        })
+      )
+      // Our own fresh sends fill the gap until the indexer reports them; a
+      // pending one gets its receipt checked here so History settles it too.
+      const indexed = new Set(activity.map((a) => a.hash.toLowerCase()))
+      await dropIndexedEvmTxs(network.id, message.publicKey, indexed)
+      const pending = await getPendingEvmTxs(network.id, message.publicKey)
+      for (const p of pending) {
+        const chainEntry = chains.find((c) => c.id === p.chain)
+        if (!chainEntry) continue
+        let { status, fee } = p
+        const rpcUrl = chainEntry.evm?.rpcUrls[0]
+        if (status === 'pending' && rpcUrl) {
+          const receipt = await fetchEvmReceipt(rpcUrl, p.hash).catch(() => null)
+          if (receipt) {
+            status = receipt.status
+            fee = weiToDecimal(receipt.feeWei, chainEntry.nativeCurrency.decimals)
+            await updatePendingEvmTx(network.id, message.publicKey, p.hash, { status, fee })
+          }
+        }
+        activity.push({
+          chain: p.chain,
+          hash: p.hash,
+          timestamp: new Date(p.submittedAt).toISOString(),
+          from: p.from,
+          to: p.to,
+          direction: p.from === p.to ? 'self' : 'out',
+          status,
+          kind: p.kind,
+          amount: p.amount,
+          code: p.code,
+          tokenAddress: p.tokenAddress,
+          fee,
+          feeCode: p.feeCode,
+        })
+      }
+      activity.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+      sendResponse({ activity })
+      break
+    }
+
+    // The send screen's confirmation poll: one receipt read, also settling
+    // the stored pending entry so History agrees with what the user saw.
+    case SERVICE_TYPES.EVM_TX_STATUS: {
+      const { publicKey, chain, hash } = message as unknown as {
+        publicKey?: string
+        chain?: string
+        hash?: string
+      }
+      if (!publicKey || !chain || !hash) {
+        sendResponse({ error: 'publicKey, chain and hash are required' })
+        return
+      }
+      const chainEntry = (await getRegistryChains()).find(
+        (c) => c.id === chain && c.family === 'evm'
+      )
+      const rpcUrl = chainEntry?.evm?.rpcUrls[0]
+      if (!chainEntry || !rpcUrl) {
+        sendResponse({ error: 'Unknown EVM chain' })
+        return
+      }
+      try {
+        const receipt = await fetchEvmReceipt(rpcUrl, hash)
+        if (!receipt) {
+          sendResponse({ status: 'pending' })
+          return
+        }
+        const fee = weiToDecimal(receipt.feeWei, chainEntry.nativeCurrency.decimals)
+        const network = await getActiveNetwork()
+        await updatePendingEvmTx(network.id, publicKey, hash, { status: receipt.status, fee })
+        sendResponse({ status: receipt.status, fee, feeCode: chainEntry.nativeCurrency.symbol })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Receipt check failed' })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.FETCH_BTC_FEES: {
+      const { publicKey, chain } = message as unknown as { publicKey?: string; chain?: string }
+      try {
+        const ctx = await resolveBtcContext(publicKey ?? '', chain ?? '')
+        sendResponse({ btcFees: await fetchBtcFeeRates(ctx.apiUrl) })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Could not load Bitcoin fees' })
+      }
+      break
+    }
+
+    // Builds (never signs) the payment the send would make, so the form shows the real fee.
+    case SERVICE_TYPES.BTC_QUOTE: {
+      const { publicKey, chain, to, amount, feeRate } = message as unknown as {
+        publicKey?: string
+        chain?: string
+        to?: string
+        amount?: string
+        feeRate?: number
+      }
+      try {
+        const ctx = await resolveBtcContext(publicKey ?? '', chain ?? '')
+        const utxos = await fetchBtcUtxos(ctx.apiUrl, ctx.from)
+        const payment = buildBtcPayment({
+          utxos,
+          from: ctx.from,
+          to: to ?? '',
+          amount: amount === 'max' ? 'max' : decimalToWei(amount ?? '', 8),
+          feeRate: feeRate ?? 0,
+          testnet: ctx.testnet,
+          exclude: await getSpentOutpoints(ctx.networkId, publicKey ?? ''),
+        })
+        sendResponse({ btcQuote: btcQuoteOf(payment, utxos) })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Could not prepare this payment' })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SIGN_AND_SUBMIT_BTC_PAYMENT: {
+      const { publicKey, chain, to, amount, feeRate, maxFeeSats, sendSats } =
+        message as unknown as {
+          publicKey?: string
+          chain?: string
+          to?: string
+          amount?: string
+          feeRate?: number
+          maxFeeSats?: string
+          sendSats?: string
+        }
+      try {
+        if (!publicKey || !maxFeeSats || !sendSats) {
+          throw new Error('publicKey, maxFeeSats and sendSats are required')
+        }
+        const ctx = await resolveBtcContext(publicKey, chain ?? '')
+        if (ctx.account.index < 0) throw new Error('This account cannot sign Bitcoin transactions')
+        const mnemonic =
+          ctx.account.walletId === 'primary'
+            ? await getSessionMnemonic()
+            : (await getSessionExtraHDMnemonics())[ctx.account.walletId]
+        if (!mnemonic) throw new Error('Wallet is locked')
+        const key = deriveBitcoinKeyFromMnemonic(mnemonic, ctx.account.index, ctx.testnet)
+        if (bitcoinAddressFromPublicKey(key.publicKey, ctx.testnet) !== ctx.from) {
+          throw new Error('Stored Bitcoin address does not match this account')
+        }
+
+        // Rebuilt from fresh UTXOs, so it can differ from the reviewed quote; a higher fee than
+        // the user approved aborts instead of being paid silently.
+        const utxos = await fetchBtcUtxos(ctx.apiUrl, ctx.from)
+        const payment = buildBtcPayment({
+          utxos,
+          from: ctx.from,
+          to: to ?? '',
+          amount: amount === 'max' ? 'max' : decimalToWei(amount ?? '', 8),
+          feeRate: feeRate ?? 0,
+          testnet: ctx.testnet,
+          exclude: await getSpentOutpoints(ctx.networkId, publicKey),
+        })
+        if (payment.feeSats > BigInt(maxFeeSats)) {
+          throw new Error('The network fee went up since you reviewed it. Review the send again.')
+        }
+        if (payment.sendSats !== BigInt(sendSats)) {
+          throw new Error('Your balance changed since you reviewed this send. Review it again.')
+        }
+        await verifyBtcInputs(ctx.apiUrl, payment.tx)
+        payment.tx.sign(key.privateKey)
+        payment.tx.finalize()
+        const txid = payment.tx.id
+        // Recorded before the broadcast, so a retry after an ambiguous failure cannot spend
+        // the same coins into a second payment.
+        await recordSpent(ctx.networkId, publicKey, txid, outpointsOf(payment.tx))
+        let broadcastId: string
+        try {
+          broadcastId = await broadcastBtcTx(ctx.apiUrl, payment.tx.hex)
+        } catch (e) {
+          // A timeout or dropped reply may still have delivered it; ask before reporting failure.
+          const known = await btcTxKnown(ctx.apiUrl, txid).catch(() => null)
+          if (known === null) {
+            throw new Error(
+              'Could not confirm whether the payment went out. Check History before sending again.',
+              { cause: e }
+            )
+          }
+          if (!known) {
+            await forgetSpent(ctx.networkId, publicKey, txid)
+            throw e
+          }
+          broadcastId = txid
+        }
+        if (broadcastId.toLowerCase() !== txid) {
+          throw new Error('The Bitcoin node returned an unexpected transaction id')
+        }
+        sendResponse({ txHash: txid, btcQuote: btcQuoteOf(payment, utxos) })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Bitcoin send failed' })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.BTC_TX_STATUS: {
+      const { publicKey, chain, hash } = message as unknown as {
+        publicKey?: string
+        chain?: string
+        hash?: string
+      }
+      try {
+        const ctx = await resolveBtcContext(publicKey ?? '', chain ?? '')
+        if (!/^[0-9a-f]{64}$/.test(hash ?? '')) throw new Error('Invalid transaction id')
+        const res = await fetch(`${ctx.apiUrl}/tx/${hash}/status`, {
+          signal: AbortSignal.timeout(30000),
+        })
+        // Not yet seen by the upstream reads as pending, never as failed.
+        const data = res.ok ? ((await res.json()) as { confirmed?: boolean }) : {}
+        sendResponse({ status: data.confirmed ? 'success' : 'pending' })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Status check failed' })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.FETCH_BTC_ACTIVITY: {
+      if (!message.publicKey) {
+        sendResponse({ error: 'publicKey required' })
+        return
+      }
+      const network = await getActiveNetwork()
+      const addresses = (await getAccountsStore()).accounts.find(
+        (a) => a.publicKey === message.publicKey
+      )?.addresses
+      const chains = await getBitcoinChainsForEnv(network.id)
+      const activity: ChainActivity[] = []
+      await Promise.allSettled(
+        chains.map(async (chainEntry) => {
+          const address = chainEntry.isTestnet ? addresses?.bitcoinTestnet : addresses?.bitcoin
+          if (!address) return
+          const res = await fetch(`${bitcoinApiUrl(chainEntry.id)}/address/${address}/txs`, {
+            signal: AbortSignal.timeout(30000),
+          })
+          if (!res.ok) return
+          const txs = (await res.json()) as EsploraTx[]
+          for (const tx of txs) activity.push(btcActivityOf(tx, address, chainEntry.id))
+        })
+      )
+      activity.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+      sendResponse({ activity })
+      break
+    }
+
+    case SERVICE_TYPES.FETCH_BTC_BALANCES: {
+      if (!message.publicKey) {
+        sendResponse({ error: 'publicKey required' })
+        return
+      }
+      const network = await getActiveNetwork()
+      const store = await getAccountsStore()
+      const addresses = store.accounts.find((a) => a.publicKey === message.publicKey)?.addresses
+      const chains = await getBitcoinChainsForEnv(network.id)
+      const balances: ChainBalance[] = []
+      await Promise.allSettled(
+        chains.map(async (chainEntry) => {
+          const address = chainEntry.isTestnet ? addresses?.bitcoinTestnet : addresses?.bitcoin
+          if (!address) return
+          const res = await fetch(`${bitcoinApiUrl(chainEntry.id)}/address/${address}`, {
+            signal: AbortSignal.timeout(30000),
+          })
+          if (!res.ok) return
+          const data = (await res.json()) as {
+            chain_stats: { funded_txo_sum: number; spent_txo_sum: number }
+            mempool_stats: { funded_txo_sum: number; spent_txo_sum: number }
+          }
+          // Unconfirmed coins count toward the balance; Send spends confirmed ones only and says so.
+          const sats =
+            BigInt(data.chain_stats.funded_txo_sum) -
+            BigInt(data.chain_stats.spent_txo_sum) +
+            BigInt(data.mempool_stats.funded_txo_sum) -
+            BigInt(data.mempool_stats.spent_txo_sum)
+          balances.push({
+            chain: chainEntry.id,
+            code: chainEntry.nativeCurrency.symbol,
+            issuer: '',
+            amount: weiToDecimal(sats > 0n ? sats : 0n, chainEntry.nativeCurrency.decimals),
+            decimals: chainEntry.nativeCurrency.decimals,
+            isNative: true,
+          })
+        })
+      )
+      sendResponse({ balances })
+      break
+    }
+
+    case SERVICE_TYPES.FETCH_EVM_BALANCES: {
+      if (!message.publicKey) {
+        sendResponse({ error: 'publicKey required' })
+        return
+      }
+      const network = await getActiveNetwork()
+      const store = await getAccountsStore()
+      const account = store.accounts.find((a) => a.publicKey === message.publicKey)
+      const evmAddress = account?.addresses?.evm
+      if (!evmAddress) {
+        // Legacy secret-only accounts, or the post-unlock backfill has not
+        // landed yet; the next balance poll picks it up.
+        sendResponse({ balances: [] })
+        return
+      }
+
+      const [chains, curatedTokens] = await Promise.all([
+        getEvmChainsForEnv(network.id),
+        getCuratedEvmTokens(network.id),
+      ])
+
+      // Watched tokens always surface, even at zero balance, like an added Stellar trustline.
+      const watchKey = `cyphras_evm_watch_${network.id}_${message.publicKey}`
+      const watchStored = await chrome.storage.local.get(watchKey)
+      const watched = (Array.isArray(watchStored[watchKey]) ? watchStored[watchKey] : []) as Array<{
+        chain: string
+        address: string
+        symbol: string
+        decimals: number
+      }>
+      const watchedKeys = new Set(watched.map((t) => `${t.chain}:${t.address.toLowerCase()}`))
+      const allTokens = [
+        ...curatedTokens.filter((t) => !watchedKeys.has(`${t.chain}:${t.address.toLowerCase()}`)),
+        ...watched.map((t) => ({
+          chain: t.chain,
+          symbol: t.symbol,
+          address: t.address,
+          decimals: t.decimals,
+        })),
+      ]
+
+      const balances: ChainBalance[] = []
+      await Promise.allSettled(
+        chains.map(async (chainEntry) => {
+          const rpcUrl = chainEntry.evm?.rpcUrls[0]
+          if (!rpcUrl) return
+
+          const nativeRes = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'eth_getBalance',
+              params: [evmAddress, 'latest'],
+            }),
+            signal: AbortSignal.timeout(8000),
+          })
+          if (nativeRes.ok) {
+            const data = (await nativeRes.json()) as { result?: string }
+            if (data.result) {
+              balances.push({
+                chain: chainEntry.id,
+                code: chainEntry.nativeCurrency.symbol,
+                issuer: '',
+                amount: weiToDecimal(BigInt(data.result), chainEntry.nativeCurrency.decimals),
+                decimals: chainEntry.nativeCurrency.decimals,
+                isNative: true,
+              })
+            }
+          }
+
+          // Batched balanceOf calls; zero balances are skipped unless the token is watched.
+          const tokens = allTokens.filter((t) => t.chain === chainEntry.id)
+          const padded = evmAddress.toLowerCase().replace('0x', '').padStart(64, '0')
+          for (let i = 0; i < tokens.length; i += 20) {
+            const chunk = tokens.slice(i, i + 20)
+            const batch = chunk.map((t, j) => ({
+              jsonrpc: '2.0',
+              id: j,
+              method: 'eth_call',
+              params: [{ to: t.address, data: `0x70a08231${padded}` }, 'latest'],
+            }))
+            const res = await fetch(rpcUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(batch),
+              signal: AbortSignal.timeout(10000),
+            })
+            if (!res.ok) continue
+            const results = (await res.json()) as Array<{ id: number; result?: string }>
+            if (!Array.isArray(results)) continue
+            for (const entry of results) {
+              const token = chunk[entry.id]
+              if (!token || !entry.result || entry.result === '0x') continue
+              const value = BigInt(entry.result)
+              const isWatched = watchedKeys.has(`${token.chain}:${token.address.toLowerCase()}`)
+              if (value === 0n && !isWatched) continue
+              balances.push({
+                chain: chainEntry.id,
+                code: token.symbol,
+                issuer: token.address,
+                amount: weiToDecimal(value, token.decimals),
+                decimals: token.decimals,
+                isNative: false,
+              })
+            }
+          }
+        })
+      )
+      sendResponse({ balances })
+      break
+    }
+
+    case SERVICE_TYPES.SIGN_AND_SUBMIT_EVM_PAYMENT: {
+      const { publicKey, chain, to, amount, token, code } = message as unknown as {
+        publicKey?: string
+        chain?: string
+        to?: string
+        amount?: string
+        token?: { address: string; decimals: number }
+        code?: string
+      }
+      if (!publicKey || !chain || !to || !amount) {
+        sendResponse({ error: 'publicKey, chain, to and amount are required' })
+        return
+      }
+      if (!/^0x[0-9a-fA-F]{40}$/.test(to)) {
+        sendResponse({ error: 'Invalid recipient address' })
+        return
+      }
+
+      const store = await getAccountsStore()
+      const account = store.accounts.find((a) => a.publicKey === publicKey)
+      if (!account || account.index < 0) {
+        sendResponse({ error: 'Account cannot sign EVM transactions' })
+        return
+      }
+      const mnemonic =
+        account.walletId === 'primary'
+          ? await getSessionMnemonic()
+          : (await getSessionExtraHDMnemonics())[account.walletId]
+      if (!mnemonic) {
+        sendResponse({ error: 'Wallet is locked' })
+        return
+      }
+
+      const chains = await getRegistryChains()
+      const chainEntry = chains.find((c) => c.id === chain && c.family === 'evm')
+      const evm = chainEntry?.evm
+      const rpcUrl = evm?.rpcUrls[0]
+      if (!chainEntry || !evm || !rpcUrl) {
+        sendResponse({ error: 'Unknown EVM chain' })
+        return
+      }
+
+      try {
+        const privateKey = deriveEvmPrivateKey(mnemonic, account.index)
+        const from = evmAddressFromPrivateKey(privateKey)
+
+        const rpc = async (method: string, params: unknown[]): Promise<string> => {
+          const res = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+            signal: AbortSignal.timeout(15000),
+          })
+          const data = (await res.json()) as {
+            result?: string
+            error?: { message?: string }
+          }
+          if (data.error || data.result === undefined) {
+            throw new Error(data.error?.message ?? `${method} failed`)
+          }
+          return data.result
+        }
+
+        const decimals = token ? token.decimals : chainEntry.nativeCurrency.decimals
+        const value = decimalToWei(amount, decimals)
+        const txTo = token ? token.address : to
+        const txValue = token ? 0n : value
+        const data = token ? erc20TransferData(to, value) : new Uint8Array(0)
+        const dataHex = token
+          ? `0x${Array.from(data, (b) => b.toString(16).padStart(2, '0')).join('')}`
+          : '0x'
+
+        const [nonceHex, prioHex, gasPriceHex] = await Promise.all([
+          rpc('eth_getTransactionCount', [from, 'pending']),
+          rpc('eth_maxPriorityFeePerGas', []).catch(() => '0x59682f00'),
+          rpc('eth_gasPrice', []),
+        ])
+        const gasLimitHex = await rpc('eth_estimateGas', [
+          { from, to: txTo, value: `0x${txValue.toString(16)}`, data: dataHex },
+        ])
+
+        const maxPriorityFeePerGas = BigInt(prioHex)
+        // Double the current gas price as the ceiling: room for base-fee
+        // spikes while the effective price stays market-driven.
+        const maxFeePerGas = BigInt(gasPriceHex) * 2n + maxPriorityFeePerGas
+        const gasLimit = (BigInt(gasLimitHex) * 12n) / 10n
+
+        const raw = signEip1559(
+          {
+            chainId: BigInt(evm.chainId),
+            nonce: BigInt(nonceHex),
+            maxPriorityFeePerGas,
+            maxFeePerGas,
+            gasLimit,
+            to: txTo,
+            value: txValue,
+            data,
+          },
+          privateKey
+        )
+        const txHash = await rpc('eth_sendRawTransaction', [raw])
+        const network = await getActiveNetwork()
+        await recordPendingEvmTx(network.id, publicKey, {
+          chain,
+          hash: txHash,
+          from: from.toLowerCase(),
+          to: to.toLowerCase(),
+          kind: token ? 'erc20' : 'native',
+          amount,
+          code: code ?? chainEntry.nativeCurrency.symbol,
+          tokenAddress: token?.address,
+          feeCode: chainEntry.nativeCurrency.symbol,
+          submittedAt: Date.now(),
+          status: 'pending',
+        })
+        sendResponse({ txHash })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'EVM send failed' })
+      }
+      break
+    }
+
+    // Form preview only: no job, no signing, just a real fee quote before the user confirms.
+    case SERVICE_TYPES.CCTP_QUOTE: {
+      const {
+        direction,
+        amount,
+        speed,
+        publicKey: quotePk,
+      } = message as unknown as {
+        direction?: 'stellar-to-evm' | 'evm-to-stellar'
+        amount?: string
+        speed?: 'standard' | 'fast'
+        publicKey?: string
+      }
+      if (direction !== 'stellar-to-evm' && direction !== 'evm-to-stellar') {
+        sendResponse({ error: 'Invalid direction' })
+        return
+      }
+      if (speed !== undefined && speed !== 'standard' && speed !== 'fast') {
+        sendResponse({ error: 'Invalid speed' })
+        return
+      }
+      if (
+        !amount ||
+        !/^\d+(\.\d{1,6})?$/.test(amount.trim()) ||
+        decimalToBaseUnits(amount, 6) <= 0n
+      ) {
+        sendResponse({ error: 'Invalid amount' })
+        return
+      }
+      const net = await getActiveNetwork()
+      const quoteAnchors = cctpAnchorsForEnv(net.id)
+      if (!quoteAnchors) {
+        sendResponse({ error: 'CCTP bridging is not available on this network' })
+        return
+      }
+      try {
+        const maxFee = await fetchCctpFeeQuote(net.id, direction, amount, speed ?? 'standard')
+        // The per-chain breakdown is informational: a failure here must never
+        // hide the authoritative Circle quote the form needs to proceed.
+        const quoteAccount = quotePk
+          ? (await getAccountsStore()).accounts.find((a) => a.publicKey === quotePk)
+          : undefined
+        const breakdown = await buildCctpFeeBreakdown(
+          {
+            networkId: net.id,
+            horizonUrl: net.horizonUrl,
+            sorobanRpcUrl: net.sorobanRpcUrl,
+            passphrase: net.passphrase,
+            txTimeout: net.txTimeout ?? 90,
+            evmRpcUrl: cctpEvmRpcUrl(quoteAnchors),
+            evmChainId: quoteAnchors.evm.chainId,
+            anchors: quoteAnchors,
+          },
+          {
+            direction,
+            amount,
+            speed: speed ?? 'standard',
+            circleFee: maxFee,
+            stellarAddress: quoteAccount?.publicKey,
+            evmAddress: quoteAccount?.addresses?.evm,
+          }
+        ).catch(() => undefined)
+        sendResponse({ maxFee, breakdown })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Failed to fetch bridge fee quote' })
+      }
+      break
+    }
+
+    // Self-bridge only: both ends are this account's own paired addresses, never caller-supplied,
+    // so funds cannot be bridged to a wrong destination.
+    case SERVICE_TYPES.CCTP_START: {
+      const { publicKey, direction, amount, speed } = message as unknown as {
+        publicKey?: string
+        direction?: 'stellar-to-evm' | 'evm-to-stellar'
+        amount?: string
+        speed?: 'standard' | 'fast'
+      }
+      if (!publicKey || !direction || !amount) {
+        sendResponse({ error: 'publicKey, direction and amount are required' })
+        return
+      }
+      if (direction !== 'stellar-to-evm' && direction !== 'evm-to-stellar') {
+        sendResponse({ error: 'Invalid direction' })
+        return
+      }
+      if (speed !== undefined && speed !== 'standard' && speed !== 'fast') {
+        sendResponse({ error: 'Invalid speed' })
+        return
+      }
+      if (!/^\d+(\.\d{1,6})?$/.test(amount.trim())) {
+        sendResponse({ error: 'Amount must have at most 6 decimal places' })
+        return
+      }
+      if (decimalToBaseUnits(amount, 6) <= 0n) {
+        sendResponse({ error: 'Amount must be greater than zero' })
+        return
+      }
+
+      const store = await getAccountsStore()
+      const account = store.accounts.find((a) => a.publicKey === publicKey)
+      if (!account || account.index < 0) {
+        sendResponse({ error: 'Account cannot bridge (imported keys have no EVM key)' })
+        return
+      }
+      const evmAddress = account.addresses?.evm
+      if (!evmAddress) {
+        sendResponse({ error: 'No EVM address for this account yet' })
+        return
+      }
+      const mnemonic =
+        account.walletId === 'primary'
+          ? await getSessionMnemonic()
+          : (await getSessionExtraHDMnemonics())[account.walletId]
+      if (!mnemonic) {
+        sendResponse({ error: 'Wallet is locked' })
+        return
+      }
+
+      const net = await getActiveNetwork()
+      const anchors = cctpAnchorsForEnv(net.id)
+      if (!anchors) {
+        sendResponse({ error: 'CCTP bridging is not available on this network' })
+        return
+      }
+
+      let maxFee: string
+      try {
+        maxFee = await fetchCctpFeeQuote(net.id, direction, amount, speed ?? 'standard')
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Failed to fetch bridge fee quote' })
+        return
+      }
+
+      const sourceAddress = direction === 'stellar-to-evm' ? publicKey : evmAddress
+      const destAddress = direction === 'stellar-to-evm' ? evmAddress : publicKey
+
+      try {
+        const evmRpcUrl = cctpEvmRpcUrl(anchors)
+        const env: CctpEnv = {
+          networkId: net.id,
+          horizonUrl: net.horizonUrl,
+          sorobanRpcUrl: net.sorobanRpcUrl,
+          passphrase: net.passphrase,
+          txTimeout: net.txTimeout ?? 90,
+          evmRpcUrl,
+          evmChainId: anchors.evm.chainId,
+          anchors,
+          stellarSecret: (await deriveKeypairRaw(mnemonic, account.index)).secret,
+          evmPrivateKey: deriveEvmPrivateKey(mnemonic, account.index),
+        }
+
+        const job = await withCctpAccountLock(`${net.id}:${publicKey}`, () =>
+          createCctpJob(net.id, publicKey, {
+            id: crypto.randomUUID(),
+            direction,
+            amount,
+            sourceAddress,
+            destAddress,
+            maxFee,
+            speed: speed ?? 'standard',
+            createdAt: Date.now(),
+          })
+        )
+        sendResponse({ jobId: job.id })
+        runCctpBurn(job, env, publicKey).catch((err) => {
+          console.error('cctp: unhandled error from runCctpBurn', err)
+        })
+      } catch (e) {
+        if (e instanceof CctpDuplicateJobError) {
+          sendResponse({ jobId: e.existingJobId })
+          return
+        }
+        sendResponse({ error: e instanceof Error ? e.message : 'Failed to start bridge' })
+      }
+      break
+    }
+
+    case SERVICE_TYPES.CCTP_LIST_JOBS: {
+      const { publicKey } = message as unknown as { publicKey?: string }
+      if (!publicKey) {
+        sendResponse({ error: 'publicKey is required' })
+        return
+      }
+      const net = await getActiveNetwork()
+      const jobs = await listCctpJobs(net.id, publicKey)
+      // The attested message carries the fee Circle actually took, so the
+      // UI can show what arrived instead of the quoted upper bound.
+      sendResponse({
+        jobs: jobs.map((j) => {
+          if (!j.message || !j.attestation) return j
+          try {
+            const fee = decodeCctpMessage(j.message).body.feeExecuted
+            return { ...j, feeExecuted: baseUnitsToDecimal(fee, 6) }
+          } catch {
+            return j
+          }
+        }),
+      })
+      break
+    }
+
+    // Sends the burn for a bridge whose approve confirmed but whose burn never went out.
+    case SERVICE_TYPES.CCTP_RESUME: {
+      const { publicKey, jobId } = message as unknown as { publicKey?: string; jobId?: string }
+      if (!publicKey || !jobId) {
+        sendResponse({ error: 'publicKey and jobId are required' })
+        return
+      }
+      try {
+        const net = await getActiveNetwork()
+        const env = await buildCctpSigningEnv(net.id, publicKey)
+        if (!env) {
+          sendResponse({ error: 'Unlock the wallet to continue this bridge' })
+          return
+        }
+        await resumeCctpBurn(jobId, env, publicKey)
+        sendResponse({ ok: true })
+        void kickCctpProcessor()
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Could not continue the bridge' })
+      }
+      break
+    }
+
+    // Releases a bridge stuck after its approve. Nothing was burned, so the USDC never left the
+    // wallet; the leftover allowance is to Circle's TokenMessenger, which only pulls on a burn.
+    case SERVICE_TYPES.CCTP_CANCEL: {
+      const { publicKey, jobId } = message as unknown as { publicKey?: string; jobId?: string }
+      if (!publicKey || !jobId) {
+        sendResponse({ error: 'publicKey and jobId are required' })
+        return
+      }
+      const net = await getActiveNetwork()
+      try {
+        await withCctpAccountLock(`${net.id}:${publicKey}`, async () => {
+          const job = (await listCctpJobs(net.id, publicKey)).find((j) => j.id === jobId)
+          if (!job || job.status !== 'approved' || job.burnTxHash) {
+            throw new Error('Only a bridge waiting to continue can be cancelled')
+          }
+          await patchCctpJob(net.id, publicKey, jobId, {
+            status: 'failed',
+            lastError: 'Cancelled before the burn. Your USDC stayed in your wallet.',
+          })
+        })
+        sendResponse({ ok: true })
+      } catch (e) {
+        sendResponse({ error: e instanceof Error ? e.message : 'Could not cancel the bridge' })
+      }
+      break
+    }
+
+    // Polled by the UI while a bridge is in flight; replies at once and runs the pass detached.
+    case SERVICE_TYPES.CCTP_PROCESS: {
+      sendResponse({ ok: true })
+      void kickCctpProcessor()
       break
     }
 

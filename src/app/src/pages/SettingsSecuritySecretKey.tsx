@@ -147,7 +147,11 @@ export default function SettingsSecuritySecretKey() {
                     onClick={handleCopy}
                     className="cursor-pointer text-muted-foreground hover:text-foreground"
                   >
-                    {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
+                    {copied ? (
+                      <Check size={14} className="pop-enter text-green-500" />
+                    ) : (
+                      <Copy size={14} />
+                    )}
                   </button>
                 </div>
               </div>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
+import { VerifiedMark } from '@/components/token/VerifiedMark'
 import {
-  X,
+  ChevronLeft,
   Copy,
   Check,
   ExternalLink,
@@ -12,9 +13,11 @@ import {
   QrCode,
   Zap,
   Lock,
+  ArrowLeftRight,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { AutoSkeleton } from '@/components/AutoSkeleton'
+import { BTC_TESTNET_CHAIN, chainById, explorerUrl } from '@constants/chains'
 import { usePreferences } from '@/context/PreferencesContext'
 import { useNavigate } from 'react-router-dom'
 import type { AssetBalance } from '@/hooks/useBalances'
@@ -23,16 +26,18 @@ import { useHistory } from '@/hooks/useHistory'
 import type { Operation } from '@/hooks/useHistory'
 import { useWallet } from '@/context/WalletContext'
 import { StellarAvatar } from '@/components/StellarAvatar'
+import WalletNavbar from '@/components/WalletNavbar'
+import { AssetIcon } from '@/components/token/AssetIcon'
 import { useNetwork } from '@/context/NetworkContext'
-import { OpIcon } from '@/components/OpIcon'
 import OperationDetailSheet from '@/components/OperationDetailSheet'
-import {
-  getDirection,
-  getOpLabel,
-  getAmountDisplay,
-  formatTime,
-  isRelatedToAsset,
-} from '@/lib/historyUtils'
+import { ActivityRow } from '@/components/ActivityRow'
+import { ChainTxSheet } from '@/components/ChainTxSheet'
+import { StellarCounterpart } from '@/components/StellarCounterpart'
+import { useChainActivity } from '@/hooks/useChainActivity'
+import { stellarView, chainTxView, formatFiat } from '@/lib/activity'
+import type { ChainActivity } from '@ext-types/index'
+import { isRelatedToAsset } from '@/lib/historyUtils'
+import { iconForAsset, verifiedKey } from '@/lib/assetList'
 
 interface OnChainData {
   supply: string | null
@@ -76,7 +81,7 @@ function CopyButton({ text }: { text: string }) {
       onClick={handleCopy}
       className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors ml-1 shrink-0"
     >
-      {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+      {copied ? <Check size={12} className="pop-enter text-green-500" /> : <Copy size={12} />}
     </button>
   )
 }
@@ -124,12 +129,26 @@ function AssetIconLarge({ icon, code }: { icon?: string; code: string }) {
 }
 
 interface TokenDetailSheetProps {
-  asset: AssetBalance | null
+  // A grouped multichain token carries its per-chain parts; single-chain
+  // tokens arrive without them.
+  asset: (AssetBalance & { parts?: AssetBalance[] }) | null
+  balances: AssetBalance[]
+  isFunded: boolean
+  chainIcons?: Map<string, string>
+  chainNames?: Map<string, string>
   horizonUrl: string
   onClose: () => void
 }
 
-export default function TokenDetailSheet({ asset, horizonUrl, onClose }: TokenDetailSheetProps) {
+export default function TokenDetailSheet({
+  asset,
+  balances,
+  isFunded,
+  chainIcons,
+  chainNames,
+  horizonUrl,
+  onClose,
+}: TokenDetailSheetProps) {
   const navigate = useNavigate()
   const {
     formatValue,
@@ -138,15 +157,21 @@ export default function TokenDetailSheet({ asset, horizonUrl, onClose }: TokenDe
     getExplorerAccountUrl,
     getExplorerName,
     getExplorerTxUrl,
+    chainExplorer,
   } = usePreferences()
   const { activeNetwork } = useNetwork()
-  const { status } = useWallet()
+  const { status, accounts } = useWallet()
   const publicKey = status.publicKey ?? ''
-  const { operations } = useHistory(status.publicKey)
+  // Fetched only while the sheet is open: it stays mounted on Home, where its
+  // reads would otherwise compete with the balances on every open.
+  const historyKey = asset ? (status.publicKey ?? undefined) : undefined
+  const { operations } = useHistory(historyKey)
+  const { activity: chainActivity } = useChainActivity(historyKey)
   const [onChain, setOnChain] = useState<OnChainData | null>(null)
   const [fetching, setFetching] = useState(false)
   const [iconMap, setIconMap] = useState<Map<string, string>>(new Map())
   const [selectedOp, setSelectedOp] = useState<Operation | null>(null)
+  const [selectedTx, setSelectedTx] = useState<ChainActivity | null>(null)
   const sheetRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -165,14 +190,60 @@ export default function TokenDetailSheet({ asset, horizonUrl, onClose }: TokenDe
   }, [activeNetwork.id, status.publicKey])
 
   // Keep the last non-null asset so content stays visible during the close animation
-  const lastAssetRef = useRef<AssetBalance | null>(null)
+  const lastAssetRef = useRef<(AssetBalance & { parts?: AssetBalance[] }) | null>(null)
   if (asset) lastAssetRef.current = asset
   const a = asset ?? lastAssetRef.current
 
+  // Chain tab on a multichain token: null = aggregated overview, a CAIP-2 id =
+  // that chain's balance, receiving address, and activity.
+  const [chainTab, setChainTab] = useState<string | null>(null)
+  useEffect(() => {
+    setChainTab(null)
+  }, [asset?.code, asset?.issuer])
+  const parts = a?.parts
+  const isMultichain = !!parts && parts.length > 1
+  const viewPart =
+    isMultichain && chainTab ? (parts.find((p) => p.chain === chainTab) ?? null) : null
+  const heroAsset = viewPart ?? a
+  const addresses = accounts.find((acc) => acc.publicKey === status.publicKey)?.addresses
+  const receiveAddressFor = (chain: string) =>
+    chain.startsWith('stellar')
+      ? status.publicKey
+      : chain.startsWith('eip155')
+        ? (addresses?.evm ?? null)
+        : chain.startsWith('bip122')
+          ? ((chain === BTC_TESTNET_CHAIN ? addresses?.bitcoinTestnet : addresses?.bitcoin) ?? null)
+          : null
+
   const isOpen = asset !== null
+
+  // The slide-in needs a painted closed frame to transition from; on first
+  // open the content mounts already-open, so `shown` flips one frame later
+  // (double rAF: the first fires before that initial paint).
+  const [shown, setShown] = useState(false)
+  useEffect(() => {
+    if (!isOpen) {
+      setShown(false)
+      return
+    }
+    let raf2 = 0
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setShown(true))
+    })
+    return () => {
+      cancelAnimationFrame(raf1)
+      cancelAnimationFrame(raf2)
+    }
+  }, [isOpen])
 
   useEffect(() => {
     if (!asset) return
+    // Horizon stats exist only for Stellar assets; other chains' detail view stays local.
+    if (!asset.chain.startsWith('stellar')) {
+      setFetching(false)
+      setOnChain(null)
+      return
+    }
 
     setFetching(true)
     setOnChain(null)
@@ -271,31 +342,73 @@ export default function TokenDetailSheet({ asset, horizonUrl, onClose }: TokenDe
   }, [asset?.code, asset?.issuer, horizonUrl])
 
   useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (sheetRef.current && !sheetRef.current.contains(e.target as Node)) onClose()
-    }
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose()
     }
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside)
-      document.addEventListener('keydown', handleKey)
-    }
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-      document.removeEventListener('keydown', handleKey)
-    }
+    if (isOpen) document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
   }, [isOpen, onClose])
 
+  const isStellar = !!a?.chain.startsWith('stellar')
+  const otherChain = a && !isStellar ? chainById(a.chain) : undefined
   const assetExplorerUrl = a
-    ? getExplorerAssetUrl(a.code, a.isNative ? '' : a.issuer, activeNetwork.id)
+    ? !isStellar
+      ? otherChain && !a.isNative
+        ? explorerUrl(
+            chainExplorer(otherChain).token ?? chainExplorer(otherChain).account,
+            a.issuer
+          )
+        : ''
+      : getExplorerAssetUrl(a.code, a.isNative ? '' : a.issuer, activeNetwork.id)
     : ''
   const issuerExplorerUrl =
-    a && !a.isNative ? getExplorerAccountUrl(a.issuer, activeNetwork.id) : ''
+    a && !a.isNative
+      ? !isStellar
+        ? otherChain
+          ? explorerUrl(chainExplorer(otherChain).account, a.issuer)
+          : ''
+        : getExplorerAccountUrl(a.issuer, activeNetwork.id)
+      : ''
+  const ownAddress = a && !isStellar ? receiveAddressFor(a.chain) : null
 
-  const relatedOps = a
-    ? operations.filter((op) => isRelatedToAsset(op, a.code, a.issuer, a.isNative))
-    : []
+  // Horizon operations are Stellar-only; without the family guard the native
+  // match would leak XLM activity into other chains' natives like ETH or BTC. A
+  // selected chain tab narrows the activity to that chain's instance.
+  const activityCtx = viewPart ?? a
+  // Each row shows its own asset: a swap in XLM's activity received USDC, not XLM.
+  const rowIcon = (code: string, issuer?: string) =>
+    iconForAsset(iconMap, code, issuer) ??
+    (code === activityCtx?.code ? activityCtx.icon : undefined)
+  const activityOnStellar = !!activityCtx?.chain.startsWith('stellar')
+  const relatedOps =
+    activityCtx && activityOnStellar
+      ? operations.filter((op) =>
+          isRelatedToAsset(op, activityCtx.code, activityCtx.issuer, activityCtx.isNative)
+        )
+      : []
+  // Other chains' activity is matched by chain plus token contract (native by symbol),
+  // so ETH on one EVM chain never shows another chain's rows.
+  const relatedChainTx =
+    activityCtx && !activityOnStellar
+      ? chainActivity.filter(
+          (tx) =>
+            tx.chain === activityCtx.chain &&
+            (activityCtx.isNative
+              ? tx.kind !== 'erc20' && tx.code === activityCtx.code
+              : (tx.tokenAddress ?? '').toLowerCase() === activityCtx.issuer.toLowerCase())
+        )
+      : []
+  const activityCount = relatedOps.length + relatedChainTx.length
+  // Each row is valued at its own asset's price, like its icon.
+  const fiatFor = (value: string, code: string, issuer?: string): string | null => {
+    const key = verifiedKey(code, issuer)
+    const price =
+      activityCtx && verifiedKey(activityCtx.code, activityCtx.issuer) === key
+        ? activityCtx.usdPrice
+        : (balances.find((b) => verifiedKey(b.code, b.issuer) === key)?.usdPrice ?? null)
+    return price !== null ? formatFiat(parseFloat(value) * price) : null
+  }
+  const chainLabelOf = (chain: string) => chainNames?.get(chain) ?? chainById(chain)?.name ?? chain
 
   const activeFlags =
     a && !a.isNative && onChain?.flags
@@ -309,316 +422,528 @@ export default function TokenDetailSheet({ asset, horizonUrl, onClose }: TokenDe
   return (
     <>
       <div
-        className={`fixed inset-0 z-40 bg-black/50 transition-opacity duration-200 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
-      />
-      <div
         ref={sheetRef}
-        className={`fixed bottom-0 left-0 right-0 z-50 rounded-t-2xl bg-background shadow-2xl transition-transform duration-300 ease-out max-h-[85vh] flex flex-col ${isOpen ? 'translate-y-0' : 'translate-y-full'}`}
+        className={`fixed inset-0 z-50 flex flex-col ${isOpen ? '' : 'pointer-events-none'}`}
       >
         {a && (
           <>
-            {/* drag handle */}
-            <div className="flex justify-center pt-3 pb-1 shrink-0">
-              <div className="h-1 w-10 rounded-full bg-muted" />
+            {/* static wallet chrome: pixel-identical to Home's navbar beneath,
+                so it reads as stationary while only the page content slides */}
+            <div
+              className={`shrink-0 px-5 pt-5 pb-3 bg-background border-b border-border/40 transition-opacity duration-300 ${shown ? 'opacity-100' : 'opacity-0'}`}
+            >
+              <WalletNavbar />
             </div>
 
-            {/* header */}
-            <div className="flex items-center justify-between px-5 py-3 shrink-0">
-              <div className="flex items-center gap-3">
-                <AssetIconLarge icon={a.icon} code={a.code} />
-                <div className="flex flex-col">
-                  <p className="text-lg font-bold text-foreground leading-tight">{a.code}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {a.isNative
-                      ? 'Stellar Lumens'
-                      : onChain?.homeDomain
-                        ? onChain.homeDomain
-                        : fetching
-                          ? 'Loading...'
-                          : `${a.issuer.slice(0, 4)}...${a.issuer.slice(-4)}`}
-                  </p>
+            <div
+              className={`flex min-h-0 flex-1 flex-col bg-background transition-transform duration-300 ease-out ${shown ? 'translate-x-0' : 'translate-x-full'}`}
+            >
+              {/* page header */}
+              <div className="flex items-center gap-2 px-3 py-3 shrink-0">
+                <button
+                  onClick={onClose}
+                  aria-label="Back"
+                  className="cursor-pointer rounded-full p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                >
+                  <ChevronLeft size={20} />
+                </button>
+                <div className="flex items-center gap-3">
+                  <AssetIconLarge icon={a.icon} code={a.code} />
+                  <div className="flex flex-col">
+                    <p className="flex items-center gap-1 text-lg font-bold text-foreground leading-tight">
+                      {a.code}
+                      <VerifiedMark code={a.code} issuer={a.issuer} className="h-4 w-4" />
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {isMultichain
+                        ? 'Multi-chain'
+                        : a.isNative
+                          ? (a.name ?? a.code) // per-chain native name, e.g. "Stellar Lumens" or "Ethereum"
+                          : onChain?.homeDomain
+                            ? onChain.homeDomain
+                            : fetching
+                              ? 'Loading...'
+                              : `${a.issuer.slice(0, 4)}...${a.issuer.slice(-4)}`}
+                    </p>
+                  </div>
                 </div>
               </div>
-              <button
-                onClick={onClose}
-                className="cursor-pointer rounded-full p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              >
-                <X size={16} />
-              </button>
-            </div>
 
-            {/* scrollable body */}
-            <div className="overflow-y-auto flex-1 px-5 pb-5">
-              {/* balance hero */}
-              <div className="rounded-xl bg-card px-4 py-4 mb-4 text-center">
-                <p className="text-3xl font-bold text-foreground tabular-nums">
-                  {formatBalance(a.balance)}{' '}
-                  <span className="text-xl text-muted-foreground">{a.code}</span>
-                </p>
-                {a.usdValue !== null && (
-                  <p className="mt-1 text-sm text-muted-foreground">{formatValue(a.usdValue)}</p>
-                )}
-              </div>
+              {isMultichain && parts && (
+                <div className="flex items-center gap-2 px-5 pb-3 overflow-x-auto shrink-0">
+                  <button
+                    onClick={() => setChainTab(null)}
+                    className={`cursor-pointer shrink-0 rounded-full px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors ${chainTab === null ? 'bg-foreground text-background' : 'bg-card text-muted-foreground hover:bg-muted'}`}
+                  >
+                    Overview
+                  </button>
+                  {parts.map((part) => {
+                    const badge = chainIcons?.get(part.chain)
+                    const activeTab = chainTab === part.chain
+                    return (
+                      <button
+                        key={`${part.chain}:${part.issuer}`}
+                        onClick={() => setChainTab(part.chain)}
+                        className={`cursor-pointer shrink-0 flex items-center gap-1.5 rounded-full pl-1.5 pr-3 py-1 text-xs font-medium whitespace-nowrap transition-colors ${activeTab ? 'bg-foreground text-background' : 'bg-card text-muted-foreground hover:bg-muted'}`}
+                      >
+                        {badge && (
+                          <img
+                            src={badge}
+                            alt=""
+                            className="h-4.5 w-4.5 rounded-full object-cover"
+                          />
+                        )}
+                        {chainNames?.get(part.chain) ?? chainById(part.chain)?.name ?? part.chain}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
 
-              {/* stats card */}
-              <div className="rounded-xl bg-card divide-y divide-border mb-4">
-                {a.usdPrice !== null && (
-                  <div className="flex items-center justify-between px-4 py-3">
-                    <span className="text-sm text-muted-foreground">Price</span>
-                    <span className="text-sm font-medium text-foreground tabular-nums">
-                      {formatPrice(a.usdPrice)}
-                    </span>
+              {/* scrollable body */}
+              <div className="overflow-y-auto flex-1 px-5 pb-5">
+                {/* balance hero: the aggregate, or the selected chain's slice */}
+                {heroAsset && (
+                  <div className="rounded-xl bg-card px-4 py-4 mb-4 text-center">
+                    <p className="text-3xl font-bold text-foreground tabular-nums">
+                      {formatBalance(heroAsset.balance)}{' '}
+                      <span className="text-xl text-muted-foreground">{heroAsset.code}</span>
+                    </p>
+                    {heroAsset.usdValue !== null && (
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {formatValue(heroAsset.usdValue)}
+                      </p>
+                    )}
                   </div>
                 )}
 
-                <AutoSkeleton loading={fetching}>
-                  {fetching ? (
-                    // Placeholder rows that AutoSkeleton will mirror as skeletons
-                    <>
-                      {!a.isNative ? (
-                        <>
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <span className="text-sm text-muted-foreground">Supply</span>
-                            <span className="text-sm font-medium">-</span>
-                          </div>
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <span className="text-sm text-muted-foreground">Holders</span>
-                            <span className="text-sm font-medium">-</span>
-                          </div>
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <span className="text-sm text-muted-foreground">Domain</span>
-                            <span className="text-sm font-medium">-</span>
-                          </div>
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <span className="text-sm text-muted-foreground">Issuer</span>
-                            <span className="text-sm font-medium">-</span>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <span className="text-sm text-muted-foreground">Base fee</span>
-                            <span className="text-sm font-medium">-</span>
-                          </div>
-                          <div className="flex items-center justify-between px-4 py-3">
-                            <span className="text-sm text-muted-foreground">Base reserve</span>
-                            <span className="text-sm font-medium">-</span>
-                          </div>
-                        </>
-                      )}
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <span className="text-sm text-muted-foreground">Explorer</span>
-                        <span className="text-sm font-medium">-</span>
+                {/* the multichain overview shows just the allocation; stats and
+                  activity live on the chain tabs */}
+                {chainTab === null && (
+                  <>
+                    {/* per-chain allocation, only when the token spans chains */}
+                    {a.parts && a.parts.length > 1 && (
+                      <div className="rounded-xl bg-card divide-y divide-border mb-4">
+                        <p className="pixel-label text-[10px] px-4 pt-3 pb-2 text-muted-foreground">
+                          Asset allocation
+                        </p>
+                        {a.parts.map((part) => {
+                          const badge = chainIcons?.get(part.chain)
+                          const pct =
+                            a.usdValue !== null && a.usdValue > 0 && part.usdValue !== null
+                              ? (part.usdValue / a.usdValue) * 100
+                              : null
+                          return (
+                            <button
+                              key={`${part.chain}:${part.issuer}`}
+                              onClick={() => setChainTab(part.chain)}
+                              className="cursor-pointer flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-muted/40"
+                            >
+                              <div className="flex items-center gap-2.5">
+                                <AssetIcon code={part.code} icon={part.icon} chainIcons={[badge]} />
+                                <div className="flex flex-col">
+                                  <span className="text-sm font-medium text-foreground">
+                                    {chainNames?.get(part.chain) ??
+                                      chainById(part.chain)?.name ??
+                                      part.chain}
+                                  </span>
+                                  {pct !== null && (
+                                    <span className="text-xs text-muted-foreground">
+                                      {pct < 1 ? '<1' : Math.round(pct)}%
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-sm font-medium text-foreground tabular-nums">
+                                  {formatBalance(part.balance)}
+                                </p>
+                                {part.usdValue !== null && (
+                                  <p className="text-xs text-muted-foreground tabular-nums">
+                                    {formatValue(part.usdValue)}
+                                  </p>
+                                )}
+                              </div>
+                            </button>
+                          )
+                        })}
                       </div>
-                    </>
-                  ) : onChain ? (
-                    <>
-                      {/* non-native fields */}
-                      {!a.isNative && (
-                        <>
-                          {onChain.supply != null && (
+                    )}
+                  </>
+                )}
+
+                {/* stats card: it describes the primary instance, so it shows on
+                  that instance's tab (and always for single-chain tokens) */}
+                {(!isMultichain ||
+                  (viewPart && viewPart.chain === a.chain && viewPart.issuer === a.issuer)) && (
+                  <>
+                    <div className="rounded-xl bg-card divide-y divide-border mb-4">
+                      {a.usdPrice !== null && (
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-muted-foreground">Price</span>
+                          <span className="text-sm font-medium text-foreground tabular-nums">
+                            {formatPrice(a.usdPrice)}
+                          </span>
+                        </div>
+                      )}
+
+                      <AutoSkeleton loading={fetching}>
+                        {fetching ? (
+                          // Placeholder rows that AutoSkeleton will mirror as skeletons
+                          <>
+                            {!a.isNative ? (
+                              <>
+                                <div className="flex items-center justify-between px-4 py-3">
+                                  <span className="text-sm text-muted-foreground">Supply</span>
+                                  <span className="text-sm font-medium">-</span>
+                                </div>
+                                <div className="flex items-center justify-between px-4 py-3">
+                                  <span className="text-sm text-muted-foreground">Holders</span>
+                                  <span className="text-sm font-medium">-</span>
+                                </div>
+                                <div className="flex items-center justify-between px-4 py-3">
+                                  <span className="text-sm text-muted-foreground">Domain</span>
+                                  <span className="text-sm font-medium">-</span>
+                                </div>
+                                <div className="flex items-center justify-between px-4 py-3">
+                                  <span className="text-sm text-muted-foreground">Issuer</span>
+                                  <span className="text-sm font-medium">-</span>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="flex items-center justify-between px-4 py-3">
+                                  <span className="text-sm text-muted-foreground">Base fee</span>
+                                  <span className="text-sm font-medium">-</span>
+                                </div>
+                                <div className="flex items-center justify-between px-4 py-3">
+                                  <span className="text-sm text-muted-foreground">
+                                    Base reserve
+                                  </span>
+                                  <span className="text-sm font-medium">-</span>
+                                </div>
+                              </>
+                            )}
                             <div className="flex items-center justify-between px-4 py-3">
-                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                <Coins size={13} />
-                                Supply
-                              </div>
-                              <span className="text-sm font-medium text-foreground tabular-nums">
-                                {formatSupply(onChain.supply)} {a.code}
-                              </span>
+                              <span className="text-sm text-muted-foreground">Explorer</span>
+                              <span className="text-sm font-medium">-</span>
                             </div>
-                          )}
-                          {onChain.numAccounts != null && (
+                          </>
+                        ) : onChain ? (
+                          <>
+                            {/* non-native fields */}
+                            {!a.isNative && (
+                              <>
+                                {onChain.supply != null && (
+                                  <div className="flex items-center justify-between px-4 py-3">
+                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                      <Coins size={13} />
+                                      Supply
+                                    </div>
+                                    <span className="text-sm font-medium text-foreground tabular-nums">
+                                      {formatSupply(onChain.supply)} {a.code}
+                                    </span>
+                                  </div>
+                                )}
+                                {onChain.numAccounts != null && (
+                                  <div className="flex items-center justify-between px-4 py-3">
+                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                      <Users size={13} />
+                                      Holders
+                                    </div>
+                                    <span className="text-sm font-medium text-foreground tabular-nums">
+                                      {onChain.numAccounts.toLocaleString('en-US')}
+                                    </span>
+                                  </div>
+                                )}
+                                {onChain.homeDomain && (
+                                  <div className="flex items-center justify-between px-4 py-3">
+                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                      <Globe size={13} />
+                                      Domain
+                                    </div>
+                                    <a
+                                      href={`https://${onChain.homeDomain}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                                    >
+                                      {onChain.homeDomain}
+                                      <ExternalLink size={10} />
+                                    </a>
+                                  </div>
+                                )}
+                                <div className="flex items-start justify-between px-4 py-3 gap-4">
+                                  <span className="text-sm text-muted-foreground shrink-0">
+                                    Issuer
+                                  </span>
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <StellarAvatar publicKey={a.issuer} size={14} />
+                                    <a
+                                      href={issuerExplorerUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-xs font-mono text-primary hover:underline truncate"
+                                    >
+                                      {a.issuer.slice(0, 4)}...{a.issuer.slice(-4)}
+                                    </a>
+                                    <CopyButton text={a.issuer} />
+                                  </div>
+                                </div>
+                              </>
+                            )}
+
+                            {/* XLM-only fields */}
+                            {a.isNative && (
+                              <>
+                                {onChain.baseFeeStroops != null && (
+                                  <div className="flex items-center justify-between px-4 py-3">
+                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                      <Zap size={13} />
+                                      Base fee
+                                    </div>
+                                    <span className="text-sm font-medium text-foreground tabular-nums">
+                                      {onChain.baseFeeStroops.toLocaleString('en-US')} stroops
+                                    </span>
+                                  </div>
+                                )}
+                                {onChain.baseReserveStroops != null && (
+                                  <div className="flex items-center justify-between px-4 py-3">
+                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                      <Lock size={13} />
+                                      Base reserve
+                                    </div>
+                                    <span className="text-sm font-medium text-foreground tabular-nums">
+                                      {(onChain.baseReserveStroops / 10_000_000).toFixed(1)} XLM
+                                    </span>
+                                  </div>
+                                )}
+                              </>
+                            )}
+
                             <div className="flex items-center justify-between px-4 py-3">
-                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                <Users size={13} />
-                                Holders
-                              </div>
-                              <span className="text-sm font-medium text-foreground tabular-nums">
-                                {onChain.numAccounts.toLocaleString('en-US')}
-                              </span>
-                            </div>
-                          )}
-                          {onChain.homeDomain && (
-                            <div className="flex items-center justify-between px-4 py-3">
-                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                <Globe size={13} />
-                                Domain
-                              </div>
+                              <span className="text-sm text-muted-foreground">Explorer</span>
                               <a
-                                href={`https://${onChain.homeDomain}`}
+                                href={assetExplorerUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
                               >
-                                {onChain.homeDomain}
+                                {getExplorerName()}
                                 <ExternalLink size={10} />
                               </a>
                             </div>
-                          )}
-                          <div className="flex items-start justify-between px-4 py-3 gap-4">
-                            <span className="text-sm text-muted-foreground shrink-0">Issuer</span>
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <StellarAvatar publicKey={a.issuer} size={14} />
-                              <a
-                                href={issuerExplorerUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-xs font-mono text-primary hover:underline truncate"
-                              >
-                                {a.issuer.slice(0, 4)}...{a.issuer.slice(-4)}
-                              </a>
-                              <CopyButton text={a.issuer} />
-                            </div>
+                          </>
+                        ) : null}
+                      </AutoSkeleton>
+                      {otherChain && ownAddress && (
+                        <>
+                          <div className="flex items-center justify-between px-4 py-3">
+                            <span className="text-sm text-muted-foreground">Network</span>
+                            <span className="text-sm font-medium text-foreground">
+                              {chainLabelOf(otherChain.id)}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between px-4 py-3">
+                            <span className="text-sm text-muted-foreground">Explorer</span>
+                            <a
+                              href={explorerUrl(chainExplorer(otherChain).account, ownAddress)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                            >
+                              {
+                                new URL(chainExplorer(otherChain).account.replace('{address}', 'x'))
+                                  .hostname
+                              }
+                              <ExternalLink size={10} />
+                            </a>
                           </div>
                         </>
                       )}
+                    </div>
 
-                      {/* XLM-only fields */}
-                      {a.isNative && (
-                        <>
-                          {onChain.baseFeeStroops != null && (
-                            <div className="flex items-center justify-between px-4 py-3">
-                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                <Zap size={13} />
-                                Base fee
-                              </div>
-                              <span className="text-sm font-medium text-foreground tabular-nums">
-                                {onChain.baseFeeStroops.toLocaleString('en-US')} stroops
+                    {/* flags */}
+                    {activeFlags.length > 0 && (
+                      <div className="rounded-xl bg-yellow-500/10 border border-yellow-500/20 px-4 py-3 flex gap-2 mb-4">
+                        <AlertTriangle size={14} className="text-yellow-500 shrink-0 mt-0.5" />
+                        <div className="flex flex-col gap-1">
+                          <p className="text-xs font-medium text-foreground">Asset flags</p>
+                          <div className="flex flex-wrap gap-1.5 mt-0.5">
+                            {activeFlags.map((flag) => (
+                              <span
+                                key={flag}
+                                className="rounded-md bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-700 dark:text-yellow-400"
+                              >
+                                {flag}
                               </span>
-                            </div>
-                          )}
-                          {onChain.baseReserveStroops != null && (
-                            <div className="flex items-center justify-between px-4 py-3">
-                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                <Lock size={13} />
-                                Base reserve
-                              </div>
-                              <span className="text-sm font-medium text-foreground tabular-nums">
-                                {(onChain.baseReserveStroops / 10_000_000).toFixed(1)} XLM
-                              </span>
-                            </div>
-                          )}
-                        </>
-                      )}
-
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <span className="text-sm text-muted-foreground">Explorer</span>
-                        <a
-                          href={assetExplorerUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
-                        >
-                          {getExplorerName()}
-                          <ExternalLink size={10} />
-                        </a>
+                            ))}
+                          </div>
+                        </div>
                       </div>
-                    </>
-                  ) : null}
-                </AutoSkeleton>
-              </div>
+                    )}
+                  </>
+                )}
 
-              {/* flags */}
-              {activeFlags.length > 0 && (
-                <div className="rounded-xl bg-yellow-500/10 border border-yellow-500/20 px-4 py-3 flex gap-2 mb-4">
-                  <AlertTriangle size={14} className="text-yellow-500 shrink-0 mt-0.5" />
-                  <div className="flex flex-col gap-1">
-                    <p className="text-xs font-medium text-foreground">Asset flags</p>
-                    <div className="flex flex-wrap gap-1.5 mt-0.5">
-                      {activeFlags.map((flag) => (
-                        <span
-                          key={flag}
-                          className="rounded-md bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-700 dark:text-yellow-400"
-                        >
-                          {flag}
-                        </span>
-                      ))}
+                {chainTab === null && !isStellar && (
+                  <StellarCounterpart
+                    code={a.code}
+                    balances={balances}
+                    isFunded={isFunded}
+                    chainIcons={chainIcons}
+                  />
+                )}
+
+                {/* receiving address for the selected chain */}
+                {viewPart && (
+                  <div className="rounded-xl bg-card px-4 py-3 mb-4">
+                    <p className="text-xs text-muted-foreground">
+                      Receiving address (
+                      {chainNames?.get(viewPart.chain) ??
+                        chainById(viewPart.chain)?.name ??
+                        viewPart.chain}
+                      )
+                    </p>
+                    <div className="mt-1 flex items-center">
+                      <p className="font-mono text-xs text-foreground truncate">
+                        {receiveAddressFor(viewPart.chain) ?? 'Not available'}
+                      </p>
+                      {receiveAddressFor(viewPart.chain) && (
+                        <CopyButton text={receiveAddressFor(viewPart.chain)!} />
+                      )}
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* activity */}
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center gap-3 px-1">
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">
-                    Activity
-                  </p>
-                  {relatedOps.length > 0 && (
-                    <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                      {relatedOps.length}
-                    </span>
-                  )}
-                  <div className="flex-1 h-px bg-border" />
-                </div>
+                {/* activity: hidden on the multichain overview; chain tabs and
+                  single-chain tokens keep it */}
+                {(!isMultichain || chainTab !== null) && (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-3 px-1">
+                      <p className="pixel-label text-[10px] text-muted-foreground whitespace-nowrap">
+                        Activity
+                      </p>
+                      {activityCount > 0 && (
+                        <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                          {activityCount}
+                        </span>
+                      )}
+                      <div className="flex-1 h-px bg-border" />
+                    </div>
 
-                {relatedOps.length === 0 ? (
-                  <p className="text-xs text-muted-foreground text-center py-4">
-                    No transactions yet
-                  </p>
-                ) : (
-                  relatedOps.map((op) => {
-                    const dir = getDirection(op, publicKey)
-                    const amount = getAmountDisplay(op)
-                    return (
-                      <button
-                        key={op.id}
-                        className="cursor-pointer flex items-center gap-3 w-full rounded-xl bg-card px-4 py-3 hover:bg-muted/60 transition-colors text-left"
-                        onClick={() => setSelectedOp(op)}
-                      >
-                        <OpIcon op={op} publicKey={publicKey} iconMap={iconMap} />
-                        <div className="flex flex-col flex-1 min-w-0">
-                          <p className="text-sm font-medium text-foreground">
-                            {getOpLabel(op, publicKey)}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {formatTime(op.created_at)}
-                          </p>
-                        </div>
-                        {amount && (
-                          <div className="text-right shrink-0">
-                            {amount.amount && (
-                              <p
-                                className={`text-sm font-medium tabular-nums ${dir === 'in' ? 'text-green-500' : dir === 'out' ? 'text-foreground' : 'text-muted-foreground'}`}
-                              >
-                                {dir === 'in' ? '+' : dir === 'out' ? '-' : ''}
-                                {amount.amount}
-                              </p>
-                            )}
-                            <p className="text-xs text-muted-foreground font-mono">{amount.code}</p>
-                          </div>
-                        )}
-                      </button>
-                    )
-                  })
+                    {activityCount === 0 ? (
+                      <p className="text-xs text-muted-foreground text-center py-4">
+                        No transactions yet
+                      </p>
+                    ) : !activityOnStellar ? (
+                      relatedChainTx.map((tx, i) => {
+                        const view = chainTxView(tx)
+                        return (
+                          <ActivityRow
+                            key={`${tx.hash}:${i}`}
+                            view={view}
+                            timestamp={tx.timestamp}
+                            icon={rowIcon(view.code, view.issuer)}
+                            chainIcon={chainIcons?.get(tx.chain)}
+                            fiat={
+                              view.amount
+                                ? fiatFor(view.amount.value, view.code, view.issuer)
+                                : null
+                            }
+                            counterparty={view.counterparty}
+                            onClick={() => setSelectedTx(tx)}
+                          />
+                        )
+                      })
+                    ) : (
+                      relatedOps.map((op) => {
+                        const view = stellarView(op, publicKey)
+                        return (
+                          <ActivityRow
+                            key={op.id}
+                            view={view}
+                            timestamp={op.created_at}
+                            icon={rowIcon(view.code, view.issuer)}
+                            chainIcon={activityCtx ? chainIcons?.get(activityCtx.chain) : undefined}
+                            fiat={
+                              view.amount
+                                ? fiatFor(view.amount.value, view.code, view.issuer)
+                                : null
+                            }
+                            counterparty={view.counterparty}
+                            trailing={op.type === 'change_trust' ? op.asset_code : undefined}
+                            onClick={() => setSelectedOp(op)}
+                          />
+                        )
+                      })
+                    )}
+                  </div>
                 )}
               </div>
-            </div>
 
-            {/* sticky footer */}
-            <div className="shrink-0 flex gap-3 border-t border-border px-5 py-4">
-              <Button
-                variant="outline"
-                className="flex-1 gap-2"
-                onClick={() => {
-                  onClose()
-                  navigate('/send')
-                }}
-              >
-                <Send size={14} />
-                Send
-              </Button>
-              <Button
-                variant="outline"
-                className="flex-1 gap-2"
-                onClick={() => {
-                  onClose()
-                  navigate('/receive')
-                }}
-              >
-                <QrCode size={14} />
-                Receive
-              </Button>
+              {/* sticky footer */}
+              <div className="shrink-0 flex gap-3 border-t border-border px-5 py-4">
+                <Button
+                  variant="outline"
+                  className="flex-1 gap-2"
+                  onClick={() => {
+                    // The asset (on the open chain tab, else every chain it lives
+                    // on) rides along, so Send starts on it instead of the native coin.
+                    const sendable = viewPart ? [viewPart] : (a?.parts ?? (a ? [a] : []))
+                    onClose()
+                    navigate('/send', {
+                      state: {
+                        assets: sendable.map((p) => ({
+                          chain: p.chain,
+                          code: p.code,
+                          issuer: p.issuer,
+                        })),
+                      },
+                    })
+                  }}
+                >
+                  <Send size={14} />
+                  Send
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex-1 gap-2"
+                  onClick={() => {
+                    const on = (viewPart ?? (isMultichain ? null : a))?.chain
+                    onClose()
+                    navigate('/receive', {
+                      state: on
+                        ? {
+                            chain: on.startsWith('eip155')
+                              ? 'evm'
+                              : on.startsWith('bip122')
+                                ? 'bitcoin'
+                                : 'stellar',
+                          }
+                        : undefined,
+                    })
+                  }}
+                >
+                  <QrCode size={14} />
+                  Receive
+                </Button>
+                {asset && asset.code === 'USDC' && (
+                  <Button
+                    variant="outline"
+                    className="flex-1 gap-2"
+                    onClick={() => {
+                      const direction = (viewPart ?? asset).chain.startsWith('stellar:')
+                        ? 'stellar-to-evm'
+                        : 'evm-to-stellar'
+                      onClose()
+                      navigate('/bridge', { state: { direction } })
+                    }}
+                  >
+                    <ArrowLeftRight size={14} />
+                    Bridge
+                  </Button>
+                )}
+              </div>
             </div>
           </>
         )}
@@ -634,6 +959,23 @@ export default function TokenDetailSheet({ asset, horizonUrl, onClose }: TokenDe
         networkName={activeNetwork.name}
         zIndex="z-[80]"
       />
+      {selectedTx && (
+        <ChainTxSheet
+          tx={selectedTx}
+          chain={chainById(selectedTx.chain)}
+          chainName={chainLabelOf(selectedTx.chain)}
+          chainIcon={chainIcons?.get(selectedTx.chain)}
+          icon={(() => {
+            const v = chainTxView(selectedTx)
+            return rowIcon(v.code, v.issuer)
+          })()}
+          fiat={(() => {
+            const v = chainTxView(selectedTx)
+            return v.amount ? fiatFor(v.amount.value, v.code, v.issuer) : null
+          })()}
+          onClose={() => setSelectedTx(null)}
+        />
+      )}
     </>
   )
 }

@@ -1,0 +1,29 @@
+title = "cyphras-extension"
+
+[extend]
+useDefault = true
+
+# Public on-chain identifiers trip the generic-api-key rule. Only formats that can
+# never be a secret are allowed: Stellar contract IDs (secret keys start with S,
+# not C) and 40-hex EVM addresses. A bare 64-hex string is not allowed because an
+# EVM private key has that shape.
+[allowlist]
+description = "public contract IDs and EVM addresses"
+regexes = [
+  '''^C[A-Z2-7]{55}$''',
+  '''^0x[a-fA-F0-9]{40}$''',
+]
+
+# The default rules flag a seed only next to a word like "secret". Version byte
+# 18 << 3 makes every seed 56 base32 characters starting with S, then A to D.
+[[rules]]
+id = "stellar-secret-seed"
+description = "Stellar secret seed"
+regex = '''\bS[A-D][A-Z2-7]{54}\b'''
+
+# BIP39 English words are 3 to 8 lowercase letters; a phrase is 12 to 24 words in steps of 3.
+[[rules]]
+id = "bip39-mnemonic"
+description = "BIP39 recovery phrase"
+regex = '''["'`]((?:[a-z]{3,8} ){11}(?:(?:[a-z]{3,8} ){3}){0,4}[a-z]{3,8})["'`]'''
+secretGroup = 1

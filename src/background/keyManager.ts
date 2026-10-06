@@ -8,6 +8,7 @@ const STORAGE_KEY_ENCRYPTED_MNEMONIC = 'cyphras_encrypted_mnemonic' // primary H
 const STORAGE_KEY_ACCOUNTS = 'cyphras_accounts' // accounts array + activePublicKey
 const STORAGE_KEY_HD_WALLETS = 'cyphras_hd_wallets' // extra HD wallets (beyond primary)
 const STORAGE_KEY_IMPORTED_KEYS = 'cyphras_imported_keys' // imported secret keys
+export const SESSION_KEY = 'cyphras_session_pubkey' // unlocked account; absent while locked
 const SESSION_SECRET_KEY = 'cyphras_session_secret'
 const SESSION_MNEMONIC_KEY = 'cyphras_session_mnemonic' // primary mnemonic while unlocked
 const SESSION_EXTRA_HD_MNEMONICS_KEY = 'cyphras_session_extra_hd' // extra HD mnemonics while unlocked
@@ -30,7 +31,10 @@ export const CHAIN_DERIVATION_PATHS = {
 
 export type SupportedChain = keyof typeof CHAIN_DERIVATION_PATHS
 
-async function hmacSha512(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+async function hmacSha512(
+  key: Uint8Array<ArrayBuffer>,
+  data: Uint8Array<ArrayBuffer>
+): Promise<Uint8Array<ArrayBuffer>> {
   const cryptoKey = await crypto.subtle.importKey(
     'raw',
     key,
@@ -43,10 +47,10 @@ async function hmacSha512(key: Uint8Array, data: Uint8Array): Promise<Uint8Array
 }
 
 async function deriveKey(
-  seed: Uint8Array,
+  seed: Uint8Array<ArrayBuffer>,
   pathSegments: readonly number[],
   index: number
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
   const enc = new TextEncoder()
   const masterData = await hmacSha512(enc.encode(STELLAR_SEED_KEY), seed)
   let key = masterData.slice(0, 32)
@@ -70,7 +74,7 @@ async function deriveKey(
   return key
 }
 
-function hexToBytes(hex: string): Uint8Array {
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   const arr = new Uint8Array(hex.length / 2)
   for (let i = 0; i < hex.length; i += 2) {
     arr[i / 2] = parseInt(hex.substring(i, i + 2), 16)
@@ -86,7 +90,7 @@ function bytesToHex(bytes: Uint8Array): string {
 
 async function deriveEncryptionKey(
   password: string,
-  salt: Uint8Array,
+  salt: Uint8Array<ArrayBuffer>,
   iterations: number
 ): Promise<CryptoKey> {
   const enc = new TextEncoder()
@@ -155,7 +159,7 @@ export async function encryptAndStore(
 
 export async function decryptSecret(password: string): Promise<string | null> {
   const result = await chrome.storage.local.get(STORAGE_KEY_ENCRYPTED)
-  const raw = result[STORAGE_KEY_ENCRYPTED]
+  const raw = result[STORAGE_KEY_ENCRYPTED] as string | undefined
   if (!raw) return null
 
   try {
@@ -178,7 +182,7 @@ export async function decryptSecret(password: string): Promise<string | null> {
 
 export async function upgradeEncryptionIfNeeded(password: string): Promise<void> {
   const result = await chrome.storage.local.get(STORAGE_KEY_ENCRYPTED)
-  const raw = result[STORAGE_KEY_ENCRYPTED]
+  const raw = result[STORAGE_KEY_ENCRYPTED] as string | undefined
   if (!raw) return
 
   try {
@@ -203,7 +207,7 @@ export async function storeSessionSecret(secret: string): Promise<void> {
 
 export async function getSessionSecret(): Promise<string | null> {
   const result = await chrome.storage.session?.get(SESSION_SECRET_KEY)
-  return result?.[SESSION_SECRET_KEY] ?? null
+  return (result?.[SESSION_SECRET_KEY] as string | undefined) ?? null
 }
 
 export async function clearSessionSecret(): Promise<void> {
@@ -212,7 +216,7 @@ export async function clearSessionSecret(): Promise<void> {
 
 export async function getStoredPublicKey(): Promise<string | null> {
   const result = await chrome.storage.local.get(STORAGE_KEY_PUBKEY)
-  return result[STORAGE_KEY_PUBKEY] ?? null
+  return (result[STORAGE_KEY_PUBKEY] as string | undefined) ?? null
 }
 
 export async function hasWallet(): Promise<boolean> {
@@ -247,6 +251,9 @@ export interface AccountInfo {
   publicKey: string
   label: string
   walletId: string // 'primary' | UUID (extra HD wallets) | 'sk:UUID' (imported keys)
+  // Per-family derived addresses; the account identity is (walletId, index).
+  // publicKey mirrors addresses.stellar during the multichain migration.
+  addresses?: Partial<Record<'stellar' | 'evm' | 'bitcoin' | 'bitcoinTestnet', string>>
 }
 
 export interface AccountsStore {
@@ -285,7 +292,7 @@ export async function encryptAndStoreMnemonic(mnemonic: string, password: string
 
 export async function decryptMnemonic(password: string): Promise<string | null> {
   const result = await chrome.storage.local.get(STORAGE_KEY_ENCRYPTED_MNEMONIC)
-  const raw = result[STORAGE_KEY_ENCRYPTED_MNEMONIC]
+  const raw = result[STORAGE_KEY_ENCRYPTED_MNEMONIC] as string | undefined
   if (!raw) return null
   try {
     const payload = JSON.parse(raw)
@@ -394,7 +401,7 @@ export async function changePassword(currentPassword: string, newPassword: strin
 
 export async function getHDWallets(): Promise<HDWalletStorageEntry[]> {
   const result = await chrome.storage.local.get(STORAGE_KEY_HD_WALLETS)
-  return result[STORAGE_KEY_HD_WALLETS] ?? []
+  return (result[STORAGE_KEY_HD_WALLETS] as HDWalletStorageEntry[] | undefined) ?? []
 }
 
 export async function saveHDWallets(wallets: HDWalletStorageEntry[]): Promise<void> {
@@ -403,7 +410,7 @@ export async function saveHDWallets(wallets: HDWalletStorageEntry[]): Promise<vo
 
 export async function getImportedKeys(): Promise<ImportedKeyStorageEntry[]> {
   const result = await chrome.storage.local.get(STORAGE_KEY_IMPORTED_KEYS)
-  return result[STORAGE_KEY_IMPORTED_KEYS] ?? []
+  return (result[STORAGE_KEY_IMPORTED_KEYS] as ImportedKeyStorageEntry[] | undefined) ?? []
 }
 
 export async function saveImportedKeys(keys: ImportedKeyStorageEntry[]): Promise<void> {
@@ -418,7 +425,7 @@ export async function storeSessionExtraHDMnemonics(
 
 export async function getSessionExtraHDMnemonics(): Promise<Record<string, string>> {
   const result = await chrome.storage.session?.get(SESSION_EXTRA_HD_MNEMONICS_KEY)
-  return result?.[SESSION_EXTRA_HD_MNEMONICS_KEY] ?? {}
+  return (result?.[SESSION_EXTRA_HD_MNEMONICS_KEY] as Record<string, string> | undefined) ?? {}
 }
 
 export async function clearSessionExtraHDMnemonics(): Promise<void> {
@@ -431,7 +438,7 @@ export async function storeSessionImportedSecrets(secrets: Record<string, string
 
 export async function getSessionImportedSecrets(): Promise<Record<string, string>> {
   const result = await chrome.storage.session?.get(SESSION_IMPORTED_SECRETS_KEY)
-  return result?.[SESSION_IMPORTED_SECRETS_KEY] ?? {}
+  return (result?.[SESSION_IMPORTED_SECRETS_KEY] as Record<string, string> | undefined) ?? {}
 }
 
 export async function clearSessionImportedSecrets(): Promise<void> {
@@ -440,7 +447,24 @@ export async function clearSessionImportedSecrets(): Promise<void> {
 
 export async function getAccountsStore(): Promise<AccountsStore> {
   const result = await chrome.storage.local.get(STORAGE_KEY_ACCOUNTS)
-  return result[STORAGE_KEY_ACCOUNTS] ?? { accounts: [], activeIndex: 0 }
+  const store = (result[STORAGE_KEY_ACCOUNTS] as AccountsStore | undefined) ?? {
+    accounts: [],
+    activeIndex: 0,
+  }
+
+  // Self-healing v2 backfill: every account carries its per-family address
+  // map. Stellar comes from the stored publicKey; other families are filled
+  // lazily after unlock, since they need the mnemonic.
+  let migrated = false
+  for (const account of store.accounts) {
+    if (!account.addresses?.stellar) {
+      account.addresses = { ...account.addresses, stellar: account.publicKey }
+      migrated = true
+    }
+  }
+  if (migrated) await saveAccountsStore(store)
+
+  return store
 }
 
 export async function saveAccountsStore(store: AccountsStore): Promise<void> {
@@ -451,9 +475,14 @@ export async function storeSessionMnemonic(mnemonic: string): Promise<void> {
   await chrome.storage.session?.set({ [SESSION_MNEMONIC_KEY]: mnemonic })
 }
 
+export async function getSessionPublicKey(): Promise<string | null> {
+  const result = await chrome.storage.session?.get(SESSION_KEY)
+  return (result?.[SESSION_KEY] as string | undefined) ?? null
+}
+
 export async function getSessionMnemonic(): Promise<string | null> {
   const result = await chrome.storage.session?.get(SESSION_MNEMONIC_KEY)
-  return result?.[SESSION_MNEMONIC_KEY] ?? null
+  return (result?.[SESSION_MNEMONIC_KEY] as string | undefined) ?? null
 }
 
 export async function clearSessionMnemonic(): Promise<void> {

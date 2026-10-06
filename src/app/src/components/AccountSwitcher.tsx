@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { PixelMask } from '@/components/Pixel'
 import { useNavigate } from 'react-router-dom'
 import {
   X,
@@ -11,10 +12,11 @@ import {
   GripVertical,
 } from 'lucide-react'
 import { useWallet } from '@/context/WalletContext'
+import { useNetwork } from '@/context/NetworkContext'
 import { usePreferences } from '@/context/PreferencesContext'
-import { fetchPrices } from '@/lib/api'
+import { fetchPrices, priceKey, type PriceAsset } from '@/lib/api'
 import { SERVICE_TYPES } from '@constants/services'
-import type { AccountInfo } from '@ext-types/index'
+import type { AccountInfo, ChainBalance } from '@ext-types/index'
 import AddWalletModal from './AddWalletModal'
 import { StellarAvatar } from './StellarAvatar'
 import { Button } from '@/components/ui/button'
@@ -37,6 +39,7 @@ function truncateAddress(addr: string) {
 export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProps) {
   const { status, accounts, switchAccount, renameAccount, removeAccount, reorderAccounts } =
     useWallet()
+  const { activeNetwork } = useNetwork()
   const { formatValue, hideBalance } = usePreferences()
   const navigate = useNavigate()
 
@@ -64,7 +67,6 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
     if (editingPk !== null) editInputRef.current?.focus()
   }, [editingPk])
 
-
   useEffect(() => {
     if (!isOpen) {
       setMenuOpenFor(null)
@@ -91,25 +93,32 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
           (a) =>
             new Promise<{
               pk: string
-              rawBalances: Array<{
-                balance: string
-                asset_type: string
-                asset_code?: string
-              }> | null
+              balances: ChainBalance[] | null
               unfunded: boolean
             }>((resolve) => {
               chrome.runtime.sendMessage(
                 { type: SERVICE_TYPES.FETCH_HORIZON_ACCOUNT, publicKey: a.publicKey },
                 (response) => {
-                  if (chrome.runtime.lastError || !response) {
-                    resolve({ pk: a.publicKey, rawBalances: null, unfunded: false })
-                  } else {
-                    resolve({
-                      pk: a.publicKey,
-                      rawBalances: response.rawBalances ?? null,
-                      unfunded: response.unfunded ?? false,
-                    })
-                  }
+                  const stellar: ChainBalance[] | null =
+                    chrome.runtime.lastError || !response ? null : (response.balances ?? null)
+                  const unfunded =
+                    !chrome.runtime.lastError && response ? (response.unfunded ?? false) : false
+                  // EVM rides along per account; failures fall back to Stellar-only.
+                  chrome.runtime.sendMessage(
+                    { type: SERVICE_TYPES.FETCH_EVM_BALANCES, publicKey: a.publicKey },
+                    (evm) => {
+                      const evmBalances: ChainBalance[] =
+                        chrome.runtime.lastError || !evm ? [] : (evm.balances ?? [])
+                      resolve({
+                        pk: a.publicKey,
+                        balances:
+                          stellar === null && evmBalances.length === 0
+                            ? null
+                            : [...(stellar ?? []), ...evmBalances],
+                        unfunded,
+                      })
+                    }
+                  )
                 }
               )
             })
@@ -118,27 +127,29 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
 
       if (cancelled) return
 
-      const allCodes = new Set<string>()
+      const assetOf = (b: ChainBalance): PriceAsset =>
+        b.isNative ? { code: b.code } : { code: b.code, issuer: b.issuer || undefined }
+      const assetsByKey = new Map<string, PriceAsset>()
       for (const r of rawResults) {
-        if (r.rawBalances) {
-          for (const b of r.rawBalances) {
-            allCodes.add(b.asset_type === 'native' ? 'XLM' : (b.asset_code ?? ''))
+        if (r.balances) {
+          for (const b of r.balances) {
+            const asset = assetOf(b)
+            if (asset.code) assetsByKey.set(priceKey(asset), asset)
           }
         }
       }
 
-      const { prices } = await fetchPrices([...allCodes])
+      const { prices } = await fetchPrices([...assetsByKey.values()], activeNetwork.id)
       if (cancelled) return
 
       const updated: Record<string, AccountBalance> = {}
-      for (const { pk, rawBalances, unfunded } of rawResults) {
-        if (!rawBalances) {
+      for (const { pk, balances, unfunded } of rawResults) {
+        if (!balances) {
           updated[pk] = { usd: unfunded ? 0 : null, loading: false }
         } else {
-          const total = rawBalances.reduce((sum, b) => {
-            const code = b.asset_type === 'native' ? 'XLM' : (b.asset_code ?? '')
-            const price = prices[code] ?? null
-            return price !== null ? sum + parseFloat(b.balance) * price : sum
+          const total = balances.reduce((sum, b) => {
+            const price = prices[priceKey(assetOf(b))] ?? null
+            return price !== null ? sum + parseFloat(b.amount) * price : sum
           }, 0)
           updated[pk] = { usd: total, loading: false }
         }
@@ -357,7 +368,9 @@ export default function AccountSwitcher({ isOpen, onClose }: AccountSwitcherProp
                       </div>
                       <div className="shrink-0 text-right">
                         {hideBalance ? (
-                          <span className="text-xs text-muted-foreground tracking-wider">****</span>
+                          <span className="text-xs text-muted-foreground">
+                            <PixelMask count={4} size="sm" />
+                          </span>
                         ) : accountBalances[account.publicKey]?.loading ? (
                           <span className="text-xs text-muted-foreground/50">...</span>
                         ) : accountBalances[account.publicKey]?.usd !== null &&

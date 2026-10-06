@@ -3,3 +3,5 @@ node_modules/
 src/app/node_modules/
 src/app/.tmp/
 *.tsbuildinfo
+# Pinned by SHA-256: a reformat would break the pin.
+src/app/public/circuits/

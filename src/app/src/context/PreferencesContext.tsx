@@ -1,8 +1,15 @@
 import { createContext, useContext, useState, useEffect } from 'react'
+import type { ChainEntry, ChainExplorer } from '@constants/chains'
+import {
+  pickChainExplorer,
+  type BtcExplorer,
+  type EvmExplorer,
+  type StellarExplorer,
+} from '@/lib/explorers'
 
 export type Currency = 'USD' | 'EUR' | 'GBP' | 'IDR'
 export type Theme = 'system' | 'light' | 'dark'
-export type Explorer = 'stellar.expert' | 'stellarchain'
+export type Explorer = StellarExplorer
 
 interface ExchangeRates {
   EUR: number
@@ -18,6 +25,12 @@ interface PreferencesContextValue {
   setTheme: (t: Theme) => void
   explorer: Explorer
   setExplorer: (e: Explorer) => void
+  evmExplorer: EvmExplorer
+  setEvmExplorer: (e: EvmExplorer) => void
+  btcExplorer: BtcExplorer
+  setBtcExplorer: (e: BtcExplorer) => void
+  // Links for an EVM or Bitcoin chain under the picks above.
+  chainExplorer: (chain: ChainEntry) => ChainExplorer
   hideSmallPayments: boolean
   setHideSmallPayments: (v: boolean) => void
   sidebarByDefault: boolean
@@ -36,6 +49,8 @@ const STORAGE_KEYS = {
   currency: 'cyphras_currency',
   theme: 'cyphras_theme',
   explorer: 'cyphras_explorer',
+  evmExplorer: 'cyphras_explorer_evm',
+  btcExplorer: 'cyphras_explorer_btc',
   hideSmallPayments: 'cyphras_hide_small_payments',
   sidebarByDefault: 'cyphras_sidebar_by_default',
   hideBalance: 'cyphras_hide_balance',
@@ -62,6 +77,8 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
   const [currency, setCurrencyState] = useState<Currency>('USD')
   const [theme, setThemeState] = useState<Theme>('light')
   const [explorer, setExplorerState] = useState<Explorer>('stellar.expert')
+  const [evmExplorer, setEvmExplorerState] = useState<EvmExplorer>('etherscan')
+  const [btcExplorer, setBtcExplorerState] = useState<BtcExplorer>('mempool')
   const [hideSmallPayments, setHideSmallPaymentsState] = useState(false)
   const [sidebarByDefault, setSidebarByDefaultState] = useState(false)
   const [hideBalance, setHideBalanceState] = useState(false)
@@ -85,6 +102,10 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
         applyTheme('light')
       }
       if (e) setExplorerState(e)
+      const ee = res[STORAGE_KEYS.evmExplorer] as EvmExplorer | undefined
+      if (ee) setEvmExplorerState(ee)
+      const be = res[STORAGE_KEYS.btcExplorer] as BtcExplorer | undefined
+      if (be) setBtcExplorerState(be)
       if (h !== undefined) setHideSmallPaymentsState(h)
       if (wm !== undefined) setSidebarByDefaultState(wm)
       const hb = res[STORAGE_KEYS.hideBalance] as boolean | undefined
@@ -135,6 +156,20 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
     applyTheme(t)
     chrome.storage.local.set({ [STORAGE_KEYS.theme]: t })
     localStorage.setItem('cyphras_theme', t)
+  }
+
+  function setEvmExplorer(e: EvmExplorer) {
+    setEvmExplorerState(e)
+    chrome.storage.local.set({ [STORAGE_KEYS.evmExplorer]: e })
+  }
+
+  function setBtcExplorer(e: BtcExplorer) {
+    setBtcExplorerState(e)
+    chrome.storage.local.set({ [STORAGE_KEYS.btcExplorer]: e })
+  }
+
+  function chainExplorer(chain: ChainEntry): ChainExplorer {
+    return pickChainExplorer(chain, { evm: evmExplorer, btc: btcExplorer })
   }
 
   function setExplorer(e: Explorer) {
@@ -212,8 +247,12 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
     }
   }
 
+  const soroscanBase = (networkId: string) =>
+    networkId === 'mainnet' ? 'https://soroscan.io' : 'https://testnet.soroscan.io'
+
   function getExplorerTxUrl(hash: string, networkId: string): string {
     const isMainnet = networkId === 'mainnet'
+    if (explorer === 'soroscan') return `${soroscanBase(networkId)}/tx/${hash}`
     if (explorer === 'stellarchain') {
       return isMainnet
         ? `https://stellarchain.io/transactions/${hash}`
@@ -226,6 +265,11 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
 
   function getExplorerAccountUrl(address: string, networkId: string): string {
     const isMainnet = networkId === 'mainnet'
+    if (explorer === 'soroscan') {
+      // Soroscan keeps contracts (C...) on their own page.
+      const kind = address.startsWith('C') ? 'contract' : 'account'
+      return `${soroscanBase(networkId)}/${kind}/${address}`
+    }
     if (explorer === 'stellarchain') {
       return isMainnet
         ? `https://stellarchain.io/accounts/${address}`
@@ -239,6 +283,9 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
   function getExplorerAssetUrl(code: string, issuer: string, networkId: string): string {
     const isMainnet = networkId === 'mainnet'
     const isNative = code === 'XLM' && !issuer
+    if (explorer === 'soroscan') {
+      return `${soroscanBase(networkId)}/asset/${isNative ? 'XLM' : `${code}-${issuer}`}`
+    }
     if (explorer === 'stellarchain') {
       const base = isMainnet ? 'https://stellarchain.io' : 'https://testnet.stellarchain.io'
       return isNative ? `${base}/assets/XLM` : `${base}/assets/${code}-${issuer}`
@@ -250,7 +297,11 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
   }
 
   function getExplorerName(): string {
-    return explorer === 'stellarchain' ? 'StellarChain' : 'Stellar.expert'
+    return explorer === 'soroscan'
+      ? 'Soroscan'
+      : explorer === 'stellarchain'
+        ? 'StellarChain'
+        : 'Stellar.expert'
   }
 
   return (
@@ -262,6 +313,11 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
         setTheme,
         explorer,
         setExplorer,
+        evmExplorer,
+        setEvmExplorer,
+        btcExplorer,
+        setBtcExplorer,
+        chainExplorer,
         hideSmallPayments,
         setHideSmallPayments,
         sidebarByDefault,
@@ -281,6 +337,7 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- hook lives with its provider
 export function usePreferences() {
   const ctx = useContext(PreferencesContext)
   if (!ctx) throw new Error('usePreferences must be used within PreferencesProvider')

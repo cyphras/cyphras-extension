@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useWallet } from '@/context/WalletContext'
-import { useNetwork } from '@/context/NetworkContext'
 import { Link, AlertTriangle, ArrowRight, Check } from 'lucide-react'
 import { ApprovalShell, ActionHeader, InfoCard, InfoRow, TrustNote, AddressChip } from './_shell'
+import { NetworkValue } from '@/components/TxDetailParts'
+import { useStellarChain } from '@/hooks/useStellarChain'
 
 export default function GrantAccess() {
   const { status } = useWallet()
-  const { activeNetwork } = useNetwork()
+  const stellarChain = useStellarChain()
   const [origin, setOrigin] = useState('')
   const [requestId, setRequestId] = useState('')
   const [requestedNetwork, setRequestedNetwork] = useState('')
@@ -61,8 +62,10 @@ export default function GrantAccess() {
             <p className="text-xs font-semibold text-foreground">Network switch required</p>
             <p className="text-xs text-muted-foreground">
               This dApp requires{' '}
-              <span className="font-medium text-foreground">{capitalize(requestedNetwork)}</span>.
-              Connecting will switch your wallet network.
+              <span className="font-medium text-foreground">
+                Stellar {capitalize(requestedNetwork)}
+              </span>
+              . Connecting will switch your wallet network.
             </p>
           </div>
         </div>
@@ -77,12 +80,14 @@ export default function GrantAccess() {
         <InfoRow label="Network">
           {networkMismatch ? (
             <span className="text-sm font-medium text-foreground flex items-center gap-1.5">
-              {activeNetwork.name}
+              {stellarChain.name}
               <ArrowRight size={12} className="text-muted-foreground shrink-0" />
-              {capitalize(requestedNetwork)}
+              Stellar {capitalize(requestedNetwork)}
             </span>
           ) : (
-            <span className="text-sm font-medium text-foreground">{activeNetwork.name}</span>
+            <span className="text-sm font-medium text-foreground">
+              <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
+            </span>
           )}
         </InfoRow>
       </InfoCard>
