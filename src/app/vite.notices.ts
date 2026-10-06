@@ -203,23 +203,29 @@ function gplNotice(text: string): string {
   return [...own.map((l) => l.trim()), GPL_REFERENCE].join('\n')
 }
 
-// A package's license and notice files, as one text. A license file that goes on to list the
+const licenseFiles = (dir: string) =>
+  readdirSync(dir)
+    .sort()
+    .filter((f) => /^(licen[cs]e|copying)([._-]|$)/i.test(f))
+    .map((f) => join(dir, f))
+
+// A package's license and notice files, as one text. A package that ships no license file takes the
+// one of a bundled package from the same repository, if any. A license file that goes on to list the
 // licenses of the package's own bundled dependencies, as vite's does, is cut there: those are its
 // build tools, and none of them ship here.
-function noticeOf(dir: string, meta: Meta): string {
-  const files = readdirSync(dir).sort()
-  const texts = files
-    .filter((f) => /^(licen[cs]e|copying)([._-]|$)/i.test(f))
-    .map((f) =>
-      tidy(readFileSync(join(dir, f), 'utf8').split(/\n# Licenses of bundled dependencies\n/)[0])
-    )
+function noticeOf(dir: string, meta: Meta, sibling: string | undefined): string {
+  const own = licenseFiles(dir)
+  const texts = (own.length > 0 ? own : sibling ? licenseFiles(sibling) : [])
+    .map((f) => tidy(readFileSync(f, 'utf8').split(/\n# Licenses of bundled dependencies\n/)[0]))
     .map((t) => (isGpl3(t) ? gplNotice(t) : t))
   if (texts.length === 0) {
     const declared = licenseOf(meta)
     texts.push(`The package ships no license file; its package.json declares ${declared}.`)
     if (declared.startsWith('GPL-3.0')) texts.push(GPL_REFERENCE)
   }
-  for (const f of files.filter((f) => /^notice([._-]|$)/i.test(f))) {
+  for (const f of readdirSync(dir)
+    .sort()
+    .filter((f) => /^notice([._-]|$)/i.test(f))) {
     texts.push(tidy(readFileSync(join(dir, f), 'utf8')))
   }
   return texts.join('\n\n')
@@ -281,15 +287,23 @@ export function writeNotices(builds: string[], dist: string): void {
     if (!byKey.has(key)) byKey.set(key, { dir, meta })
   }
 
+  const keys = [...byKey.keys()].sort()
+  const licensed = new Map<string, string>()
+  for (const key of keys) {
+    const { dir, meta } = byKey.get(key) as { dir: string; meta: Meta }
+    const source = sourceOf(meta)
+    if (source && !licensed.has(source) && licenseFiles(dir).length > 0) licensed.set(source, dir)
+  }
+
   const groups = new Map<string, string[]>()
   const add = (text: string, line: string) => groups.set(text, [...(groups.get(text) ?? []), line])
-  for (const key of [...byKey.keys()].sort()) {
+  for (const key of keys) {
     const { dir, meta } = byKey.get(key) as { dir: string; meta: Meta }
     const source = sourceOf(meta)
     const notes = bundleNotes.get(dir)
     const kept = notes ? `\n\nLicense comments kept from its bundle:\n\n${notes}` : ''
     add(
-      noticeOf(dir, meta) + kept,
+      noticeOf(dir, meta, source ? licensed.get(source) : undefined) + kept,
       `${meta.name} ${meta.version}, ${licenseOf(meta)}${source ? `, ${source}` : ''}`
     )
   }
