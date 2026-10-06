@@ -5,7 +5,7 @@
 
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/manifest-v3-orange.svg" alt="Manifest v3">
-  <img src="https://img.shields.io/badge/version-0.3.0-22c55e.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.4.0-22c55e.svg" alt="Version">
 </div>
 
 ---
