@@ -338,7 +338,7 @@ export default function Home() {
   const cardRef = useRef<HTMLDivElement>(null)
   const shieldedMenuRef = useRef<HTMLDivElement>(null)
   const [shieldedMenuOpen, setShieldedMenuOpen] = useState(false)
-  const [copiedCy1, setCopiedCy1] = useState(false)
+  const [copiedAddress, setCopiedAddress] = useState(false)
   const shieldedAddr = shieldedStatus?.address ?? null
 
   useEffect(() => {
@@ -504,8 +504,8 @@ export default function Home() {
   function copyPrivateAddress() {
     if (!shieldedAddr) return
     navigator.clipboard.writeText(shieldedAddr)
-    setCopiedCy1(true)
-    setTimeout(() => setCopiedCy1(false), 2000)
+    setCopiedAddress(true)
+    setTimeout(() => setCopiedAddress(false), 2000)
   }
 
   // Select the pool, then open the page for the chosen action.
@@ -762,12 +762,12 @@ export default function Home() {
                               className="cursor-pointer flex w-full items-center gap-2 px-3 py-2.5 text-sm text-foreground hover:bg-muted transition-colors disabled:cursor-default disabled:opacity-50"
                               onClick={copyPrivateAddress}
                             >
-                              {copiedCy1 ? (
+                              {copiedAddress ? (
                                 <Check size={14} className="text-muted-foreground" />
                               ) : (
                                 <Copy size={14} className="text-muted-foreground" />
                               )}
-                              {copiedCy1 ? 'Copied!' : 'Copy private address'}
+                              {copiedAddress ? 'Copied!' : 'Copy private address'}
                             </button>
                           </div>
                         )}

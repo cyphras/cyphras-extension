@@ -5,7 +5,7 @@ import { NumberTicker } from '@/components/NumberTicker'
 import { VerifiedBadge } from '@/components/token/VerifiedBadge'
 import { VerifiedMark } from '@/components/token/VerifiedMark'
 import { Collapse } from '@/components/Collapse'
-import { Cy1Avatar } from '@/components/Cy1Avatar'
+import { PrivateAddressAvatar } from '@/components/PrivateAddressAvatar'
 import { StellarAvatar } from '@/components/StellarAvatar'
 import { shortAddress } from '@/lib/address'
 import { useAvatarKey } from '@/hooks/useAvatarKey'
@@ -67,7 +67,7 @@ export function AddressValue({ address, isYou }: { address?: string; isYou?: boo
 export function PrivateAddressValue({ address }: { address: string }) {
   return (
     <span className="inline-flex items-center gap-1.5">
-      <Cy1Avatar address={address} size={14} />
+      <PrivateAddressAvatar address={address} size={14} />
       <CopyValue value={address} display={shortAddress(address)} />
     </span>
   )

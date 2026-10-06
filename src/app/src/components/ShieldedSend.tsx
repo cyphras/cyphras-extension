@@ -3,7 +3,7 @@ import { ChevronLeft, ExternalLink, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Reveal } from '@/components/Collapse'
 import { ConfirmSheet } from '@/components/ConfirmSheet'
-import { Cy1Avatar } from '@/components/Cy1Avatar'
+import { PrivateAddressAvatar } from '@/components/PrivateAddressAvatar'
 import { AmountInput, QuickFillChips, SideCard } from '@/components/PairCard'
 import { AddressAvatar } from '@/components/AddressAvatar'
 import { RecipientRow } from '@/components/RecipientRow'
@@ -598,7 +598,7 @@ export default function ShieldedSend({
   function privateAvatar(address: string) {
     return (
       <span className="flex h-10 w-10 shrink-0 items-center justify-center">
-        <Cy1Avatar address={address} size={32} />
+        <PrivateAddressAvatar address={address} size={32} />
       </span>
     )
   }
@@ -846,7 +846,7 @@ export default function ShieldedSend({
   function privateBalanceValue() {
     return (
       <span className="inline-flex items-center gap-1.5">
-        {status && <Cy1Avatar address={status.address} size={14} />}
+        {status && <PrivateAddressAvatar address={status.address} size={14} />}
         Your private balance
       </span>
     )

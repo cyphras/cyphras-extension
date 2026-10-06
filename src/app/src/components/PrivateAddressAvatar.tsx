@@ -1,10 +1,11 @@
 import { useMemo } from 'react'
 
-// cy1 identicon: 7x7 horizontally-symmetric grid, byte[0] picks the color and the rest drive the mirrored pattern
+// A private address's identicon: 7x7 horizontally-symmetric grid, byte[0] picks the color and the
+// rest drive the mirrored pattern
 const GRID = 7
 const HALF = Math.ceil(GRID / 2)
 
-// FNV-1a seed expanded with xorshift into n deterministic bytes for one cy1 string.
+// FNV-1a seed expanded with xorshift into n deterministic bytes for one address string.
 function bytesFromString(s: string, n: number): Uint8Array {
   let h = 2166136261 >>> 0
   for (let i = 0; i < s.length; i++) {
@@ -72,7 +73,7 @@ function getBit(position: number, bytes: Uint8Array): boolean {
   return (bytes[Math.floor(position / 8)] & (1 << (7 - (position % 8)))) !== 0
 }
 
-export function Cy1Avatar({
+export function PrivateAddressAvatar({
   address,
   size = 22,
   className = '',
