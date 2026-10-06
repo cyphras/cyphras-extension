@@ -1,7 +1,7 @@
 <div align="center">
   <img src="src/app/public/icon.svg" width="88" alt="Cyphras">
   <h1>Cyphras</h1>
-  <p>A non-custodial browser wallet for multiple blockchain networks.</p>
+  <p>A non-custodial browser wallet for Stellar, Ethereum and Bitcoin.</p>
 
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/manifest-v3-orange.svg" alt="Manifest v3">
@@ -10,30 +10,30 @@
 
 ---
 
-Manage accounts, sign transactions, and connect to decentralized applications, all from your browser.
+Hold, send, swap and bridge from one recovery phrase, and connect to Stellar dApps, all from your browser.
 
 ## Features
 
-- Private mode (testnet preview): shield XLM into a private balance, send and receive it through a private address (`cyt1...`), and unshield to any Stellar address, with zero-knowledge proofs made on your device
-- Create and import wallets using a recovery phrase or secret key
-- Multiple accounts with HD key derivation (BIP44)
-- Connect to dApps with a single approval flow
-- Sign transactions, messages, and authorization entries
-- Add custom assets and tokens
-- Multiple network support, including custom RPC endpoints
-- Automatic session lock with configurable timeout
-- Runs as a popup or side panel
+- Stellar, Ethereum and Bitcoin (native SegWit) accounts from one recovery phrase, with every balance and its history in one list
+- Swap on the Stellar DEX, with a warning before a swap loses value
+- Bridge native USDC between Ethereum and Stellar with Circle CCTP
+- Private mode (testnet preview): shield XLM into a private balance, pay private addresses (`cyt1...`) and unshield to any Stellar address, with zero-knowledge proofs made on your device. Deposits are screened before they enter the pool, and a payment that may still land is never sent twice
+- Connect to Stellar dApps with one approval flow, and sign transactions, messages (SEP-53) and authorization entries
+- Create or import wallets with a recovery phrase or a Stellar secret key, with several wallets and accounts side by side
+- Custom assets and tokens, and custom Stellar networks and RPC endpoints
+- Automatic lock with a configurable timeout
+- Runs as a popup, in the side panel or in a tab
 
 ## Development
 
-**Requirements:** Node.js 20+
+**Requirements:** Node.js 20.19+ or 22.13+ (CI uses 24)
 
 ```bash
-npm install
-bash build.sh
+npm ci
+npm run build
 ```
 
-Load the `dist/` folder as an unpacked extension in Chrome (`chrome://extensions` > Load unpacked).
+`npm test` runs the unit tests. Load the `dist/` folder as an unpacked extension in Chrome (`chrome://extensions` > Load unpacked).
 
 ## SDK
 
