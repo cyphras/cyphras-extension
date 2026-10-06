@@ -29,7 +29,7 @@ export function Layout({
     )
     if (variant === 'centered') {
       return (
-        <div className="flex min-h-screen w-full flex-col items-center bg-background">
+        <div className="private-backdrop flex min-h-screen w-full flex-col items-center bg-background">
           <div className="w-full max-w-md flex flex-1 flex-col items-center justify-center px-6 py-16">
             {children}
           </div>
@@ -38,9 +38,9 @@ export function Layout({
       )
     }
     return (
-      <div className="flex min-h-screen w-full flex-col items-center bg-background">
+      <div className="private-backdrop flex min-h-screen w-full flex-col items-center bg-background">
         {navbar && (
-          <div className="sticky top-0 z-20 w-full max-w-md px-6 pt-5 pb-3 bg-background/95 backdrop-blur-sm border-b border-border/40">
+          <div className="private-frosted sticky top-0 z-20 w-full max-w-md px-6 pt-5 pb-3 bg-background/95 backdrop-blur-sm border-b border-border/40">
             {navbar}
           </div>
         )}
@@ -52,7 +52,7 @@ export function Layout({
 
   if (variant === 'centered') {
     return (
-      <div className="h-full flex flex-col bg-background">
+      <div className="private-backdrop h-full flex flex-col bg-background">
         {navbar && (
           <div className="shrink-0 px-5 pt-5 pb-3 bg-background border-b border-border/40">
             {navbar}
@@ -67,7 +67,7 @@ export function Layout({
   }
 
   return (
-    <div className="relative h-full flex flex-col bg-background">
+    <div className="private-backdrop relative h-full flex flex-col bg-background">
       {navbar && (
         <div className="shrink-0 px-5 pt-5 pb-3 bg-background border-b border-border/40">
           {navbar}

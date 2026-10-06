@@ -8,6 +8,7 @@ const STORAGE_KEY_ENCRYPTED_MNEMONIC = 'cyphras_encrypted_mnemonic' // primary H
 const STORAGE_KEY_ACCOUNTS = 'cyphras_accounts' // accounts array + activePublicKey
 const STORAGE_KEY_HD_WALLETS = 'cyphras_hd_wallets' // extra HD wallets (beyond primary)
 const STORAGE_KEY_IMPORTED_KEYS = 'cyphras_imported_keys' // imported secret keys
+export const SESSION_KEY = 'cyphras_session_pubkey' // unlocked account; absent while locked
 const SESSION_SECRET_KEY = 'cyphras_session_secret'
 const SESSION_MNEMONIC_KEY = 'cyphras_session_mnemonic' // primary mnemonic while unlocked
 const SESSION_EXTRA_HD_MNEMONICS_KEY = 'cyphras_session_extra_hd' // extra HD mnemonics while unlocked
@@ -472,6 +473,11 @@ export async function saveAccountsStore(store: AccountsStore): Promise<void> {
 
 export async function storeSessionMnemonic(mnemonic: string): Promise<void> {
   await chrome.storage.session?.set({ [SESSION_MNEMONIC_KEY]: mnemonic })
+}
+
+export async function getSessionPublicKey(): Promise<string | null> {
+  const result = await chrome.storage.session?.get(SESSION_KEY)
+  return (result?.[SESSION_KEY] as string | undefined) ?? null
 }
 
 export async function getSessionMnemonic(): Promise<string | null> {

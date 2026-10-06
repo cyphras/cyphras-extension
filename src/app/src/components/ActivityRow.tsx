@@ -11,7 +11,15 @@ function StatusPill({ status, label }: { status: RowView['status']; label?: stri
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
         <span className="h-1 w-1 rounded-full bg-destructive" />
-        Failed
+        {label ?? 'Failed'}
+      </span>
+    )
+  }
+  if (status === 'attention') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+        <span className="h-1 w-1 rounded-full bg-amber-500" />
+        {label}
       </span>
     )
   }
@@ -30,23 +38,29 @@ export function ActivityRow({
   chainIcon,
   fiat,
   counterparty,
+  counterpartyText,
   trailing,
+  className,
   onClick,
 }: {
   view: RowView
+  // Empty for a row whose time is not known.
   timestamp: string
   icon?: string
   chainIcon?: string
   fiat: string | null
   counterparty?: string
+  // Said as given in place of "From"/"To" and the shortened address, e.g. "From Private pool".
+  counterpartyText?: string
   trailing?: string
+  className?: string
   onClick: () => void
 }) {
   const counterpartyLabel =
     view.direction === 'in' ? 'From' : view.direction === 'out' ? 'To' : 'With'
   return (
     <button
-      className="group cursor-pointer flex w-full items-center gap-3 rounded-xl bg-card px-4 py-3 text-left transition-colors hover:bg-muted/60"
+      className={`group cursor-pointer flex w-full items-center gap-3 rounded-xl bg-card px-4 py-3 text-left transition-colors hover:bg-muted/60 ${className ?? ''}`}
       onClick={onClick}
     >
       <AssetIcon code={view.code} icon={icon} chainIcons={[chainIcon]} />
@@ -54,12 +68,19 @@ export function ActivityRow({
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <p className="truncate text-sm font-medium text-foreground">{view.label}</p>
         <p className="truncate text-xs text-muted-foreground">
-          {formatTime(timestamp)}
-          {counterparty && (
+          {timestamp && formatTime(timestamp)}
+          {counterpartyText ? (
             <>
-              {'  '}
-              {counterpartyLabel} {shortAddress(counterparty)}
+              {timestamp && '  '}
+              {counterpartyText}
             </>
+          ) : (
+            counterparty && (
+              <>
+                {'  '}
+                {counterpartyLabel} {shortAddress(counterparty)}
+              </>
+            )
           )}
         </p>
       </div>

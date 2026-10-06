@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, type ComponentType } from 'react'
-import { VerifiedBadge } from '@/components/token/VerifiedBadge'
 import { NumberTicker } from '@/components/NumberTicker'
 import { PixelMask, PixelProgress } from '@/components/Pixel'
 import { statusMeta, bridgeSteps } from '@/lib/cctp'
@@ -11,10 +10,9 @@ import { useBalances, groupBalances } from '@/hooks/useBalances'
 import { useHiddenAssets } from '@/hooks/useHiddenAssets'
 import { usePullToPrivate } from '@/hooks/usePullToPrivate'
 import { useShieldedAvailable } from '@/hooks/useShieldedAvailable'
-import { useShieldedBalances } from '@/hooks/useShieldedBalances'
+import { useShieldedStatus } from '@/hooks/useShieldedStatus'
 import { SectionMenu } from '@/components/SectionMenu'
-import { AssetIcon } from '@/components/token/AssetIcon'
-import { TokenRow } from '@/components/token/TokenRow'
+import { TokenRow, TokenRowSkeleton } from '@/components/token/TokenRow'
 import { SuggestedAssets } from '@/components/SuggestedAssets'
 import { useCctpJobs } from '@/hooks/useCctpJobs'
 import { usePreferences } from '@/context/PreferencesContext'
@@ -26,7 +24,12 @@ import TokenDetailSheet from '@/components/TokenDetailSheet'
 import ShieldedReceive from '@/components/ShieldedReceive'
 import ShieldedSend, { type ShieldedAction } from '@/components/ShieldedSend'
 import ShieldedTokenPicker, { type ShieldedTokenRow } from '@/components/ShieldedTokenPicker'
-import ShieldedTokenSheet from '@/components/ShieldedTokenSheet'
+import { PrivateTokenPage } from '@/components/PrivateTokenPage'
+import ShieldedActivity from '@/components/ShieldedActivity'
+import { PrivateHistory } from '@/components/PrivateHistory'
+import { PrivateTxSheet } from '@/components/PrivateTxSheet'
+import { usePrivateHistory } from '@/hooks/usePrivateHistory'
+import { ShieldedStartFresh } from '@/components/ShieldedStartFresh'
 import { PrivateModeHint } from '@/components/PrivateModeHint'
 import { WhatsNewSheet } from '@/components/WhatsNewSheet'
 import { AnnouncementCarousel } from '@/components/AnnouncementCarousel'
@@ -39,6 +42,7 @@ import {
 import { getIconMap } from '@/hooks/useBalances'
 import { getChainIcons, getChainNames } from '@/lib/chainInfo'
 import { LEGACY_NETWORK_TO_CHAIN, chainById } from '@constants/chains'
+import { SERVICE_TYPES } from '@constants/services'
 import {
   NetworkFilterButton,
   NetworkFilterSheet,
@@ -46,9 +50,14 @@ import {
   type NetworkFilterOption,
 } from '@/components/NetworkFilterSheet'
 import { Alert } from '@/components/Alert'
+import { Reveal } from '@/components/Collapse'
+import { PrivateBreakdown, PrivatePartSheet } from '@/components/PrivateBalance'
 import type { AssetBalance } from '@/hooks/useBalances'
-import { SERVICE_TYPES } from '@constants/services'
-import type { ServiceResponse } from '@ext-types/index'
+import type { ShieldedPlanView } from '@ext-types/index'
+import { formatUnits } from '@/lib/amount'
+import { formatFiat } from '@/lib/activity'
+import { privateEntries, type PrivateEntry } from '@/lib/privateHistory'
+import { PART_LABELS, privateBalance, type BalancePartKey } from '@/lib/privateBalance'
 import {
   RefreshCw,
   Send,
@@ -96,22 +105,7 @@ function BalanceSkeleton() {
 
       <div className="flex flex-col gap-2">
         {[1, 2, 3].map((i) => (
-          <div key={i} className="flex items-center justify-between rounded-xl bg-card px-4 py-3">
-            <div className="flex items-center gap-3">
-              <div className="relative">
-                <Skeleton className="h-10 w-10 rounded-full" />
-                <span className="absolute -bottom-1 -right-0.5 h-[21px] w-[21px] rounded-full border-[1.5px] border-card bg-muted" />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Skeleton className="h-3.5 w-14 rounded" />
-                <Skeleton className="h-3 w-20 rounded" />
-              </div>
-            </div>
-            <div className="flex flex-col items-end gap-1.5">
-              <Skeleton className="h-3.5 w-16 rounded" />
-              <Skeleton className="h-3 w-24 rounded" />
-            </div>
-          </div>
+          <TokenRowSkeleton key={i} />
         ))}
       </div>
     </div>
@@ -215,20 +209,29 @@ export default function Home() {
   const selectedPool =
     shieldedPools.find((p) => p.poolId === selectedPoolId) ?? shieldedPools[0] ?? null
   const poolId = selectedPool?.poolId ?? 'xlm'
-  // Scan up front while private mode is merely available so entering it is instant.
+  // Sync up front while private mode is merely available so entering it is instant.
   const {
     byPool: shieldedByPool,
     privateTotalUsd,
     privateChangeUsd,
     privateChangePct,
+    syncing: shieldedSyncing,
+    error: shieldedRequestError,
     refresh: refreshShielded,
-  } = useShieldedBalances(shieldedAvailable, activePublicKey, activeNetwork.id, shieldedPools)
-  const shieldedBalance = shieldedByPool[poolId]?.balance ?? null
-  const shieldedMaxSpendable = shieldedByPool[poolId]?.maxSpendable ?? null
-  const shieldedNoteCount = shieldedByPool[poolId]?.noteCount ?? null
+    reload: reloadShielded,
+  } = useShieldedStatus(shieldedAvailable, active, activePublicKey, activeNetwork.id, shieldedPools)
+  const shieldedStatus = shieldedByPool[poolId]?.status ?? null
+  const shieldedModel = shieldedStatus ? privateBalance(shieldedStatus) : null
+  const [openPart, setOpenPart] = useState<BalancePartKey | null>(null)
+  const privateHistory = usePrivateHistory(active && shieldedAvailable, poolId, shieldedStatus)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  // By its ID, so the sheet follows the entry as syncs move it on.
+  const [entryId, setEntryId] = useState<string | null>(null)
   const [shieldedReceiveOpen, setShieldedReceiveOpen] = useState(false)
   const [shieldedAction, setShieldedAction] = useState<ShieldedAction | null>(null)
-  // Picker drives send/shield/unshield; tappedPoolId opens the per-token sheet.
+  const [retryPlan, setRetryPlan] = useState<ShieldedPlanView | null>(null)
+  // The picker switches the pool of the open send, shield or unshield; tappedPoolId opens the
+  // token page.
   const [pickerAction, setPickerAction] = useState<ShieldedAction | null>(null)
   const [tappedPoolId, setTappedPoolId] = useState<string | null>(null)
   const [shieldedIcons, setShieldedIcons] = useState<Map<string, string>>(new Map())
@@ -286,6 +289,8 @@ export default function Home() {
       setSelectedPoolId(shieldedPools[0]?.poolId ?? 'xlm')
       setPickerAction(null)
       setTappedPoolId(null)
+      setHistoryOpen(false)
+      setEntryId(null)
     }
   }, [active, shieldedPools])
 
@@ -333,8 +338,8 @@ export default function Home() {
   const cardRef = useRef<HTMLDivElement>(null)
   const shieldedMenuRef = useRef<HTMLDivElement>(null)
   const [shieldedMenuOpen, setShieldedMenuOpen] = useState(false)
-  const [copiedCy1, setCopiedCy1] = useState(false)
-  const [shieldedAddr, setShieldedAddr] = useState<string | null>(null)
+  const [copiedAddress, setCopiedAddress] = useState(false)
+  const shieldedAddr = shieldedStatus?.address ?? null
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -345,38 +350,6 @@ export default function Home() {
     if (shieldedMenuOpen) document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [shieldedMenuOpen])
-
-  // Prefetch the cy1 address so the kebab copy writes to the clipboard within the user gesture.
-  useEffect(() => {
-    if (!shieldedAvailable) {
-      setShieldedAddr(null)
-      return
-    }
-    let live = true
-    chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_RECEIVE_ADDRESS },
-      (r: ServiceResponse) => {
-        if (!live || chrome.runtime.lastError || r?.error) return
-        if (r?.shieldedAddress) setShieldedAddr(r.shieldedAddress)
-      }
-    )
-    return () => {
-      live = false
-    }
-  }, [shieldedAvailable, activePublicKey])
-
-  useEffect(() => {
-    // Repaint the private balance when a background spend or scan changes any shielded note store.
-    if (!shieldedAvailable || !active) return
-    const onChanged = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
-      if (area !== 'local') return
-      if (Object.keys(changes).some((k) => k.startsWith('cyphras_shielded_notes_'))) {
-        refreshShielded()
-      }
-    }
-    chrome.storage.onChanged.addListener(onChanged)
-    return () => chrome.storage.onChanged.removeListener(onChanged)
-  }, [shieldedAvailable, active, refreshShielded])
 
   useEffect(() => {
     // Same issuer-icon source as the public list so private surfaces show the real logo.
@@ -401,8 +374,11 @@ export default function Home() {
     shieldedScopeGuard.current = scope
     setShieldedReceiveOpen(false)
     setShieldedAction(null)
+    setRetryPlan(null)
     setPickerAction(null)
     setTappedPoolId(null)
+    setHistoryOpen(false)
+    setEntryId(null)
     setSelectedPoolId(shieldedPools[0]?.poolId ?? 'xlm')
     exit()
   }, [activeNetwork.id, activePublicKey, shieldedPools, exit])
@@ -447,18 +423,27 @@ export default function Home() {
 
   const shieldedDecimals = selectedPool?.decimals ?? 7
   const shieldedLabel = selectedPool?.label ?? 'XLM'
-  // Unshield to a classic asset needs a trustline, proven by a matching balance entry.
-  const shieldedHasTrustline =
-    !selectedPool ||
-    selectedPool.native ||
-    balances.some((b) => b.code === selectedPool.assetCode && b.issuer === selectedPool.assetIssuer)
-
-  function stroopsToDisplay(stroops: string, decimals: number): string {
-    const base = 10n ** BigInt(decimals)
-    const v = BigInt(stroops)
-    const frac = (v % base).toString().padStart(decimals, '0').replace(/0+$/, '')
-    return frac ? `${v / base}.${frac}` : (v / base).toString()
+  const shieldedCode = selectedPool?.native ? 'XLM' : (selectedPool?.assetCode ?? shieldedLabel)
+  const shieldedUnit = (units: bigint | string) =>
+    `${formatBalance(formatUnits(units, shieldedDecimals))} ${shieldedCode}`
+  const entries: PrivateEntry[] | null =
+    privateHistory.items && shieldedStatus
+      ? privateEntries(
+          privateHistory.items,
+          shieldedStatus,
+          shieldedCode,
+          shieldedDecimals,
+          shieldedUnit
+        )
+      : null
+  const selectedEntry = entries?.find((e) => e.item.id === entryId) ?? null
+  // Valued like the rows of public history.
+  const entryFiat = (entry: PrivateEntry): string | null => {
+    const price = shieldedByPool[poolId]?.usdPrice ?? null
+    const n = parseFloat(entry.view.amount?.value ?? '')
+    return price !== null && Number.isFinite(n) ? formatFiat(n * price) : null
   }
+  const shieldedIcon = selectedPool ? poolIcon(selectedPool) : undefined
 
   // Native pools use the inline XLM glyph; others reuse the public list's issuer icon.
   function poolIcon(pool: (typeof shieldedPools)[number]): string | undefined {
@@ -466,15 +451,27 @@ export default function Home() {
     return pool.icon ?? shieldedIcons.get(`${pool.assetCode}:${pool.assetIssuer}`)
   }
 
-  // Per-pool rows for the list and send/unshield pickers, built from the shielded scan.
+  // Per-pool rows for the list and send/unshield pickers: the whole private balance, with the parts
+  // of it still in flight beside it.
   const shieldedTokenRows: ShieldedTokenRow[] = shieldedPools.map((pool) => {
     const pb = shieldedByPool[pool.poolId]
     const code = pool.native ? 'XLM' : (pool.assetCode ?? pool.label)
+    const model = pb?.status ? privateBalance(pb.status) : null
+    const inFlight = model?.parts.filter((p) => p.key !== 'available') ?? []
     return {
       poolId: pool.poolId,
       code,
       label: pool.label,
-      balance: pb?.balance != null ? stroopsToDisplay(pb.balance, pool.decimals) : '0',
+      balance: model ? formatBalance(formatUnits(model.total, pool.decimals)) : null,
+      detail:
+        inFlight.length > 0
+          ? inFlight
+              .map(
+                (p) =>
+                  `${formatBalance(formatUnits(p.amount, pool.decimals))} ${PART_LABELS[p.key].toLowerCase()}`
+              )
+              .join(' / ')
+          : undefined,
       usdValue: pb?.usdValue ?? null,
       usdPrice: pb?.usdPrice ?? null,
       icon: poolIcon(pool),
@@ -507,14 +504,13 @@ export default function Home() {
   function copyPrivateAddress() {
     if (!shieldedAddr) return
     navigator.clipboard.writeText(shieldedAddr)
-    setCopiedCy1(true)
-    setTimeout(() => setCopiedCy1(false), 2000)
+    setCopiedAddress(true)
+    setTimeout(() => setCopiedAddress(false), 2000)
   }
 
-  // Select the pool, then open the shielded send form for the chosen action.
+  // Select the pool, then open the page for the chosen action.
   function openShieldedForPool(targetPoolId: string, nextAction: ShieldedAction) {
     setSelectedPoolId(targetPoolId)
-    // Close the picker/tap-sheet as the form opens so the chip's change-asset reopen is clean.
     setPickerAction(null)
     setTappedPoolId(null)
     setShieldedAction(nextAction)
@@ -559,10 +555,27 @@ export default function Home() {
       : dailyChangePct
   const cardChangeMasked = inPrivateCard ? hideBalance : masked
 
+  // Why the private balance may be stale or blocked, most serious first.
+  const shieldedNotice =
+    shieldedStatus?.services === 'mismatch'
+      ? 'A private pool service does not match this wallet, so shields and payments are paused.'
+      : (shieldedStatus?.syncError?.message ?? shieldedRequestError?.message)
+  // A fresh start of the pool's state, which stays until dismissed: payments that only the old
+  // records followed may still land.
+  const shieldedReset = shieldedStatus?.stateReset ?? null
+  const dismissShieldedReset = () =>
+    chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_DISMISS_RESET, poolId }, () =>
+      reloadShielded()
+    )
+
   return (
     <>
       <Layout
-        navbar={<WalletNavbar />}
+        navbar={
+          <WalletNavbar
+            onHistory={active && shieldedAvailable ? () => setHistoryOpen(true) : undefined}
+          />
+        }
         bottomBlur={active}
         bottomBlurVisible={exitHover || swiping}
       >
@@ -667,6 +680,18 @@ export default function Home() {
                       <span className="invisible">0</span>
                     )}
                   </p>
+                  <Reveal show={inPrivateCard && !!shieldedModel && shieldedModel.parts.length > 0}>
+                    {shieldedModel && (
+                      <PrivateBreakdown
+                        balance={shieldedModel}
+                        format={(units) =>
+                          `${formatBalance(formatUnits(units, shieldedDecimals))} ${shieldedCode}`
+                        }
+                        masked={hideBalance}
+                        onOpen={setOpenPart}
+                      />
+                    )}
+                  </Reveal>
                 </div>
                 {createPortal(<div className="peel-flap" />, document.body)}
                 <div
@@ -692,17 +717,17 @@ export default function Home() {
                     <ActionButton
                       icon={Send}
                       label="Send"
-                      onClick={() => setPickerAction('send')}
+                      onClick={() => openShieldedForPool(poolId, 'send')}
                     />
                     <ActionButton
                       icon={ArrowDownToLine}
                       label="Shield"
-                      onClick={() => setPickerAction('shield')}
+                      onClick={() => openShieldedForPool(poolId, 'shield')}
                     />
                     <ActionButton
                       icon={ArrowUpFromLine}
                       label="Unshield"
-                      onClick={() => setPickerAction('unshield')}
+                      onClick={() => openShieldedForPool(poolId, 'unshield')}
                     />
                   </div>
 
@@ -737,58 +762,88 @@ export default function Home() {
                               className="cursor-pointer flex w-full items-center gap-2 px-3 py-2.5 text-sm text-foreground hover:bg-muted transition-colors disabled:cursor-default disabled:opacity-50"
                               onClick={copyPrivateAddress}
                             >
-                              {copiedCy1 ? (
+                              {copiedAddress ? (
                                 <Check size={14} className="text-muted-foreground" />
                               ) : (
                                 <Copy size={14} className="text-muted-foreground" />
                               )}
-                              {copiedCy1 ? 'Copied!' : 'Copy private address'}
+                              {copiedAddress ? 'Copied!' : 'Copy private address'}
                             </button>
                           </div>
                         )}
                       </div>
                     </div>
-                    {shieldedTokenRows.map((t) => (
-                      <button
+                    {shieldedTokenRows.map((t, i) => (
+                      <div
                         key={t.poolId}
-                        onClick={() => setTappedPoolId(t.poolId)}
-                        className="group cursor-pointer flex w-full items-center justify-between rounded-xl bg-card px-4 py-3 hover:bg-muted/60 transition-colors text-left"
+                        className="row-enter"
+                        style={{ animationDelay: `${Math.min(i, 8) * 35}ms` }}
                       >
-                        <div className="flex items-center gap-3">
-                          <AssetIcon
-                            icon={t.icon}
+                        {/* An unknown balance is never shown as 0: it loads, or says it could not. */}
+                        {t.balance === null && shieldedRequestError?.poolId !== t.poolId ? (
+                          <TokenRowSkeleton />
+                        ) : (
+                          <TokenRow
                             code={t.code}
+                            verified
+                            icon={t.icon}
                             chainIcons={[chainIcons.get(stellarChainId)]}
+                            masked={hideBalance}
+                            balanceText={t.balance ?? '-'}
+                            detail={t.detail}
+                            valueText={t.usdValue !== null ? formatSmall(t.usdValue) : null}
+                            priceText={t.usdPrice != null ? formatPrice(t.usdPrice) : null}
+                            onClick={() => {
+                              setSelectedPoolId(t.poolId)
+                              setTappedPoolId(t.poolId)
+                            }}
                           />
-                          <div className="flex flex-col">
-                            <p className="flex items-center gap-1 text-sm font-medium text-foreground">
-                              {t.code}
-                              <VerifiedBadge />
-                            </p>
-                            <p className="text-xs text-muted-foreground tracking-wider">
-                              {hideBalance ? <PixelMask count={4} size="sm" /> : t.balance}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          {hideBalance ? (
-                            <p className="text-sm text-foreground">
-                              <PixelMask count={4} size="sm" />
-                            </p>
-                          ) : t.usdValue !== null ? (
-                            <p className="text-sm text-foreground">{formatSmall(t.usdValue)}</p>
-                          ) : (
-                            <p className="text-xs text-muted-foreground">-</p>
-                          )}
-                          {!hideBalance && t.usdPrice != null && (
-                            <p className="text-xs text-muted-foreground">
-                              {formatPrice(t.usdPrice)}
-                            </p>
-                          )}
-                        </div>
-                      </button>
+                        )}
+                      </div>
                     ))}
                   </div>
+
+                  {shieldedReset && (
+                    <Alert
+                      message={`${new Date(shieldedReset.at).toLocaleString([], {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}: ${shieldedReset.warning}`}
+                      onDismiss={dismissShieldedReset}
+                    />
+                  )}
+
+                  {shieldedRequestError?.code === 'state_unassigned' ? (
+                    <ShieldedStartFresh
+                      poolId={shieldedRequestError.poolId}
+                      message={shieldedRequestError.message}
+                      onStarted={refreshShielded}
+                    />
+                  ) : (
+                    shieldedNotice && (
+                      <Alert
+                        message={shieldedNotice}
+                        onRetry={refreshShielded}
+                        retrying={shieldedSyncing}
+                      />
+                    )
+                  )}
+
+                  {entries && (
+                    <ShieldedActivity
+                      entries={entries}
+                      poolId={poolId}
+                      icon={shieldedIcon}
+                      chainIcon={chainIcons.get(stellarChainId)}
+                      fiatOf={entryFiat}
+                      onSelect={(entry) => setEntryId(entry.item.id)}
+                      onRetry={(plan) => setRetryPlan(plan)}
+                      onChanged={refreshShielded}
+                      onSeeAll={() => setHistoryOpen(true)}
+                    />
+                  )}
                 </>
               )}
 
@@ -1095,34 +1150,109 @@ export default function Home() {
 
       <ShieldedReceive open={shieldedReceiveOpen} onClose={() => setShieldedReceiveOpen(false)} />
 
-      {pickerAction && (
-        <ShieldedTokenPicker
-          action={pickerAction}
-          tokens={pickerRows}
-          onSelect={(picked) => openShieldedForPool(picked, pickerAction)}
-          onClose={() => setPickerAction(null)}
-        />
-      )}
+      <PrivatePartSheet
+        part={openPart}
+        balance={shieldedModel}
+        status={shieldedStatus}
+        unit={shieldedUnit}
+        onClose={() => setOpenPart(null)}
+        onItem={(item) => {
+          setOpenPart(null)
+          const entry = entries?.find((e) =>
+            item.kind === 'plan'
+              ? e.item.planId === item.plan.planId
+              : e.item.kind === 'shield' &&
+                (item.deposit.txHash !== null
+                  ? e.item.depositTx === item.deposit.txHash
+                  : item.deposit.id !== null && e.item.depositId === item.deposit.id)
+          )
+          if (entry) setEntryId(entry.item.id)
+        }}
+      />
 
-      <ShieldedTokenSheet
+      <PrivateTokenPage
         token={tappedToken}
+        balance={shieldedModel}
+        address={shieldedAddr}
+        entries={entries}
+        format={(units) => formatBalance(formatUnits(units, shieldedDecimals))}
+        fiat={(units) => {
+          const price = shieldedByPool[poolId]?.usdPrice ?? null
+          return price !== null
+            ? formatSmall(Number(formatUnits(units, shieldedDecimals)) * price)
+            : null
+        }}
+        chainIcon={chainIcons.get(stellarChainId)}
+        fiatOf={entryFiat}
+        onOpenPart={setOpenPart}
+        onSelectEntry={(entry) => setEntryId(entry.item.id)}
+        onHistory={() => setHistoryOpen(true)}
         onSend={(picked) => openShieldedForPool(picked, 'send')}
         onReceive={() => setShieldedReceiveOpen(true)}
         onClose={() => setTappedPoolId(null)}
       />
 
+      <PrivateHistory
+        open={historyOpen}
+        entries={entries}
+        loading={privateHistory.loading || (!shieldedStatus && shieldedSyncing)}
+        // History is built on the status, so a status that could not be read is its error too.
+        error={
+          privateHistory.error ?? (shieldedStatus ? null : (shieldedRequestError?.message ?? null))
+        }
+        icon={shieldedIcon}
+        chainIcon={chainIcons.get(stellarChainId)}
+        fiatOf={entryFiat}
+        onSelect={(entry) => setEntryId(entry.item.id)}
+        onRefresh={() => {
+          refreshShielded()
+          privateHistory.refresh()
+        }}
+        onShield={() => {
+          setHistoryOpen(false)
+          openShieldedForPool(poolId, 'shield')
+        }}
+        onClose={() => setHistoryOpen(false)}
+      />
+
+      <PrivateTxSheet
+        entry={selectedEntry}
+        networkId={activeNetwork.id}
+        horizonUrl={activeNetwork.horizonUrl}
+        accountPk={activePublicKey}
+        icon={shieldedIcon}
+        chainIcon={chainIcons.get(stellarChainId)}
+        fiat={selectedEntry ? entryFiat(selectedEntry) : null}
+        poolId={poolId}
+        onRetry={(plan) => {
+          setHistoryOpen(false)
+          setTappedPoolId(null)
+          setRetryPlan(plan)
+        }}
+        onChanged={refreshShielded}
+        onClose={() => setEntryId(null)}
+      />
+
+      {pickerAction && (
+        <ShieldedTokenPicker
+          tokens={pickerRows}
+          onSelect={setSelectedPoolId}
+          onClose={() => setPickerAction(null)}
+        />
+      )}
+
       <ShieldedSend
-        action={shieldedAction}
-        shieldedBalance={shieldedBalance}
-        maxSpendable={shieldedMaxSpendable}
-        noteCount={shieldedNoteCount}
+        action={retryPlan ? retryPlan.kind : shieldedAction}
+        retryPlan={retryPlan}
+        status={shieldedStatus}
         poolId={poolId}
         assetLabel={shieldedLabel}
         decimals={shieldedDecimals}
         assetCode={selectedPool?.assetCode}
-        assetIssuer={selectedPool?.assetIssuer}
         assetIcon={selectedPool ? poolIcon(selectedPool) : undefined}
         native={!!selectedPool?.native}
+        usdPrice={shieldedByPool[poolId]?.usdPrice ?? null}
+        accountPk={activePublicKey}
         publicBalance={
           // Pools are Stellar-only while `balances` spans every chain; match on the
           // Stellar chain so the native pool reads XLM, not an EVM native such as ETH.
@@ -1137,16 +1267,17 @@ export default function Home() {
           )?.balance ?? null
         }
         subentryCount={subentryCount}
-        hasTrustline={shieldedHasTrustline}
-        horizonUrl={activeNetwork.horizonUrl}
-        networkPassphrase={activeNetwork.passphrase}
-        onTrustlineAdded={refresh}
-        onChangeAsset={() => {
-          // Reopen the picker for the current action so the chip switches pools.
-          if (shieldedAction) setPickerAction(shieldedAction)
+        // The picker opens over the form, as on public Send, so what is typed stays.
+        onChangeAsset={() => setPickerAction(shieldedAction)}
+        onHistory={() => {
           setShieldedAction(null)
+          setRetryPlan(null)
+          setHistoryOpen(true)
         }}
-        onClose={() => setShieldedAction(null)}
+        onClose={() => {
+          setShieldedAction(null)
+          setRetryPlan(null)
+        }}
         onDone={refreshShielded}
       />
 

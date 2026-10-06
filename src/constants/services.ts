@@ -53,16 +53,30 @@ export const SERVICE_TYPES = {
   FETCH_BTC_ACTIVITY: 'FETCH_BTC_ACTIVITY',
   SIGN_AND_SUBMIT_EVM_PAYMENT: 'SIGN_AND_SUBMIT_EVM_PAYMENT',
   EVM_TX_STATUS: 'EVM_TX_STATUS',
-  // Shielded pool; poolId selects the per-pool vault/indexer/note store (optional for RECEIVE_ADDRESS)
+  // Private mode; poolId selects the pool (optional for RECEIVE_ADDRESS). Sends, unshields and
+  // retries return a review that SHIELDED_DECIDE answers.
   SHIELDED_RECEIVE_ADDRESS: 'SHIELDED_RECEIVE_ADDRESS',
-  SHIELDED_GET_BALANCE: 'SHIELDED_GET_BALANCE',
-  SHIELDED_SCAN: 'SHIELDED_SCAN',
-  SHIELDED_QUOTE: 'SHIELDED_QUOTE',
+  SHIELDED_STATUS: 'SHIELDED_STATUS',
+  SHIELDED_SYNC: 'SHIELDED_SYNC',
   SHIELDED_SHIELD: 'SHIELDED_SHIELD',
-  SHIELDED_SEND: 'SHIELDED_SEND',
-  SHIELDED_UNSHIELD: 'SHIELDED_UNSHIELD',
-  // One chunk of an auto-split spend, looped by the UI since the circuit spends at most two notes per tx
-  SHIELDED_SPEND_CHUNK: 'SHIELDED_SPEND_CHUNK',
+  SHIELDED_SPEND: 'SHIELDED_SPEND',
+  SHIELDED_RETRY: 'SHIELDED_RETRY',
+  SHIELDED_DECIDE: 'SHIELDED_DECIDE',
+  // The fee a send or unshield would pay now, and the most one payment can move with it.
+  SHIELDED_QUOTE: 'SHIELDED_QUOTE',
+  // The pool's deposit limits and admission delays, for the active account as the depositor.
+  SHIELDED_LIMITS: 'SHIELDED_LIMITS',
+  // The account's private history, newest first, with the times of its ledgers resolved.
+  SHIELDED_HISTORY: 'SHIELDED_HISTORY',
+  // Opens a pool on a fresh state when the account's stored one cannot be assigned to it, and
+  // dismisses the warning a fresh start leaves.
+  SHIELDED_START_FRESH: 'SHIELDED_START_FRESH',
+  SHIELDED_DISMISS_RESET: 'SHIELDED_DISMISS_RESET',
+  // The account takes back a pending deposit, claims a flagged deposit's refund, or claims a
+  // stranded payout; id is the deposit ID or the exit ID.
+  SHIELDED_CANCEL: 'SHIELDED_CANCEL',
+  SHIELDED_REFUND: 'SHIELDED_REFUND',
+  SHIELDED_CLAIM: 'SHIELDED_CLAIM',
   // CCTP cross-chain USDC bridge (Stellar <-> Ethereum)
   CCTP_QUOTE: 'CCTP_QUOTE',
   CCTP_START: 'CCTP_START',
@@ -75,6 +89,11 @@ export const SERVICE_TYPES = {
 } as const
 
 export type ServiceType = (typeof SERVICE_TYPES)[keyof typeof SERVICE_TYPES]
+
+// For each private payment it starts, the popup holds a port named this plus a token, and sends
+// the token with the request; once the port goes, the background declines that payment's reviews,
+// including one that arrives later.
+export const SHIELDED_REVIEW_PORT = 'shielded-review:'
 
 export const PASSWORD_RULES = {
   MIN_LENGTH: 8,

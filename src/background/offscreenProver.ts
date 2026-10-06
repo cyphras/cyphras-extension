@@ -1,10 +1,11 @@
 const OFFSCREEN_URL = 'offscreen.html'
 let creating: Promise<void> | null = null
 
-export async function ensureOffscreen(): Promise<void> {
+// True when the document had to be created, which then opens its prover port by itself.
+export async function ensureOffscreen(): Promise<boolean> {
   const has = (await chrome.offscreen.hasDocument?.()) ?? false
   if (has) {
-    return
+    return false
   }
   if (!creating) {
     creating = chrome.offscreen
@@ -18,4 +19,5 @@ export async function ensureOffscreen(): Promise<void> {
       })
   }
   await creating
+  return true
 }

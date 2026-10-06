@@ -1,163 +1,81 @@
-import * as snarkjs from 'snarkjs'
+import type { ArtifactName, Prover, TransactionWitness } from '@cyphras/private'
+import { snarkjsProver } from '@cyphras/private-prover-snarkjs'
 import {
-  SHIELDED_ARTIFACT_SHA256,
-  SHIELDED_ZKEY,
-  assertShieldedNetwork,
-} from '@shielded/circuitHashes.js'
-import { loadWallet, receiveAddress } from '@shielded/wallet.js'
-import { setCircuitBase } from '@shielded/poseidon2.js'
-import { buildShield, buildWithdraw, buildTransferTo, buildScan } from '@shielded/vault.js'
-import { serializeSpendPlan } from '@shielded/submit.js'
-import { deserializePool } from '@shielded/config.js'
-import type { SerializedPool } from '@shielded/config.js'
-import type { Note } from '@shielded/notes.js'
+  PROVER_PORT,
+  PROVER_WAKE,
+  fromWire,
+  toWire,
+  type ProveReply,
+  type ProveRequest,
+} from '@bg/shielded/wire'
 
-// snarkjs proving is too heavy for the ephemeral service worker, so it runs in this offscreen document.
-const SHIELDED_WASM_KEY = 'circuits/transaction.wasm'
+// A prover per set of package files. Each loads the wasm and zkey itself and keeps the ones that
+// matched the pins of a proof; a load that failed is tried again for the next.
+const provers = new Map<string, Prover>()
 
-let shieldedArtifacts: { wasm: Uint8Array; zkey: Uint8Array } | null = null
-
-// Scan/address needs only the Poseidon wasms, not the 30MB zkey.
-let scanPoseidonVerified = false
-
-// Run one shielded op at a time so concurrent requests never load the 30MB zkey or prove in parallel.
-let proveQueue: Promise<unknown> = Promise.resolve()
-function withProveLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = proveQueue.then(fn, fn)
-  proveQueue = run.then(
-    () => undefined,
-    () => undefined
-  )
-  return run
-}
-
-async function sha256Hex(buf: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', buf)
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-// Fail closed if an artifact does not match its pinned hash, so no tampered bytes reach a proof.
-async function verifyArtifact(key: string): Promise<ArrayBuffer> {
-  const want = SHIELDED_ARTIFACT_SHA256[key]
-  if (!want) throw new Error(`no pinned hash for ${key}`)
-  const buf = await (await fetch(chrome.runtime.getURL(key))).arrayBuffer()
-  const got = await sha256Hex(buf)
-  if (got !== want) {
-    throw new Error(`shielded artifact ${key} integrity check failed: got ${got} want ${want}`)
-  }
-  return buf
-}
-
-// Verify every bundled shielded artifact before any crypto so the proof binds to checked bytes.
-async function loadShieldedArtifacts(): Promise<{ wasm: Uint8Array; zkey: Uint8Array }> {
-  if (shieldedArtifacts) {
-    return shieldedArtifacts
-  }
-  const keys = Object.keys(SHIELDED_ARTIFACT_SHA256)
-  const buffers = await Promise.all(keys.map((k) => verifyArtifact(k)))
-  const verified = new Map(keys.map((k, i) => [k, buffers[i]]))
-  shieldedArtifacts = {
-    wasm: new Uint8Array(verified.get(SHIELDED_WASM_KEY)!),
-    zkey: new Uint8Array(verified.get(SHIELDED_ZKEY)!),
-  }
-  // poseidon2.ts / tree.ts fetch '/circuits/poseidon2_*.wasm' after this passes.
-  setCircuitBase('/circuits')
-  return shieldedArtifacts
-}
-
-// Verify just the Poseidon wasms, skipping the 30MB zkey, to keep the prefetch cheap.
-async function loadShieldedScanArtifacts(): Promise<void> {
-  if (scanPoseidonVerified) {
-    return
-  }
-  const keys = Object.keys(SHIELDED_ARTIFACT_SHA256).filter(
-    (k) => k !== SHIELDED_WASM_KEY && k !== SHIELDED_ZKEY
-  )
-  await Promise.all(keys.map((k) => verifyArtifact(k)))
-  scanPoseidonVerified = true
-  // poseidon2.ts / tree.ts fetch '/circuits/poseidon2_*.wasm' after this passes.
-  setCircuitBase('/circuits')
-}
-
-interface ShieldedRequest {
-  op: 'address' | 'scan' | 'shield' | 'send' | 'unshield'
-  network: string
-  mnemonic: string
-  account: number
-  pool: SerializedPool
-  amount?: string
-  recipientCy1?: string
-  notes?: Note[]
-  knownCommitments?: string[]
-}
-
-// Build and prove a shielded op with the integrity-checked buffers; no storage or submit here.
-async function runShielded(req: ShieldedRequest): Promise<unknown> {
-  assertShieldedNetwork(req.network)
-  const wallet = await loadWallet(req.mnemonic, req.account)
-  const pool = deserializePool(req.pool)
-
-  // Scan/address load only the verified Poseidon wasms, never the 30MB zkey.
-  if (req.op === 'address') {
-    await loadShieldedScanArtifacts()
-    return await receiveAddress(wallet)
-  }
-  if (req.op === 'scan') {
-    await loadShieldedScanArtifacts()
-    return await buildScan(wallet, pool, req.knownCommitments ?? [])
-  }
-
-  // Prove ops load + verify the full transaction.wasm + zkey before proving.
-  const { wasm, zkey } = await loadShieldedArtifacts()
-  // The proof binds to the integrity-checked buffers, never the raw '/circuits' paths.
-  const prove = (txInput: Record<string, unknown>) => snarkjs.groth16.fullProve(txInput, wasm, zkey)
-
-  if (req.op === 'shield') {
-    if (!req.amount) throw new Error('shield requires amount')
-    const plan = await buildShield(wallet, BigInt(req.amount), pool, { prove })
-    return serializeSpendPlan(plan)
-  }
-  if (req.op === 'unshield') {
-    if (!req.amount || !req.notes) throw new Error('unshield requires amount and notes')
-    const plan = await buildWithdraw(wallet, req.notes, BigInt(req.amount), pool, {
-      relay: true,
-      prove,
+function proverFor(paths: Readonly<Record<ArtifactName, string>>): Prover {
+  const key = `${paths.wasm}|${paths.zkey}`
+  let prover = provers.get(key)
+  if (!prover) {
+    prover = snarkjsProver({
+      artifacts: {
+        async load(name) {
+          const res = await fetch(chrome.runtime.getURL(paths[name]))
+          return new Uint8Array(await res.arrayBuffer())
+        },
+      },
+      // Extension pages may not start blob: workers, so snarkjs proves on this document's thread.
+      singleThread: true,
     })
-    return serializeSpendPlan(plan)
+    provers.set(key, prover)
   }
-  if (!req.amount || !req.notes || !req.recipientCy1) {
-    throw new Error('send requires amount, notes, and recipient')
-  }
-  const plan = await buildTransferTo(
-    wallet,
-    req.notes,
-    BigInt(req.amount),
-    req.recipientCy1,
-    pool,
-    { prove }
-  )
-  return serializeSpendPlan(plan)
+  return prover
 }
 
-// Only the service worker (no sender.tab); keeps the proving oracle off-limits to any page.
-function fromServiceWorker(sender: chrome.runtime.MessageSender): boolean {
-  return sender.id === chrome.runtime.id && !sender.tab
+// One proof at a time: proving takes the whole thread and most of the memory it can get.
+let queue: Promise<unknown> = Promise.resolve()
+
+async function prove(req: ProveRequest): Promise<ProveReply> {
+  try {
+    const witness = fromWire(req.witness) as TransactionWitness
+    const proof = await proverFor(req.paths).prove(witness, req.circuit)
+    return { id: req.id, ok: true, proof: toWire(proof) }
+  } catch {
+    // The witness holds spending keys, so no error detail leaves this document.
+    return { id: req.id, ok: false }
+  }
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg?.target === 'offscreen-shielded' && fromServiceWorker(sender)) {
-    void withProveLock(async () => {
-      try {
-        const result = await runShielded(msg as ShieldedRequest)
-        sendResponse({ ok: true, result })
-      } catch (e) {
-        sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) })
-      }
-    })
-    return true
-  }
+// Witnesses come only over a port this document opens to the service worker, which accepts it
+// from this document alone; nothing else in the extension receives what is posted on it.
+let port: chrome.runtime.Port | null = null
 
-  return false
-})
+// A wake means the worker holds no port of this document, even if another extension page keeps
+// the old one open, so every wake replaces it.
+function connect(): void {
+  port?.disconnect()
+  const opened = chrome.runtime.connect({ name: PROVER_PORT })
+  opened.onMessage.addListener((req: ProveRequest) => {
+    const run = queue.then(() => prove(req))
+    queue = run
+    void run.then((reply) => opened.postMessage(reply))
+  })
+  // A stopped worker drops the port; it is opened again when a new worker wakes this document,
+  // rather than at once, which would keep restarting the worker. A reply that finds its port
+  // closed is lost, and the worker fails that proof.
+  opened.onDisconnect.addListener(() => {
+    if (port === opened) port = null
+  })
+  port = opened
+}
+
+chrome.runtime.onMessage.addListener(
+  (msg: { target?: string }, sender: chrome.runtime.MessageSender) => {
+    if (msg?.target === PROVER_WAKE && sender.url === chrome.runtime.getURL('background.js')) {
+      connect()
+    }
+    return false
+  }
+)
+
+connect()

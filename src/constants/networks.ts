@@ -1,17 +1,13 @@
-// Shielded pool config; JSON-safe so it survives chrome.storage, testnet only.
+// A shielded pool as the UI shows it; JSON-safe so it survives chrome.storage. The vault, its
+// services and the circuit pins live with the deployment the background opens it from.
 export interface ShieldedConfig {
-  poolId: string // note-storage + UI key, distinct per pool
+  poolId: string // UI key, distinct per pool
+  deployment: string // private payments deployment name, e.g. 'testnet/xlm'
   label: string
-  vaultId: string
-  domain: string // proof domain separation, distinct per pool
-  indexerUrl: string
-  relayerUrl: string
-  relayerAddress: string // tx source for relayed spends
-  native: boolean // true = native XLM, false = classic asset (needs trustline)
+  native: boolean
   assetCode?: string
   assetIssuer?: string
   decimals: number
-  maxDeposit: string // vault max_deposit cap, stroops
 }
 
 export interface NetworkConfig {
@@ -59,29 +55,10 @@ export const DEFAULT_NETWORKS: NetworkConfig[] = [
     shielded: [
       {
         poolId: 'xlm',
+        deployment: 'testnet/xlm',
         label: 'XLM',
-        vaultId: 'CBXDPTG342GIJ5JMSXNLJGOPZ2KUO32NY6JD6352A3QTFI67BKXKANCM',
-        domain: '67890',
-        indexerUrl: 'https://private.cyphras.com/indexer',
-        relayerUrl: 'https://private.cyphras.com/relayer',
-        relayerAddress: 'GBERJHL7M6RYGJSPATGEJHNWIWVAXBCDVJPMTWN5KC7QQN7K6BVCS5KF',
         native: true,
         decimals: 7,
-        maxDeposit: '1000000000',
-      },
-      {
-        poolId: 'usdc',
-        label: 'USDC',
-        vaultId: 'CA4LFR3TYDARWQ3YHUD72X6ZKVXL3BJWA7ZLDVSMOHAVEOQXU7ESOBBQ',
-        domain: '67891',
-        indexerUrl: 'https://private.cyphras.com/usdc/indexer',
-        relayerUrl: 'https://private.cyphras.com/usdc/relayer',
-        relayerAddress: 'GASOF6NKJJWYE4AB2SFXK6RD26VBYGWNK2KL7TLZT2S3YRS3NRQWH4UQ',
-        native: false,
-        assetCode: 'USDC',
-        assetIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
-        decimals: 7,
-        maxDeposit: '100000000000',
       },
     ],
   },

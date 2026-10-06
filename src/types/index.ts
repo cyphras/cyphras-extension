@@ -103,6 +103,193 @@ export interface CctpFeeBreakdown {
   destination: CctpFeeLeg
 }
 
+// Private mode views. Amounts are stroops as decimal strings; times are Unix milliseconds unless a
+// field says seconds.
+export interface ShieldedErrorView {
+  code: string
+  message: string
+  // The failure came after the deposit or payment was saved or sent, so it may still land: a
+  // payment is paid again only through a retry of planId, never through a new one.
+  mayLand?: boolean
+  planId?: string
+}
+
+export interface ShieldedBalanceView {
+  spendable: string
+  pendingDeposits: string
+  locked: string // inputs of payments not yet confirmed or dead
+  awaitingPayout: string // unshields waiting in the vault's exit queue
+}
+
+// 'unresolved': it was still submitting when no RPC provider held the ledgers it could have landed
+// in any more. Whether it landed is unknown, but it can no longer land.
+export type ShieldedDepositState =
+  | 'submitting'
+  | 'pending'
+  | 'admitted'
+  | 'cancelled'
+  | 'refunded'
+  | 'failed'
+  | 'unresolved'
+
+// What a screening reason code means; 'unknown' says nothing about whether the deposit may still
+// be admitted.
+export type ShieldedScreening =
+  | 'held_for_review'
+  | 'refused_by_reviewer'
+  | 'legal_hold'
+  | 'refused'
+  | 'cancelled'
+  | 'unknown'
+
+export interface ShieldedDepositView {
+  id: number | null // null until the deposit's ID is known
+  amount: string
+  state: ShieldedDepositState
+  txHash: string | null
+  // Passed screening, so only the pool's delay remains; null while the wallet cannot tell.
+  attested: boolean | null
+  earliestAdmission: number | null // Unix seconds
+  flag: { reason: number; kind: ShieldedScreening } | null
+  refundableAt: number | null // Unix seconds
+  refundKind: ShieldedScreening | null
+  // False while the state rests on the indexer's word alone, or on the wallet's own cancel or
+  // refund that not every RPC provider reports a success yet.
+  confirmed: boolean
+}
+
+export type ShieldedPlanState =
+  | 'prepared'
+  | 'submitted'
+  | 'confirmed'
+  | 'queued'
+  | 'settled'
+  | 'stranded'
+  | 'superseded'
+  | 'dead'
+
+export interface ShieldedPlanView {
+  planId: string
+  kind: 'send' | 'unshield'
+  amount: string
+  fee: string
+  to: string
+  // The relayer it went through, or the account that submitted it itself; a retry goes the same
+  // way unless the popup asks for the other.
+  route: { kind: 'relayer'; url: string } | { kind: 'self'; account: string }
+  state: ShieldedPlanState
+  txHash: string | null
+  createdAt: number
+  payoutLeft: string | null
+  // False while the exit's state rests on the indexer's word alone; null for a plan with no exit.
+  exitConfirmed: boolean | null
+  // Exits of this payout that the destination could not receive, each claimable on its own.
+  strandedExits: number[]
+  relayerStatus: string | null
+  // Paying again must go through a retry with the same notes, never through a new send.
+  mustRetry: boolean
+  needsUserDecision: boolean
+  // The plan it proves again with the same notes, and the first plan of that line, which every
+  // plan spending those notes shares: a balance counts a family once.
+  retryOf: string | null
+  familyId: string
+  // What the notes it spends hold, and what of that comes back after the amount and the fee.
+  inputValue: string
+  change: string
+  // The last ledger its proof can land in, and an estimate, in Unix milliseconds, of when that
+  // ledger closes; null until a sync has read close times. Only mustRetry and needsUserDecision
+  // decide whether it may be paid again.
+  deadline: number
+  deadlineBy: number | null
+}
+
+// One entry of the private history. A deposit and a payment of this account carry what ties them to
+// its status, which holds their current state and actions; an entry rebuilt from the chain has only
+// what the chain shows.
+export interface ShieldedHistoryItem {
+  id: string
+  kind: 'shield' | 'send' | 'receive' | 'unshield' | 'refund' | 'cancel' | 'claim'
+  amount: string
+  // The relayer fee of a relayed payment; null where the account paid the network itself, or where
+  // the chain does not separate the fee from the amount, which then includes it.
+  fee: string | null
+  // The private address paid, the Stellar address unshielded to or claimed for, or the depositor;
+  // null for an unshield rebuilt from the chain whose destination no checked event showed.
+  counterparty: string | null
+  txHash: string | null
+  ledger: number | null
+  // Unix milliseconds: when the account made it, or when its ledger closed as the first RPC
+  // provider reported it, unconfirmed; null when neither is known.
+  time: number | null
+  planId: string | null
+  // The deposit an entry is about: its shield transaction, or its ID when the wallet knows no
+  // transaction, as for a deposit recovered from the chain.
+  depositTx: string | null
+  depositId: number | null
+  // Rebuilt from the chain with the viewing keys, with no record of the account's own.
+  recovered: boolean
+}
+
+export interface ShieldedStatusView {
+  address: string
+  balance: ShieldedBalanceView
+  deposits: ShieldedDepositView[]
+  plans: ShieldedPlanView[]
+  syncedAt: number | null
+  syncError: ShieldedErrorView | null
+  // 'mismatch': a service or the vault points elsewhere, so shields and spends are refused.
+  services: 'verified' | 'unverified' | 'mismatch'
+  // The SDK's warning from when this pool last started this account from a fresh state, and when
+  // (Unix milliseconds); kept until the user dismisses it.
+  stateReset: { warning: string; at: number } | null
+}
+
+// What a send or unshield would pay now, and what the notes as of the last sync can move with that
+// fee; the review asks the relayer again.
+export interface ShieldedQuoteView {
+  fee: string
+  // The most one payment can move after the fee: from the two largest notes, and for an unshield
+  // within the pool's cap for one withdrawal. Null before the wallet's first sync.
+  maxAmount: string | null
+}
+
+// The pool's deposit limits as the chain shows them now, for the active account as the depositor.
+export interface ShieldedLimitsView {
+  minDeposit: string
+  // The largest deposit the pool takes now: within its maximum, its room before the TVL cap and
+  // what is left of the account's daily allowance.
+  depositRoom: string
+  // A deposit of at least this waits delayLarge seconds before it can be admitted, a smaller one
+  // delaySmall.
+  largeDepositThreshold: string
+  delaySmall: number
+  delayLarge: number
+  depositsPaused: boolean
+  haltedUntil: number | null // Unix seconds
+}
+
+export interface ShieldedReceiptView {
+  depositId: number | null // null until a sync finds the ID
+  txHash: string
+}
+
+export interface ShieldedReviewView {
+  reviewId: string
+  kind: 'send' | 'unshield'
+  amount: string
+  fee: string
+  to: string
+  selfRelay: boolean
+  // Asked again after the relayer raised its fee: the payment is already saved with these notes
+  // and may still land, so declining it never makes way for a new payment.
+  repriced: boolean
+  warnings: { code: string; message: string }[]
+}
+
+export type ShieldedStep =
+  | { kind: 'review'; review: ShieldedReviewView }
+  | { kind: 'submitted'; planId: string; txHash: string | null; fee: string }
+
 export interface ServicePayload {
   type: ServiceType
   password?: string
@@ -166,24 +353,15 @@ export interface ServiceResponse {
   subentryCount?: number
   secretKey?: string
   timeoutSeconds?: number
-  // Private mode (shielded). Amounts are stringified stroops to stay JSON-safe.
+  // Private mode (shielded); set beside `error` when a shielded request fails.
+  shieldedError?: ShieldedErrorView
   shieldedAddress?: string
-  shieldedBalance?: string
-  // Max movable in one relayed 2-note spend; decides single-tx vs auto-split loop
-  shieldedMaxSpendable?: string
-  // Unspent note count; sizes the auto-split loop (ceil(noteCount/2) chunks)
-  shieldedNoteCount?: string
-  shieldedScan?: { added: number; balance: string; maxSpendable: string; noteCount: string }
-  shieldedSend?: { hash: string; balance: string }
-  // One relayed chunk of an auto-split spend; UI loops until done is true
-  shieldedSpendChunk?: { done: boolean; remaining: string; sent: string; balance: string }
-  shieldedQuote?: {
-    fee: string
-    netCost: string
-    margin: string
-    marginBps: string
-    calibrated: boolean
-  }
+  shieldedStatus?: ShieldedStatusView
+  shieldedReceipt?: ShieldedReceiptView
+  shieldedStep?: ShieldedStep
+  shieldedQuote?: ShieldedQuoteView
+  shieldedLimits?: ShieldedLimitsView
+  shieldedHistory?: ShieldedHistoryItem[]
   jobId?: string
   jobs?: CctpJobInfo[]
   maxFee?: string

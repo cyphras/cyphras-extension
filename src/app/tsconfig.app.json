@@ -22,9 +22,8 @@
       "@/*": ["src/*"],
       "@bg/*": ["../background/*"],
       "@constants/*": ["../constants/*"],
-      "@ext-types/*": ["../types/*"],
-      "@shielded/*": ["../shielded/*"]
+      "@ext-types/*": ["../types/*"]
     }
   },
-  "include": ["src", "../shielded/vendor.d.ts"]
+  "include": ["src"]
 }

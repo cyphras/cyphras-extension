@@ -20,7 +20,8 @@ export type HistoryRow =
       job: CctpJobInfo
     }
 
-export type RowStatus = 'confirmed' | 'pending' | 'failed'
+// 'attention': waits on the user or on a hold, as a private payment to retry or a held deposit.
+export type RowStatus = 'confirmed' | 'pending' | 'failed' | 'attention'
 
 export interface RowView {
   label: string
@@ -139,14 +140,22 @@ export function sortRows(rows: HistoryRow[]): HistoryRow[] {
   return rows.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp))
 }
 
-export function groupRowsByDate(rows: HistoryRow[]): { label: string; rows: HistoryRow[] }[] {
-  const map = new Map<string, HistoryRow[]>()
+// A row without a timestamp goes under `undated`, after the dated ones.
+export function groupRowsByDate<T extends { timestamp: string }>(
+  rows: T[],
+  undated = 'Time unknown'
+): { label: string; rows: T[] }[] {
+  const map = new Map<string, T[]>()
   for (const r of rows) {
-    const label = formatDateLabel(r.timestamp)
+    const label = r.timestamp ? formatDateLabel(r.timestamp) : undated
     if (!map.has(label)) map.set(label, [])
     map.get(label)!.push(r)
   }
-  return Array.from(map.entries()).map(([label, rows]) => ({ label, rows }))
+  const groups = Array.from(map.entries()).map(([label, rows]) => ({ label, rows }))
+  return [
+    ...groups.filter((g) => g.label !== undated),
+    ...groups.filter((g) => g.label === undated),
+  ]
 }
 
 // Four decimals for anything readable, six only for gas-sized dust, so a

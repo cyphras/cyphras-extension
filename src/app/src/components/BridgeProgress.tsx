@@ -228,10 +228,11 @@ export function BridgeProgress({
   )
 }
 
-export function BridgeSteps({ job }: { job: CctpJobInfo }) {
+// A process step by step, each with its state, as a bridge's or a private payment's.
+export function StepList({ steps }: { steps: { label: string; state: BridgeStepState }[] }) {
   return (
     <div className="rounded-xl bg-card px-4 py-3">
-      {bridgeSteps(job).map((s, i, all) => (
+      {steps.map((s, i, all) => (
         <div key={s.label} className="flex gap-3">
           <div className="flex flex-col items-center">
             <StepDot state={s.state} />
@@ -256,6 +257,10 @@ export function BridgeSteps({ job }: { job: CctpJobInfo }) {
       ))}
     </div>
   )
+}
+
+export function BridgeSteps({ job }: { job: CctpJobInfo }) {
+  return <StepList steps={bridgeSteps(job)} />
 }
 
 export function BridgeTxLinks({

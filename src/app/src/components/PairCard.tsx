@@ -176,25 +176,28 @@ export function AmountValue({ text, muted }: { text: string; muted: boolean }) {
   )
 }
 
-export function QuickFillChips({ onFill }: { onFill: (fraction: number) => void }) {
+// max: false leaves Max out until the page knows what Max is.
+export function QuickFillChips({
+  onFill,
+  max = true,
+}: {
+  onFill: (fraction: number) => void
+  max?: boolean
+}) {
   return (
     <span className="flex gap-1">
-      {(
-        [
-          ['25%', 0.25],
-          ['50%', 0.5],
-          ['Max', 1],
-        ] as const
-      ).map(([label, f]) => (
-        <button
-          key={label}
-          type="button"
-          onClick={() => onFill(f)}
-          className="cursor-pointer rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-muted/70"
-        >
-          {label}
-        </button>
-      ))}
+      {([['25%', 0.25], ['50%', 0.5], ...(max ? ([['Max', 1]] as const) : [])] as const).map(
+        ([label, f]) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => onFill(f)}
+            className="cursor-pointer rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-muted/70"
+          >
+            {label}
+          </button>
+        )
+      )}
     </span>
   )
 }
