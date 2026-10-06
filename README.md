@@ -41,4 +41,6 @@ dApp developers can integrate with Cyphras using the [`@cyphras/sdk`](https://gi
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE) for details.
+The source code in this repository is licensed under Apache 2.0. See [LICENSE](LICENSE) for details.
+
+The built extension includes GPL-3.0 components (snarkjs and `@cyphras/private-prover-snarkjs`), so the package as distributed is conveyed under GPL-3.0. Its complete source is this repository at the release tag. [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which the build also puts in the package, lists every bundled third-party component with its license.

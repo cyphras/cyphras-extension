@@ -6,6 +6,7 @@ import { resolve } from 'path'
 import { copyFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { createRequire } from 'module'
+import { recordShipped, writeNotices } from './vite.notices'
 
 const require = createRequire(import.meta.url)
 const pkg = require('../../package.json') as { version: string }
@@ -24,6 +25,7 @@ export default defineConfig({
     nodePolyfills({ include: ['buffer'], globals: { Buffer: true } }),
     tailwindcss(),
     react(),
+    recordShipped('app'),
     {
       name: 'copy-extension-files',
       closeBundle() {
@@ -41,6 +43,8 @@ export default defineConfig({
           `node --experimental-vm-modules ${resolve(ROOT, 'node_modules/.bin/vite')} build --config ${resolve(__dirname, 'vite.bridge.config.ts')}`,
           { stdio: 'inherit', cwd: ROOT }
         )
+        writeNotices(['app', 'background', 'content', 'bridge'], DIST)
+        console.log('THIRD-PARTY-NOTICES.txt written to dist/')
       },
     },
   ],

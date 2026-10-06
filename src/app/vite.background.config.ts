@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import { resolve } from 'path'
 import { readFileSync } from 'fs'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
+import { recordShipped } from './vite.notices'
 
 const ROOT = resolve(__dirname, '../..')
 const SRC_ROOT = resolve(__dirname, '..')
@@ -30,6 +31,7 @@ export default defineConfig({
         Buffer: true,
       },
     }),
+    recordShipped('background'),
   ],
   build: {
     outDir: DIST,
