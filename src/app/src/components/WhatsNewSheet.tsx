@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import { ArrowLeftRight, Layers, ShieldCheck, Wallet } from 'lucide-react'
+import { ArrowLeftRight, EyeOff, Lock, ShieldCheck, Wallet } from 'lucide-react'
 import { BottomSheet } from '@/components/BottomSheet'
 import { Button } from '@/components/ui/button'
 
@@ -10,23 +10,28 @@ const ITEMS: {
 }[] = [
   {
     icon: Wallet,
-    title: 'Bitcoin and Ethereum in one wallet',
-    body: 'Your recovery phrase now also opens Bitcoin and Ethereum addresses. Find them in Receive.',
+    title: 'Bitcoin and Ethereum accounts',
+    body: 'Backed up by your recovery phrase.',
   },
   {
     icon: ArrowLeftRight,
-    title: 'Bring USDC to Stellar',
-    body: 'Move USDC from Ethereum to Stellar, and back, with Circle CCTP. Native USDC, never wrapped.',
+    title: 'USDC bridge',
+    body: 'Move USDC to and from Ethereum.',
   },
   {
     icon: ShieldCheck,
-    title: 'Safer swaps',
-    body: 'A warning before a swap or bridge loses value, and the quote you review is the one you sign.',
+    title: 'Trade protection',
+    body: 'A warning before a trade loses value.',
   },
   {
-    icon: Layers,
-    title: 'One portfolio, every network',
-    body: 'Balances and history from each network in one list, with a filter and your pick of block explorer.',
+    icon: Lock,
+    title: 'Stronger security',
+    body: 'Sites can no longer pose as others or pass a transaction off as a message.',
+  },
+  {
+    icon: EyeOff,
+    title: 'Private mode v2 on testnet',
+    body: 'Pay cyt1 addresses. Screened deposits, private history, never paid twice.',
   },
 ]
 
