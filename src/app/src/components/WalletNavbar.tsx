@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useWallet } from '@/context/WalletContext'
 import { useNetwork } from '@/context/NetworkContext'
@@ -104,8 +105,18 @@ export default function WalletNavbar({ onHistory }: { onHistory?: () => void } =
         </div>
       </div>
 
-      <AccountSwitcher isOpen={accountSwitcherOpen} onClose={() => setAccountSwitcherOpen(false)} />
-      <NetworkPicker isOpen={networkPickerOpen} onClose={() => setNetworkPickerOpen(false)} />
+      {/* In a tab the navbar sits in a blurred sticky bar, which would hold these fixed sheets
+          and park them, closed, over the page below it. */}
+      {createPortal(
+        <>
+          <AccountSwitcher
+            isOpen={accountSwitcherOpen}
+            onClose={() => setAccountSwitcherOpen(false)}
+          />
+          <NetworkPicker isOpen={networkPickerOpen} onClose={() => setNetworkPickerOpen(false)} />
+        </>,
+        document.body
+      )}
     </>
   )
 }
