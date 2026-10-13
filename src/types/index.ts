@@ -310,7 +310,9 @@ export interface ServicePayload {
   secretKey?: string // for IMPORT_SECRET_KEY
   walletId?: string // for ADD_ACCOUNT target wallet, REMOVE_HD_WALLET
   walletLabel?: string // for CREATE_HD_WALLET, IMPORT_HD_WALLET, IMPORT_SECRET_KEY
-  publicKey?: string // for SWITCH_ACCOUNT, RENAME_ACCOUNT, REMOVE_ACCOUNT
+  // The account SWITCH_ACCOUNT, RENAME_ACCOUNT and REMOVE_ACCOUNT act on. Every private request
+  // carries it too, with networkId, as the ShieldedScope its view was rendered for.
+  publicKey?: string
   index?: number // legacy SWITCH_ACCOUNT, RENAME_ACCOUNT, REMOVE_ACCOUNT
   label?: string // for ADD_ACCOUNT, RENAME_ACCOUNT
   order?: string[] // for REORDER_ACCOUNTS (array of publicKeys in new order)
