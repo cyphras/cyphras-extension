@@ -1,5 +1,5 @@
 import { WINDOW_MODES, STORAGE_KEYS, MESSAGE_TYPES } from '@constants/windowMode'
-import { SERVICE_TYPES, PASSWORD_RULES } from '@constants/services'
+import { SERVICE_TYPES, PASSWORD_RULES, PRIVATE_MAINNET_ACK_KEY } from '@constants/services'
 import {
   BTC_MAINNET_CHAIN,
   BTC_TESTNET_CHAIN,
@@ -607,7 +607,7 @@ async function removeRetiredPrivateData(): Promise<void> {
     (k) =>
       (k.startsWith('cyphras_private_') &&
         k !== 'cyphras_private_hint_seen' &&
-        k !== 'cyphras_private_mainnet_ack_v1' &&
+        k !== PRIVATE_MAINNET_ACK_KEY &&
         !k.startsWith('cyphras_private_notes_')) ||
       k.startsWith('cyphras_shielded_notes_') ||
       k.startsWith('cyphras_shielded_ledger_times_')

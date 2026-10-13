@@ -41,7 +41,7 @@ import {
 import { shortAddress } from '@/lib/address'
 import { trimZeros, stroopsToXlm } from '@/lib/historyUtils'
 import { depositStatus, planStatus, routeText, type ItemStatus } from '@/lib/privateActivity'
-import { SERVICE_TYPES, SHIELDED_REVIEW_PORT } from '@constants/services'
+import { PRIVATE_MAINNET_ACK_KEY, SERVICE_TYPES, SHIELDED_REVIEW_PORT } from '@constants/services'
 import type {
   ServiceResponse,
   ShieldedDepositView,
@@ -130,10 +130,6 @@ const STELLAR_DESTINATION = /^([GC][A-Z2-7]{55}|M[A-Z2-7]{68})$/
 // A payment that failed but may still land was made from the notes of this flow, so it was saved
 // after the flow began; the clock of the plan and of the popup may differ by a little.
 const CLOCK_SKEW_MS = 60_000
-
-// Set once the user has read what private payments on mainnet are, before the first shield, send
-// or unshield there; the update cleanup keeps it.
-const MAINNET_ACK_KEY = 'cyphras_private_mainnet_ack_v1'
 
 // mayLand marks a failure after which the deposit or payment may still land: it was saved
 // before it failed, or the extension restarted while it ran. planId names a saved payment.
@@ -422,8 +418,8 @@ export default function ShieldedSend({
   useEffect(() => {
     if (!open || !mainnet) return
     let current = true
-    chrome.storage.local.get(MAINNET_ACK_KEY, (res) => {
-      if (current) setAcknowledged(res[MAINNET_ACK_KEY] === true)
+    chrome.storage.local.get(PRIVATE_MAINNET_ACK_KEY, (res) => {
+      if (current) setAcknowledged(res[PRIVATE_MAINNET_ACK_KEY] === true)
     })
     return () => {
       current = false
@@ -570,7 +566,7 @@ export default function ShieldedSend({
   }
 
   function acknowledge() {
-    chrome.storage.local.set({ [MAINNET_ACK_KEY]: true })
+    chrome.storage.local.set({ [PRIVATE_MAINNET_ACK_KEY]: true })
     setAcknowledged(true)
     startReview()
   }

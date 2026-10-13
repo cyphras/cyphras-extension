@@ -96,6 +96,11 @@ export type ServiceType = (typeof SERVICE_TYPES)[keyof typeof SERVICE_TYPES]
 // including one that arrives later.
 export const SHIELDED_REVIEW_PORT = 'shielded-review:'
 
+// Set once the user has read what private payments on mainnet are, before the first shield, send
+// or unshield there. The popup reads it; the background's cleanup of retired private data on
+// update must keep it.
+export const PRIVATE_MAINNET_ACK_KEY = 'cyphras_private_mainnet_ack_v1'
+
 export const PASSWORD_RULES = {
   MIN_LENGTH: 8,
   MAX_ATTEMPTS: 5,
