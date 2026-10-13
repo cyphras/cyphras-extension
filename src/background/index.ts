@@ -606,6 +606,7 @@ async function removeRetiredPrivateData(): Promise<void> {
     (k) =>
       (k.startsWith('cyphras_private_') &&
         k !== 'cyphras_private_hint_seen' &&
+        k !== 'cyphras_private_mainnet_ack_v1' &&
         !k.startsWith('cyphras_private_notes_')) ||
       k.startsWith('cyphras_shielded_notes_') ||
       k.startsWith('cyphras_shielded_ledger_times_')

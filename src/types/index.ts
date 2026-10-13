@@ -253,9 +253,11 @@ export interface ShieldedQuoteView {
   maxAmount: string | null
 }
 
-// The pool's deposit limits as the chain shows them now, for the active account as the depositor.
+// The pool's limits as the chain shows them now, for the active account as the depositor.
 export interface ShieldedLimitsView {
   minDeposit: string
+  maxDeposit: string
+  maxDailyPerDepositor: string // what one account may deposit in a UTC day
   // The largest deposit the pool takes now: within its maximum, its room before the TVL cap and
   // what is left of the account's daily allowance.
   depositRoom: string
@@ -264,6 +266,9 @@ export interface ShieldedLimitsView {
   largeDepositThreshold: string
   delaySmall: number
   delayLarge: number
+  // What the pool pays out in a UTC day across all its users; a payout past it waits in the exit
+  // queue.
+  maxDailyOutflow: string
   depositsPaused: boolean
   haltedUntil: number | null // Unix seconds
 }

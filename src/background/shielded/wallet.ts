@@ -515,10 +515,13 @@ export async function shieldedLimits(
   const limits = await wallet.vaultLimits(signer.publicKey)
   return {
     minDeposit: limits.minDeposit.toString(),
+    maxDeposit: limits.maxDeposit.toString(),
+    maxDailyPerDepositor: limits.maxDailyPerDepositor.toString(),
     depositRoom: limits.depositRoom.toString(),
     largeDepositThreshold: limits.largeDepositThreshold.toString(),
     delaySmall: limits.delaySmall,
     delayLarge: limits.delayLarge,
+    maxDailyOutflow: limits.maxDailyOutflow.toString(),
     depositsPaused: limits.depositsPaused,
     haltedUntil: orNull(limits.haltedUntil),
   }

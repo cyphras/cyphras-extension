@@ -1269,6 +1269,7 @@ export default function Home() {
         native={!!selectedPool?.native}
         usdPrice={shieldedByPool[poolId]?.usdPrice ?? null}
         accountPk={activePublicKey}
+        mainnet={mainnetPrivate}
         publicBalance={
           // Pools are Stellar-only while `balances` spans every chain; match on the
           // Stellar chain so the native pool reads XLM, not an EVM native such as ETH.
