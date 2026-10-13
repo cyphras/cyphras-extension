@@ -165,6 +165,7 @@ async function openWallet(
     artifacts: packagedArtifacts(pool.artifactPaths),
     storage: chromeStore(pool.deployment),
     rpcUrl: pool.rpcUrl,
+    secondRpcUrl: pool.secondRpcUrl,
     // Stored state that does not decrypt cannot be recovered, so the wallet starts fresh: the
     // chain rebuilds the notes and stateReset() says what was lost.
     resetUnreadableState: true,
