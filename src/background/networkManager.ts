@@ -1,5 +1,7 @@
 import { DEFAULT_NETWORKS, NETWORK_STORAGE_KEY, ACTIVE_NETWORK_KEY } from '@constants/networks'
 import type { NetworkConfig } from '@constants/networks'
+import { SHIELDED_DEPLOYMENTS } from './shielded/deployments'
+import { pinnedPool } from './shielded/gate'
 
 function validateNetworkConfig(network: NetworkConfig): string | null {
   if (!network.id || typeof network.id !== 'string') return 'Network ID is required'
@@ -48,7 +50,7 @@ function validateNetworkConfig(network: NetworkConfig): string | null {
 
 function migrateNetwork(n: Partial<NetworkConfig> & { id: string }): NetworkConfig {
   const defaults = DEFAULT_NETWORKS.find((d) => d.id === n.id)
-  return {
+  const network: NetworkConfig = {
     id: n.id,
     name: n.name ?? n.id,
     horizonUrl: n.horizonUrl ?? '',
@@ -58,8 +60,12 @@ function migrateNetwork(n: Partial<NetworkConfig> & { id: string }): NetworkConf
     explorerUrl: n.explorerUrl ?? defaults?.explorerUrl,
     txTimeout: n.txTimeout ?? defaults?.txTimeout ?? 90,
     isDefault: n.isDefault ?? false,
-    // Only the shipped defaults can enable private mode; stored values never do
-    shielded: defaults ? defaults.shielded : undefined,
+  }
+  // Only the shipped defaults can enable private mode, with just the pools the background can open
+  // on them, so the popup never offers one it refuses; stored values never do
+  return {
+    ...network,
+    shielded: defaults?.shielded?.filter((p) => pinnedPool(network, p, SHIELDED_DEPLOYMENTS)),
   }
 }
 
@@ -67,7 +73,7 @@ export async function getNetworks(): Promise<NetworkConfig[]> {
   const result = await chrome.storage.local.get(NETWORK_STORAGE_KEY)
   if (!result[NETWORK_STORAGE_KEY]) {
     await chrome.storage.local.set({ [NETWORK_STORAGE_KEY]: DEFAULT_NETWORKS })
-    return DEFAULT_NETWORKS
+    return DEFAULT_NETWORKS.map(migrateNetwork)
   }
   return (result[NETWORK_STORAGE_KEY] as Partial<NetworkConfig>[]).map((n) =>
     migrateNetwork(n as Partial<NetworkConfig> & { id: string })

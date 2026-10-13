@@ -8,7 +8,7 @@ import {
   type TransactionSigner,
 } from '@cyphras/private'
 import { Keypair } from '@stellar/stellar-sdk'
-import { TESTNET_PASSPHRASE, type NetworkConfig } from '@constants/networks'
+import type { NetworkConfig } from '@constants/networks'
 import type {
   ShieldedDepositView,
   ShieldedErrorView,
@@ -30,6 +30,7 @@ import {
 } from '../keyManager'
 import { SHIELDED_DEPLOYMENTS, type ShieldedDeployment } from './deployments'
 import { MayStillLand, ShieldedRefusal, errorView } from './errors'
+import { pinnedPool } from './gate'
 import { offscreenProver, packagedArtifacts } from './prover'
 import { declineAllReviews, decideReview, startReviewed } from './reviews'
 import { vaultSigner } from './signer'
@@ -63,22 +64,21 @@ function track<T>(operation: Promise<T>): Promise<T> {
   return operation
 }
 
-// The testnet proving key comes from a solo setup that can forge proofs, so private mode stays off
-// every other network until the mainnet key comes out of a multi-party ceremony.
 function assertShieldedAllowed(net: NetworkConfig): void {
-  if (
-    net.id !== 'testnet' ||
-    net.passphrase !== TESTNET_PASSPHRASE ||
-    (net.shielded?.length ?? 0) === 0
-  ) {
-    throw new ShieldedRefusal('testnet_only', 'Private mode runs on testnet only.')
+  if ((net.shielded?.length ?? 0) === 0) {
+    throw new ShieldedRefusal(
+      'unsupported_network',
+      'Private mode is not available on this network.'
+    )
   }
 }
 
+// The testnet proving key comes from a solo setup that can forge proofs, so a pool opens only on
+// the network its pinned vault lives on, whatever the network config lists.
 function poolOf(net: NetworkConfig, poolId: string | undefined): ShieldedDeployment {
   const config =
     poolId === undefined ? net.shielded?.[0] : net.shielded?.find((p) => p.poolId === poolId)
-  const pool = config && SHIELDED_DEPLOYMENTS[config.deployment]
+  const pool = config && pinnedPool(net, config, SHIELDED_DEPLOYMENTS)
   if (!pool) throw new ShieldedRefusal('unknown_pool', 'That private pool is not available.')
   return pool
 }
