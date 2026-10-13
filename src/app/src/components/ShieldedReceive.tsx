@@ -16,7 +16,16 @@ const PRIVATE_MARK = '/icon.svg'
 // The account's private address as the public Receive sheet shows an address: its QR, the whole
 // address with the parts people compare emphasized, a copy button, and what may be sent to it. The
 // keys behind it stay in the background.
-export default function ShieldedReceive({ open, onClose }: { open: boolean; onClose: () => void }) {
+export default function ShieldedReceive({
+  open,
+  mainnet,
+  onClose,
+}: {
+  open: boolean
+  // Only testnet's pool is a preview that can be reset.
+  mainnet: boolean
+  onClose: () => void
+}) {
   const { activePublicKey } = useWallet()
   const [address, setAddress] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -101,8 +110,9 @@ export default function ShieldedReceive({ open, onClose }: { open: boolean; onCl
             </p>
 
             <p className="px-1 text-center text-[11px] leading-relaxed text-muted-foreground">
-              Who pays you and how much stay hidden on-chain. Testnet preview: the testnet pool can
-              be reset, and its balances do not carry over.
+              Who pays you and how much stay hidden on-chain.
+              {!mainnet &&
+                ' Testnet preview: the testnet pool can be reset, and its balances do not carry over.'}
             </p>
           </>
         )}

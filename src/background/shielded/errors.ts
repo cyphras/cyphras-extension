@@ -61,7 +61,7 @@ function sdkMessage(err: CyphrasError): string {
   const d = err.details
   switch (err.code) {
     case 'invalid_address':
-      return 'That is not a valid testnet private address (cyt1...).'
+      return 'That is not a valid private address.'
     case 'deployment_not_pinned':
     case 'deployment_mismatch':
       return 'A private pool service does not match this wallet, so private payments are paused.'

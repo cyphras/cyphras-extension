@@ -4,9 +4,12 @@ import { Button } from '@/components/ui/button'
 // One-time intro spotlighting the balance card; click-through except the caption so the user can peel it right away.
 export function PrivateModeHint({
   targetRef,
+  mainnet,
   onDismiss,
 }: {
   targetRef: RefObject<HTMLElement | null>
+  // Mainnet's pool holds real funds; testnet's is a preview that can be reset.
+  mainnet: boolean
   onDismiss: () => void
 }) {
   const [rect, setRect] = useState<DOMRect | null>(null)
@@ -59,8 +62,9 @@ export function PrivateModeHint({
           Drag the balance card from its bottom-right corner to shield, send, and receive privately.
         </p>
         <p className="mt-2 text-xs leading-relaxed text-amber-600 dark:text-amber-400">
-          Testnet preview. The testnet pool can be reset, so testnet balances and cyt1 addresses may
-          not carry over.
+          {mainnet
+            ? 'Experimental and unaudited. Private payments on mainnet move real money.'
+            : 'Testnet preview. The testnet pool can be reset, so testnet balances and cyt1 addresses may not carry over.'}
         </p>
         <Button className="mt-3 w-full" onClick={onDismiss}>
           Got it

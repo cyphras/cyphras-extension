@@ -208,6 +208,10 @@ export default function Home() {
     privateNetworks.map((n) => n.name.toLowerCase())
   )
   const switchTarget = shieldedPools.length === 0 ? privateNetworks.at(0) : undefined
+  // Mainnet's pool holds real funds and is unaudited, so it is marked experimental; any other
+  // network's private mode is a testnet preview.
+  const mainnetPrivate = activeNetwork.id === 'mainnet' && shieldedPools.length > 0
+  const privateBadge = mainnetPrivate ? 'Experimental' : 'Testnet preview'
   const [switchingNet, setSwitchingNet] = useState(false)
   // Pool the private surfaces act on; clamped to the active network's pool set.
   const [selectedPoolId, setSelectedPoolId] = useState<string>(shieldedPools[0]?.poolId ?? 'xlm')
@@ -599,7 +603,7 @@ export default function Home() {
                     <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                       Private balance
                       <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                        Testnet preview
+                        {privateBadge}
                       </span>
                     </p>
                     <span className="rounded-md p-1 text-muted-foreground">
@@ -636,7 +640,7 @@ export default function Home() {
                         <>
                           Private balance
                           <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                            Testnet preview
+                            {privateBadge}
                           </span>
                         </>
                       ) : filteredStats ? (
@@ -1156,7 +1160,11 @@ export default function Home() {
         onClose={() => setFilterOpen(false)}
       />
 
-      <ShieldedReceive open={shieldedReceiveOpen} onClose={() => setShieldedReceiveOpen(false)} />
+      <ShieldedReceive
+        open={shieldedReceiveOpen}
+        mainnet={mainnetPrivate}
+        onClose={() => setShieldedReceiveOpen(false)}
+      />
 
       <PrivatePartSheet
         part={openPart}
@@ -1290,7 +1298,7 @@ export default function Home() {
       />
 
       {!active && shieldedAvailable && !hintSeen && !loading && (
-        <PrivateModeHint targetRef={cardRef} onDismiss={dismissHint} />
+        <PrivateModeHint targetRef={cardRef} mainnet={mainnetPrivate} onDismiss={dismissHint} />
       )}
 
       {/* after the private-mode coach mark, never on top of it */}
