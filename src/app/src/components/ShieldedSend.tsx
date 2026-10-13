@@ -222,12 +222,14 @@ export default function ShieldedSend({
   // The fee a new send or unshield would pay now, or why the relayer could not say.
   const [quote, setQuote] = useState<ShieldedQuoteView | null>(null)
   const [quoteError, setQuoteError] = useState<string | null>(null)
-  // The pool's deposit limits for a shield, or why they could not be read.
+  // The pool's limits, which a shield checks and the mainnet acknowledgement quotes, or why they
+  // could not be read.
   const [limits, setLimits] = useState<ShieldedLimitsView | null>(null)
   const [limitsError, setLimitsError] = useState<string | null>(null)
   // The network fee a shield paid, once Horizon has its transaction.
   const [shieldFee, setShieldFee] = useState<string | null>(null)
-  // Whether mainnet private payments were acknowledged; until it is read, a shield asks again.
+  // Whether mainnet private payments were acknowledged; until it is read, the first shield, send
+  // or unshield asks again.
   const [acknowledged, setAcknowledged] = useState(false)
   // Each opening of the page is a session; a reply from an older session, or one that arrives once
   // the page is closed, never paints.
