@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { SERVICE_TYPES } from '@constants/services'
-import type { ServiceResponse, ShieldedHistoryItem, ShieldedStatusView } from '@ext-types/index'
+import type {
+  ServiceResponse,
+  ShieldedHistoryItem,
+  ShieldedScope,
+  ShieldedStatusView,
+} from '@ext-types/index'
 
 // The account's private history in a pool, asked for again whenever a sync changes the status it
-// is built from. Items stay null until the first reply, so a page can show its skeleton.
+// is built from, and for what that status was read for. Items stay null until the first reply, so a
+// page can show its skeleton.
 export function usePrivateHistory(
   enabled: boolean,
-  networkId: string,
+  scope: ShieldedScope | null,
   poolId: string,
   status: ShieldedStatusView | null
 ) {
@@ -21,7 +27,7 @@ export function usePrivateHistory(
     const run = ++runRef.current
     setLoading(true)
     chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_HISTORY, poolId, networkId },
+      { type: SERVICE_TYPES.SHIELDED_HISTORY, poolId, ...scope },
       (r: ServiceResponse) => {
         if (run !== runRef.current) return
         setLoading(false)
@@ -35,10 +41,10 @@ export function usePrivateHistory(
         }
       }
     )
-  }, [poolId, networkId])
+  }, [poolId, scope])
 
   useEffect(() => {
-    if (!enabled || !content) {
+    if (!enabled || !content || !scope) {
       runRef.current++
       setItems(null)
       setError(null)
@@ -46,7 +52,7 @@ export function usePrivateHistory(
       return
     }
     load()
-  }, [enabled, content, load])
+  }, [enabled, content, scope, load])
 
   return { items, error, loading, refresh: load }
 }

@@ -3,7 +3,7 @@ import { fetchPrices, priceKey, type PriceAsset } from '@/lib/api'
 import { formatUnits } from '@/lib/amount'
 import { privateBalance } from '@/lib/privateBalance'
 import { SERVICE_TYPES } from '@constants/services'
-import type { ServiceResponse, ShieldedStatusView } from '@ext-types/index'
+import type { ServiceResponse, ShieldedScope, ShieldedStatusView } from '@ext-types/index'
 import type { ShieldedPoolOption } from './useShieldedAvailable'
 
 interface ShieldedPoolState {
@@ -29,6 +29,9 @@ interface ShieldedStatusState {
   privateChangePct: number | null
   syncing: boolean
   error: ShieldedStatusError | null
+  // What the statuses and the error were read for. An action on what they show names it rather
+  // than what the popup shows by then, so one left on screen after a switch is refused.
+  scope: ShieldedScope | null
   // Syncs every pool with the chain; reload only rereads what the background holds.
   refresh: () => void
   reload: () => void
@@ -44,10 +47,10 @@ type StatusRequest = typeof SERVICE_TYPES.SHIELDED_STATUS | typeof SERVICE_TYPES
 function readStatus(
   type: StatusRequest,
   poolId: string,
-  networkId: string
+  scope: ShieldedScope
 ): Promise<{ status: ShieldedStatusView | null; error: ShieldedStatusError | null }> {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type, poolId, networkId }, (r: ServiceResponse) => {
+    chrome.runtime.sendMessage({ type, poolId, ...scope }, (r: ServiceResponse) => {
       if (chrome.runtime.lastError) {
         resolve({ status: null, error: { poolId, message: 'Extension error', code: null } })
       } else if (r?.shieldedStatus) {
@@ -92,6 +95,7 @@ export function useShieldedStatus(
   >({})
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<ShieldedStatusError | null>(null)
+  const [scope, setScope] = useState<ShieldedScope | null>(null)
 
   // Drops replies from a previous account or network so they never paint after a switch. Syncs of
   // the current scope can overlap, so syncing stays on until the last one ends.
@@ -109,12 +113,13 @@ export function useShieldedStatus(
       const current = poolsRef.current
       if (!enabled || current.length === 0) return
       const runId = runIdRef.current
+      const runScope: ShieldedScope = { networkId }
       const sync = type === SERVICE_TYPES.SHIELDED_SYNC
       if (sync) {
         syncsRef.current++
         setSyncing(true)
       }
-      const replies = await Promise.all(current.map((p) => readStatus(type, p.poolId, networkId)))
+      const replies = await Promise.all(current.map((p) => readStatus(type, p.poolId, runScope)))
       if (runId !== runIdRef.current) return
       if (sync) {
         syncsRef.current--
@@ -132,6 +137,7 @@ export function useShieldedStatus(
         return next
       })
       setError(replies.find((r) => r.error)?.error ?? null)
+      setScope((prev) => (prev?.networkId === runScope.networkId ? prev : runScope))
     },
     [enabled, networkId]
   )
@@ -149,6 +155,7 @@ export function useShieldedStatus(
     contentRef.current = ''
     setStatuses({})
     setError(null)
+    setScope(null)
     setSyncing(false)
     if (!enabled || poolsRef.current.length === 0) return
     const runId = runIdRef.current
@@ -211,6 +218,7 @@ export function useShieldedStatus(
     privateChangePct,
     syncing,
     error,
+    scope,
     refresh,
     reload,
   }

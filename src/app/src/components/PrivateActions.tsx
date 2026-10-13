@@ -1,8 +1,12 @@
 import { useState } from 'react'
 import { RotateCcw } from 'lucide-react'
-import { useNetwork } from '@/context/NetworkContext'
 import { depositActions, needsRetry, planActions, type AccountAction } from '@/lib/privateActivity'
-import type { ServiceResponse, ShieldedDepositView, ShieldedPlanView } from '@ext-types/index'
+import type {
+  ServiceResponse,
+  ShieldedDepositView,
+  ShieldedPlanView,
+  ShieldedScope,
+} from '@ext-types/index'
 
 // What the user can do about a deposit or a payment. A payment that may still land, or failed only
 // by the wallet's last reading of the chain, is offered a retry with the same notes and nothing
@@ -12,19 +16,21 @@ export function PrivateActions({
   plan,
   deposit,
   poolId,
+  scope,
   onRetry,
   onChanged,
 }: {
   plan: ShieldedPlanView | null
   deposit: ShieldedDepositView | null
   poolId: string
+  // What the status these items come from was read for, which every action names.
+  scope: ShieldedScope | null
   onRetry: (plan: ShieldedPlanView) => void
   onChanged: () => void
 }) {
   const [confirming, setConfirming] = useState<string | null>(null)
   const [running, setRunning] = useState<string | null>(null)
   const [outcomes, setOutcomes] = useState<Record<string, { ok: boolean; text: string }>>({})
-  const { activeNetwork } = useNetwork()
   const now = Math.floor(Date.now() / 1000)
 
   if (plan && needsRetry(plan)) {
@@ -48,7 +54,7 @@ export function PrivateActions({
     setConfirming(null)
     setRunning(action.key)
     chrome.runtime.sendMessage(
-      { type: action.type, poolId, id: action.id, networkId: activeNetwork.id },
+      { type: action.type, poolId, id: action.id, ...scope },
       (r: ServiceResponse) => {
         setRunning(null)
         // A restart after the request left may still have sent the transaction.

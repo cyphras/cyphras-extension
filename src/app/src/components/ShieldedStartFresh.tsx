@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
-import { useNetwork } from '@/context/NetworkContext'
 import { SERVICE_TYPES } from '@constants/services'
-import type { ServiceResponse } from '@ext-types/index'
+import type { ServiceResponse, ShieldedScope } from '@ext-types/index'
 
 interface ShieldedStartFreshProps {
   poolId: string
+  // What the status read that could not open the pool was for, which the start names.
+  scope: ShieldedScope | null
   message: string
   onStarted: () => void
 }
@@ -13,17 +14,16 @@ interface ShieldedStartFreshProps {
 // The pool cannot open while the account's stored records cannot be assigned to it. Starting it
 // fresh rebuilds the balance from the chain and leaves those records stored, but a payment in
 // flight that only they follow drops out of sight, so it takes an explicit confirm.
-export function ShieldedStartFresh({ poolId, message, onStarted }: ShieldedStartFreshProps) {
+export function ShieldedStartFresh({ poolId, scope, message, onStarted }: ShieldedStartFreshProps) {
   const [confirming, setConfirming] = useState(false)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { activeNetwork } = useNetwork()
 
   function startFresh() {
     setRunning(true)
     setError(null)
     chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_START_FRESH, poolId, networkId: activeNetwork.id },
+      { type: SERVICE_TYPES.SHIELDED_START_FRESH, poolId, ...scope },
       (r: ServiceResponse) => {
         setRunning(false)
         if (chrome.runtime.lastError) {

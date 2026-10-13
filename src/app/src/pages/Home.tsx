@@ -228,6 +228,7 @@ export default function Home() {
     privateChangePct,
     syncing: shieldedSyncing,
     error: shieldedRequestError,
+    scope: statusScope,
     refresh: refreshShielded,
     reload: reloadShielded,
   } = useShieldedStatus(shieldedAvailable, active, activePublicKey, activeNetwork.id, shieldedPools)
@@ -236,7 +237,7 @@ export default function Home() {
   const [openPart, setOpenPart] = useState<BalancePartKey | null>(null)
   const privateHistory = usePrivateHistory(
     active && shieldedAvailable,
-    activeNetwork.id,
+    statusScope,
     poolId,
     shieldedStatus
   )
@@ -581,7 +582,7 @@ export default function Home() {
   const shieldedReset = shieldedStatus?.stateReset ?? null
   const dismissShieldedReset = () =>
     chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_DISMISS_RESET, poolId, networkId: activeNetwork.id },
+      { type: SERVICE_TYPES.SHIELDED_DISMISS_RESET, poolId, ...statusScope },
       () => reloadShielded()
     )
 
@@ -835,6 +836,7 @@ export default function Home() {
                   {shieldedRequestError?.code === 'state_unassigned' ? (
                     <ShieldedStartFresh
                       poolId={shieldedRequestError.poolId}
+                      scope={statusScope}
                       message={shieldedRequestError.message}
                       onStarted={refreshShielded}
                     />
@@ -852,6 +854,7 @@ export default function Home() {
                     <ShieldedActivity
                       entries={entries}
                       poolId={poolId}
+                      scope={statusScope}
                       icon={shieldedIcon}
                       chainIcon={chainIcons.get(stellarChainId)}
                       fiatOf={entryFiat}
@@ -1248,6 +1251,7 @@ export default function Home() {
         chainIcon={chainIcons.get(stellarChainId)}
         fiat={selectedEntry ? entryFiat(selectedEntry) : null}
         poolId={poolId}
+        scope={statusScope}
         onRetry={(plan) => {
           setHistoryOpen(false)
           setTappedPoolId(null)

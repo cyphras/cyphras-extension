@@ -20,7 +20,7 @@ import { formatAmount } from '@/lib/activity'
 import { trimZeros, stroopsToXlm } from '@/lib/historyUtils'
 import { routeText, SCREENING, type Tone } from '@/lib/privateActivity'
 import { stepsOf, type PrivateEntry } from '@/lib/privateHistory'
-import type { ShieldedPlanView } from '@ext-types/index'
+import type { ShieldedPlanView, ShieldedScope } from '@ext-types/index'
 
 const PILL_TONE: Record<Tone, StatusTone> = { ok: 'ok', warn: 'warn', bad: 'bad', muted: 'warn' }
 
@@ -35,6 +35,7 @@ export function PrivateTxSheet({
   chainIcon,
   fiat,
   poolId,
+  scope,
   onRetry,
   onChanged,
   onClose,
@@ -47,6 +48,7 @@ export function PrivateTxSheet({
   chainIcon?: string
   fiat: string | null
   poolId: string
+  scope: ShieldedScope | null
   onRetry: (plan: ShieldedPlanView) => void
   onChanged: () => void
   onClose: () => void
@@ -155,6 +157,7 @@ export function PrivateTxSheet({
             plan={plan}
             deposit={deposit}
             poolId={poolId}
+            scope={scope}
             onRetry={(p) => {
               onClose()
               onRetry(p)

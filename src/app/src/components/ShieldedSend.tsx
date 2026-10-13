@@ -50,6 +50,7 @@ import type {
   ShieldedQuoteView,
   ShieldedReceiptView,
   ShieldedReviewView,
+  ShieldedScope,
   ShieldedStatusView,
   ShieldedStep,
 } from '@ext-types/index'
@@ -138,12 +139,12 @@ type Reply<T> =
   | { ok: false; error: string; code?: string; mayLand: boolean; planId?: string }
 
 function ask<T>(
-  networkId: string,
+  scope: ShieldedScope,
   message: object,
   pick: (r: ServiceResponse) => T | undefined
 ): Promise<Reply<T>> {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ ...message, networkId }, (r: ServiceResponse) => {
+    chrome.runtime.sendMessage({ ...message, ...scope }, (r: ServiceResponse) => {
       if (chrome.runtime.lastError) {
         resolve({
           ok: false,
@@ -232,9 +233,6 @@ export default function ShieldedSend({
   // the page is closed, never paints.
   const sessionRef = useRef(0)
   const openRef = useRef(false)
-  // The network the page showed when the session began. Every request names it, so the background
-  // refuses one that would run after another surface switched networks.
-  const sessionNetworkRef = useRef('')
   // The port held for the payment in progress, whose token goes with its request: once the port
   // goes, the background declines the payment's open review and any it would still get. And the
   // last review shown, which the next reply answers.
@@ -248,6 +246,13 @@ export default function ShieldedSend({
   const { accounts } = useWallet()
   const { activeNetwork } = useNetwork()
   const { formatValue, getExplorerTxUrl } = usePreferences()
+  // What the page shows, and what its session opened on. Every request names the session's, set
+  // when the page opens rather than read at a click, so a control still on screen after another
+  // surface switched networks is refused instead of run where the page did not show it.
+  const shownScope: ShieldedScope = { networkId: activeNetwork.id }
+  const shownScopeRef = useRef(shownScope)
+  shownScopeRef.current = shownScope
+  const sessionScopeRef = useRef(shownScope)
 
   // Keep the last non-null action so content stays visible during the close slide.
   const lastActionRef = useRef<ShieldedAction | null>(null)
@@ -285,7 +290,7 @@ export default function ShieldedSend({
       chrome.runtime.sendMessage({
         type: SERVICE_TYPES.SHIELDED_STATUS,
         poolId,
-        networkId: sessionNetworkRef.current,
+        ...sessionScopeRef.current,
       })
     }, 20_000)
     return () => clearInterval(timer)
@@ -351,13 +356,12 @@ export default function ShieldedSend({
   }, [releaseFlow, onDone, retryPlan])
 
   // Opening starts a session. Ending one, by closing the page here or from the parent as on an
-  // account switch, by a network switch, or by opening it for another action, lets its payment's
-  // port go.
+  // account or network switch, or by opening it for another action, lets its payment's port go.
   useEffect(() => {
     sessionRef.current++
-    sessionNetworkRef.current = activeNetwork.id
     releaseFlow()
     if (!open) return
+    sessionScopeRef.current = shownScopeRef.current
     setRecipient(retryPlan?.to ?? '')
     setStage(retryPlan || action === 'shield' ? 'form' : 'recipient')
     setAmount(retryPlan ? formatUnits(retryPlan.amount, decimals) : '')
@@ -366,7 +370,7 @@ export default function ShieldedSend({
     setRefusedWhileSubmitting(false)
     setError(null)
     setStep({ kind: retryPlan ? 'retry' : 'form' })
-  }, [open, action, retryPlan, decimals, releaseFlow, activeNetwork.id])
+  }, [open, action, retryPlan, decimals, releaseFlow])
 
   // Asked again when the route changes, or when a sync changes what the notes can pay.
   const spendable = status?.balance.spendable
@@ -376,7 +380,7 @@ export default function ShieldedSend({
     if (!open || retryPlan || (a !== 'send' && a !== 'unshield')) return
     let current = true
     ask(
-      sessionNetworkRef.current,
+      sessionScopeRef.current,
       {
         type: SERVICE_TYPES.SHIELDED_QUOTE,
         poolId,
@@ -402,7 +406,7 @@ export default function ShieldedSend({
     if (!open || (a !== 'shield' && !mainnet)) return
     let current = true
     ask(
-      sessionNetworkRef.current,
+      sessionScopeRef.current,
       { type: SERVICE_TYPES.SHIELDED_LIMITS, poolId },
       (r) => r.shieldedLimits
     ).then((reply) => {
@@ -447,7 +451,7 @@ export default function ShieldedSend({
   // background declined any review in it when the session's port went.
   const requestStep = useCallback(async (message: object): Promise<Reply<ShieldedStep> | null> => {
     const session = sessionRef.current
-    const reply = await ask(sessionNetworkRef.current, message, (r) => r.shieldedStep)
+    const reply = await ask(sessionScopeRef.current, message, (r) => r.shieldedStep)
     return session === sessionRef.current && openRef.current ? reply : null
   }, [])
 
@@ -577,7 +581,7 @@ export default function ShieldedSend({
     flowStartRef.current = Date.now()
     setStep({ kind: 'working' })
     ask(
-      sessionNetworkRef.current,
+      sessionScopeRef.current,
       {
         type: SERVICE_TYPES.SHIELDED_SHIELD,
         poolId,
