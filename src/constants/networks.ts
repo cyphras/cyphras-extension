@@ -20,15 +20,13 @@ export interface NetworkConfig {
   explorerUrl?: string // custom explorer base URL - if omitted, falls back to stellar.expert
   txTimeout: number // transaction timeout in seconds (default 90)
   isDefault: boolean
-  // Shielded (private-mode) pools. Testnet only; absent on mainnet so the gate refuses to prove.
+  // Shielded (private-mode) pools. Only the shipped networks carry them, and the background keeps
+  // a pool only while the SDK release pins its vault on that network.
   shielded?: ShieldedConfig[]
 }
 
 export const NETWORK_STORAGE_KEY = 'cyphras_networks'
 export const ACTIVE_NETWORK_KEY = 'cyphras_active_network'
-
-// Live testnet passphrase; the shielded gate refuses any network not on it.
-export const TESTNET_PASSPHRASE = 'Test SDF Network ; September 2015'
 
 export const DEFAULT_NETWORKS: NetworkConfig[] = [
   {
@@ -41,13 +39,22 @@ export const DEFAULT_NETWORKS: NetworkConfig[] = [
     explorerUrl: 'https://stellar.expert/explorer/public',
     txTimeout: 90,
     isDefault: true,
+    shielded: [
+      {
+        poolId: 'xlm',
+        deployment: 'mainnet/xlm',
+        label: 'XLM',
+        native: true,
+        decimals: 7,
+      },
+    ],
   },
   {
     id: 'testnet',
     name: 'Testnet',
     horizonUrl: 'https://horizon-testnet.stellar.org',
     sorobanRpcUrl: 'https://soroban-testnet.stellar.org',
-    passphrase: TESTNET_PASSPHRASE,
+    passphrase: 'Test SDF Network ; September 2015',
     friendbotUrl: 'https://friendbot.stellar.org',
     explorerUrl: 'https://stellar.expert/explorer/testnet',
     txTimeout: 90,

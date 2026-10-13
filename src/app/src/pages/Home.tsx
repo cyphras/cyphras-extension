@@ -201,8 +201,13 @@ export default function Home() {
   const {
     available: shieldedAvailable,
     pools: shieldedPools,
-    onTestnet: shieldedOnTestnet,
+    privateNetworks,
   } = useShieldedAvailable()
+  // On a network without private pools, the networks with them and the first to switch to.
+  const privateNetworkNames = new Intl.ListFormat('en').format(
+    privateNetworks.map((n) => n.name.toLowerCase())
+  )
+  const switchTarget = shieldedPools.length === 0 ? privateNetworks.at(0) : undefined
   const [switchingNet, setSwitchingNet] = useState(false)
   // Pool the private surfaces act on; clamped to the active network's pool set.
   const [selectedPoolId, setSelectedPoolId] = useState<string>(shieldedPools[0]?.poolId ?? 'xlm')
@@ -852,24 +857,27 @@ export default function Home() {
                   <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-primary/15">
                     <EyeOff size={20} className="text-primary" />
                   </div>
-                  {!shieldedOnTestnet ? (
+                  {switchTarget ? (
                     <>
                       <p className="text-sm font-medium text-foreground">
-                        Private mode runs on testnet
+                        Private mode runs on {privateNetworkNames}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        Switch to the testnet network to shield, send, and receive privately.
+                        Switch to the {switchTarget.name.toLowerCase()} network to shield, send, and
+                        receive privately.
                       </p>
                       <Button
                         className="w-full"
                         disabled={switchingNet}
                         onClick={async () => {
                           setSwitchingNet(true)
-                          await setActiveNetwork('testnet')
+                          await setActiveNetwork(switchTarget.id)
                           setSwitchingNet(false)
                         }}
                       >
-                        {switchingNet ? 'Switching...' : 'Switch to testnet'}
+                        {switchingNet
+                          ? 'Switching...'
+                          : `Switch to ${switchTarget.name.toLowerCase()}`}
                       </Button>
                     </>
                   ) : (
