@@ -83,7 +83,12 @@ function poolOf(net: NetworkConfig, poolId: string | undefined): ShieldedDeploym
   return pool
 }
 
-async function activeAccount(): Promise<{ account: AccountInfo; mnemonic: string }> {
+// The active account, which must be the one the request names: another surface can switch accounts
+// while the popup, which polls for that, still shows the old one, and a shield or payment must
+// never sign or spend as an account its page did not show. The account checked is the one used.
+async function activeAccount(
+  publicKey: unknown
+): Promise<{ account: AccountInfo; mnemonic: string }> {
   // A lock can leave the recovery phrase in the session for a pending dApp approval; the unlocked
   // account's key is what says the wallet is open.
   if (!(await getSessionPublicKey())) {
@@ -95,6 +100,12 @@ async function activeAccount(): Promise<{ account: AccountInfo; mnemonic: string
     store.activePublicKey ?? store.accounts.find((a) => a.index === store.activeIndex)?.publicKey
   const account = store.accounts.find((a) => a.publicKey === activePk)
   if (!account) throw new ShieldedRefusal('no_account', 'No account is active.')
+  if (account.publicKey !== publicKey) {
+    throw new ShieldedRefusal(
+      'account_changed',
+      'The active account changed, so this did not run. Check the account and try again.'
+    )
+  }
   if (account.index < 0 || account.walletId.startsWith('sk:')) {
     throw new ShieldedRefusal(
       'needs_recovery_phrase',
@@ -191,12 +202,13 @@ async function openWallet(
 
 async function walletFor(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string | undefined,
   startFresh = false
 ): Promise<OpenWallet> {
   assertShieldedAllowed(net)
   const pool = poolOf(net, poolId)
-  const { account, mnemonic } = await activeAccount()
+  const { account, mnemonic } = await activeAccount(publicKey)
   const key = [pool.deployment.id, account.walletId, account.index, account.publicKey].join('|')
   const entry = wallets.get(key)
   if (entry) return entry.opening
@@ -321,11 +333,12 @@ async function statusOf(entry: OpenWallet): Promise<ShieldedStatusView> {
 // waiting for a sync.
 export async function shieldedReceiveAddress(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string | undefined
 ): Promise<string> {
   assertShieldedAllowed(net)
   const pool = poolOf(net, poolId)
-  const { account, mnemonic } = await activeAccount()
+  const { account, mnemonic } = await activeAccount(publicKey)
   await accountKeypair(account, mnemonic)
   return PrivateWallet.address({
     network: pool.deployment.network,
@@ -336,9 +349,10 @@ export async function shieldedReceiveAddress(
 
 export async function shieldedStatus(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string
 ): Promise<ShieldedStatusView> {
-  return statusOf(await walletFor(net, poolId))
+  return statusOf(await walletFor(net, publicKey, poolId))
 }
 
 // A stored state that every vault of the network shares and that cannot be assigned to this one
@@ -346,20 +360,25 @@ export async function shieldedStatus(
 // SDK does only when asked, leaving those records stored; any other open is left as it is.
 export async function shieldedStartFresh(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string
 ): Promise<ShieldedStatusView> {
   try {
-    return await statusOf(await walletFor(net, poolId))
+    return await statusOf(await walletFor(net, publicKey, poolId))
   } catch (err) {
     if (!(err instanceof CyphrasError && err.code === 'state_unassigned')) throw err
   }
-  return statusOf(await walletFor(net, poolId, true))
+  return statusOf(await walletFor(net, publicKey, poolId, true))
 }
 
-export async function shieldedDismissReset(net: NetworkConfig, poolId: string): Promise<void> {
+export async function shieldedDismissReset(
+  net: NetworkConfig,
+  publicKey: unknown,
+  poolId: string
+): Promise<void> {
   assertShieldedAllowed(net)
   const pool = poolOf(net, poolId)
-  const { account } = await activeAccount()
+  const { account } = await activeAccount(publicKey)
   await chrome.storage.local.remove(resetNoticeKey(scopeOf(pool, account)))
 }
 
@@ -368,9 +387,10 @@ export async function shieldedDismissReset(net: NetworkConfig, poolId: string): 
 // provider reported it, unconfirmed, or no time when no provider did.
 export async function shieldedHistory(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string
 ): Promise<ShieldedHistoryItem[]> {
-  const entry = await walletFor(net, poolId)
+  const entry = await walletFor(net, publicKey, poolId)
   const { wallet } = entry
   const [history, plans, deposits, records] = await Promise.all([
     wallet.history(),
@@ -479,20 +499,22 @@ export async function shieldedHistory(
 
 export async function shieldedSync(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string
 ): Promise<ShieldedStatusView> {
-  const entry = await walletFor(net, poolId)
+  const entry = await walletFor(net, publicKey, poolId)
   await syncOnce(entry)
   return statusOf(entry)
 }
 
 export async function shieldedShield(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string,
   amount: bigint,
   whileSubmitting: boolean
 ): Promise<ShieldedReceiptView> {
-  const { wallet, signer } = await walletFor(net, poolId)
+  const { wallet, signer } = await walletFor(net, publicKey, poolId)
   const before = (await wallet.deposits()).length
   try {
     const receipt = await track(wallet.shield({ amount, signer, whileSubmitting }))
@@ -509,9 +531,10 @@ export async function shieldedShield(
 
 export async function shieldedLimits(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string
 ): Promise<ShieldedLimitsView> {
-  const { wallet, signer } = await walletFor(net, poolId)
+  const { wallet, signer } = await walletFor(net, publicKey, poolId)
   const limits = await wallet.vaultLimits(signer.publicKey)
   return {
     minDeposit: limits.minDeposit.toString(),
@@ -531,11 +554,12 @@ export async function shieldedLimits(
 // minute; before the worker's first sync only the fee is known.
 export async function shieldedQuote(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string,
   kind: 'send' | 'unshield',
   selfRelay: boolean
 ): Promise<ShieldedQuoteView> {
-  const { wallet, pool } = await walletFor(net, poolId)
+  const { wallet, pool } = await walletFor(net, publicKey, poolId)
   const quote = await wallet.quote(
     selfRelay ? { kind, selfRelay } : { kind, maxFee: pool.maxRelayerFee }
   )
@@ -569,11 +593,12 @@ async function watchingPlans(
 
 export async function shieldedSpend(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string,
   holder: string,
   req: SpendRequest
 ): Promise<ShieldedStep> {
-  const { wallet, pool, signer } = await walletFor(net, poolId)
+  const { wallet, pool, signer } = await walletFor(net, publicKey, poolId)
   if (req.kind === 'send') {
     return startReviewed(holder, (confirm) =>
       watchingPlans(wallet, () =>
@@ -591,12 +616,13 @@ export async function shieldedSpend(
 
 export async function shieldedRetry(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string,
   holder: string,
   planId: string,
   selfRelay: boolean
 ): Promise<ShieldedStep> {
-  const { wallet, pool, signer } = await walletFor(net, poolId)
+  const { wallet, pool, signer } = await walletFor(net, publicKey, poolId)
   const plan = (await wallet.plans()).find((p) => p.planId === planId)
   // The SDK retries a relayed plan through its relayer first, then the others. A self-relayed one
   // it moves to relayers only when they are named.
@@ -614,11 +640,12 @@ export async function shieldedRetry(
 // a claim; each returns the transaction's hash.
 export async function shieldedAccountAction(
   net: NetworkConfig,
+  publicKey: unknown,
   poolId: string,
   action: 'cancel' | 'refund' | 'claim',
   id: number
 ): Promise<string> {
-  const { wallet, signer, scope } = await walletFor(net, poolId)
+  const { wallet, signer, scope } = await walletFor(net, publicKey, poolId)
   const claimed =
     action === 'claim'
       ? (await wallet.plans()).find((p) => p.exitParts.some((part) => part.id === id))
@@ -658,6 +685,11 @@ export async function shieldedAccountAction(
   }
 }
 
-export function shieldedDecide(reviewId: string, approve: boolean): Promise<ShieldedStep> {
+export async function shieldedDecide(
+  publicKey: unknown,
+  reviewId: string,
+  approve: boolean
+): Promise<ShieldedStep> {
+  await activeAccount(publicKey)
   return decideReview(reviewId, approve)
 }

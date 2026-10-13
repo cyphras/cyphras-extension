@@ -40,7 +40,11 @@ export default function ShieldedReceive({
     setError(null)
     setAddress(null)
     chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_RECEIVE_ADDRESS, networkId: activeNetwork.id },
+      {
+        type: SERVICE_TYPES.SHIELDED_RECEIVE_ADDRESS,
+        networkId: activeNetwork.id,
+        publicKey: activePublicKey,
+      },
       (r: ServiceResponse) => {
         if (runId !== runIdRef.current) return
         if (chrome.runtime.lastError) setError('The extension restarted. Try again.')
@@ -48,7 +52,7 @@ export default function ShieldedReceive({
         else if (r?.shieldedAddress) setAddress(r.shieldedAddress)
       }
     )
-  }, [activeNetwork.id])
+  }, [activeNetwork.id, activePublicKey])
 
   // Read again on account change, the old address cleared first so it never shows for the wrong
   // account.

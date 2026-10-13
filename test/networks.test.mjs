@@ -3,24 +3,11 @@
 // pins the mainnet XLM vault, the state private mode on mainnet waits for.
 import assert from 'node:assert/strict'
 import { beforeEach, test } from 'node:test'
+import { stubChromeStorage } from './support/chrome.mjs'
 import { resolveSources } from './support/sources.mjs'
 
 resolveSources({ sdk: new URL('./support/pinned-mainnet-sdk.mjs', import.meta.url).href })
-
-// chrome.storage.local as the background uses it: values stored as copies, as JSON would.
-const stored = new Map()
-globalThis.chrome = {
-  storage: {
-    local: {
-      async get(key) {
-        return stored.has(key) ? { [key]: structuredClone(stored.get(key)) } : {}
-      },
-      async set(items) {
-        for (const [key, value] of Object.entries(items)) stored.set(key, structuredClone(value))
-      },
-    },
-  },
-}
+const { local } = stubChromeStorage()
 
 const { addNetwork, getNetworks, getShieldedNetwork, setActiveNetwork } =
   await import('../src/background/networkManager.ts')
@@ -75,7 +62,7 @@ const custom = {
 const poolsOf = (networks) =>
   Object.fromEntries(networks.map((n) => [n.id, (n.shielded ?? []).map((p) => p.deployment)]))
 
-beforeEach(() => stored.clear())
+beforeEach(() => local.clear())
 
 test('a fresh install serves the shipped networks with the pools the SDK release pins', async () => {
   assert.deepEqual(poolsOf(await getNetworks()), {
@@ -90,16 +77,16 @@ test('a fresh install serves the shipped networks with the pools the SDK release
 })
 
 test('a 0.4.0 store gets the mainnet pool without being rewritten', async () => {
-  stored.set(NETWORKS, [mainnet040, testnet040])
+  local.put(NETWORKS, [mainnet040, testnet040])
   assert.deepEqual(poolsOf(await getNetworks()), {
     mainnet: ['mainnet/xlm'],
     testnet: ['testnet/xlm'],
   })
-  assert.deepEqual(stored.get(NETWORKS), [mainnet040, testnet040])
+  assert.deepEqual(local.peek(NETWORKS), [mainnet040, testnet040])
 })
 
 test('pools smuggled into storage are ignored', async () => {
-  stored.set(NETWORKS, [
+  local.put(NETWORKS, [
     { ...mainnet040, shielded: [pool('testnet/xlm')] },
     testnet040,
     { ...custom, shielded: [pool('mainnet/xlm')] },
@@ -112,17 +99,17 @@ test('pools smuggled into storage are ignored', async () => {
 })
 
 test('a custom network gets no pools, whatever it is added with', async () => {
-  stored.set(NETWORKS, [mainnet040, testnet040])
+  local.put(NETWORKS, [mainnet040, testnet040])
   await addNetwork({ ...custom, shielded: [pool('mainnet/xlm')] })
   assert.deepEqual(poolsOf(await getNetworks()).c0ffee, [])
-  assert.equal(stored.get(NETWORKS)[2].shielded, undefined)
+  assert.equal(local.peek(NETWORKS)[2].shielded, undefined)
 })
 
 test('a custom network cannot reuse the id of a shipped one', async () => {
-  stored.set(NETWORKS, [mainnet040, testnet040])
+  local.put(NETWORKS, [mainnet040, testnet040])
   await assert.rejects(addNetwork({ ...custom, id: 'mainnet' }), /already exists/)
   // One stored under a shipped id all the same, as an edited store can hold, gets no pools.
-  stored.set(NETWORKS, [
+  local.put(NETWORKS, [
     mainnet040,
     { ...testnet040, ...custom, id: 'testnet', passphrase: TESTNET },
   ])
@@ -130,7 +117,7 @@ test('a custom network cannot reuse the id of a shipped one', async () => {
 })
 
 test('a private request runs only on the network its page showed', async () => {
-  stored.set(NETWORKS, [mainnet040, testnet040])
+  local.put(NETWORKS, [mainnet040, testnet040])
   await setActiveNetwork('testnet')
   assert.equal((await getShieldedNetwork('testnet')).id, 'testnet')
   await assert.rejects(getShieldedNetwork('mainnet'), { code: 'network_changed' })

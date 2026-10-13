@@ -113,7 +113,7 @@ export function useShieldedStatus(
       const current = poolsRef.current
       if (!enabled || current.length === 0) return
       const runId = runIdRef.current
-      const runScope: ShieldedScope = { networkId }
+      const runScope: ShieldedScope = { networkId, publicKey: accountPk }
       const sync = type === SERVICE_TYPES.SHIELDED_SYNC
       if (sync) {
         syncsRef.current++
@@ -137,9 +137,13 @@ export function useShieldedStatus(
         return next
       })
       setError(replies.find((r) => r.error)?.error ?? null)
-      setScope((prev) => (prev?.networkId === runScope.networkId ? prev : runScope))
+      setScope((prev) =>
+        prev?.networkId === runScope.networkId && prev.publicKey === runScope.publicKey
+          ? prev
+          : runScope
+      )
     },
-    [enabled, networkId]
+    [enabled, networkId, accountPk]
   )
 
   const refresh = useCallback(() => {

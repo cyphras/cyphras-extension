@@ -53,9 +53,10 @@ export const SERVICE_TYPES = {
   FETCH_BTC_ACTIVITY: 'FETCH_BTC_ACTIVITY',
   SIGN_AND_SUBMIT_EVM_PAYMENT: 'SIGN_AND_SUBMIT_EVM_PAYMENT',
   EVM_TX_STATUS: 'EVM_TX_STATUS',
-  // Private mode. Every request names the network its page showed (networkId) and is refused once
-  // another one is active; poolId selects the pool (optional for RECEIVE_ADDRESS). Sends,
-  // unshields and retries return a review that SHIELDED_DECIDE answers.
+  // Private mode. Every request names the network and the account its page showed (networkId,
+  // publicKey) and is refused once either is no longer the active one; poolId selects the pool
+  // (optional for RECEIVE_ADDRESS). Sends, unshields and retries return a review that
+  // SHIELDED_DECIDE answers.
   SHIELDED_RECEIVE_ADDRESS: 'SHIELDED_RECEIVE_ADDRESS',
   SHIELDED_STATUS: 'SHIELDED_STATUS',
   SHIELDED_SYNC: 'SHIELDED_SYNC',

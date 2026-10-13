@@ -248,8 +248,8 @@ export default function ShieldedSend({
   const { formatValue, getExplorerTxUrl } = usePreferences()
   // What the page shows, and what its session opened on. Every request names the session's, set
   // when the page opens rather than read at a click, so a control still on screen after another
-  // surface switched networks is refused instead of run where the page did not show it.
-  const shownScope: ShieldedScope = { networkId: activeNetwork.id }
+  // surface switched networks or accounts is refused instead of run where the page did not show it.
+  const shownScope: ShieldedScope = { networkId: activeNetwork.id, publicKey: accountPk }
   const shownScopeRef = useRef(shownScope)
   shownScopeRef.current = shownScope
   const sessionScopeRef = useRef(shownScope)

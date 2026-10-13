@@ -3320,7 +3320,9 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       try {
         const net = await getShieldedNetwork(message.networkId)
         const poolId = isNonEmptyString(m.poolId) ? m.poolId : undefined
-        sendResponse({ shieldedAddress: await shieldedReceiveAddress(net, poolId) })
+        sendResponse({
+          shieldedAddress: await shieldedReceiveAddress(net, message.publicKey, poolId),
+        })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }
@@ -3338,8 +3340,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         const net = await getShieldedNetwork(message.networkId)
         const status =
           message.type === SERVICE_TYPES.SHIELDED_SYNC
-            ? await shieldedSync(net, m.poolId)
-            : await shieldedStatus(net, m.poolId)
+            ? await shieldedSync(net, message.publicKey, m.poolId)
+            : await shieldedStatus(net, message.publicKey, m.poolId)
         sendResponse({ shieldedStatus: status })
       } catch (err) {
         sendResponse(shieldedFailure(err))
@@ -3365,6 +3367,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         const net = await getShieldedNetwork(message.networkId)
         const receipt = await shieldedShield(
           net,
+          message.publicKey,
           m.poolId,
           BigInt(m.amount),
           m.whileSubmitting === true
@@ -3384,7 +3387,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        sendResponse({ shieldedStatus: await shieldedStartFresh(net, m.poolId) })
+        sendResponse({ shieldedStatus: await shieldedStartFresh(net, message.publicKey, m.poolId) })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }
@@ -3399,7 +3402,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        sendResponse({ shieldedHistory: await shieldedHistory(net, m.poolId) })
+        sendResponse({ shieldedHistory: await shieldedHistory(net, message.publicKey, m.poolId) })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }
@@ -3414,7 +3417,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        await shieldedDismissReset(net, m.poolId)
+        await shieldedDismissReset(net, message.publicKey, m.poolId)
         sendResponse({ ok: true })
       } catch (err) {
         sendResponse(shieldedFailure(err))
@@ -3430,7 +3433,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        sendResponse({ shieldedLimits: await shieldedLimits(net, m.poolId) })
+        sendResponse({ shieldedLimits: await shieldedLimits(net, message.publicKey, m.poolId) })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }
@@ -3450,7 +3453,9 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       try {
         const net = await getShieldedNetwork(message.networkId)
         const selfRelay = m.kind === 'unshield' && m.selfRelay === true
-        sendResponse({ shieldedQuote: await shieldedQuote(net, m.poolId, m.kind, selfRelay) })
+        sendResponse({
+          shieldedQuote: await shieldedQuote(net, message.publicKey, m.poolId, m.kind, selfRelay),
+        })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }
@@ -3484,7 +3489,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        const step = await shieldedSpend(net, m.poolId, m.holder, {
+        const step = await shieldedSpend(net, message.publicKey, m.poolId, m.holder, {
           kind: m.kind,
           to: m.to.trim(),
           amount: BigInt(m.amount),
@@ -3514,7 +3519,14 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        const step = await shieldedRetry(net, m.poolId, m.holder, m.planId, m.selfRelay === true)
+        const step = await shieldedRetry(
+          net,
+          message.publicKey,
+          m.poolId,
+          m.holder,
+          m.planId,
+          m.selfRelay === true
+        )
         sendResponse({ shieldedStep: step })
       } catch (err) {
         sendResponse(shieldedFailure(err))
@@ -3543,7 +3555,9 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
             : 'claim'
       try {
         const net = await getShieldedNetwork(message.networkId)
-        sendResponse({ txHash: await shieldedAccountAction(net, m.poolId, action, m.id) })
+        sendResponse({
+          txHash: await shieldedAccountAction(net, message.publicKey, m.poolId, action, m.id),
+        })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }
@@ -3558,7 +3572,9 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         await getShieldedNetwork(message.networkId)
-        sendResponse({ shieldedStep: await shieldedDecide(m.reviewId, m.approve) })
+        sendResponse({
+          shieldedStep: await shieldedDecide(message.publicKey, m.reviewId, m.approve),
+        })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }

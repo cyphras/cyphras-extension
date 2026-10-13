@@ -106,10 +106,11 @@ export interface CctpFeeBreakdown {
 // Private mode views. Amounts are stroops as decimal strings; times are Unix milliseconds unless a
 // field says seconds.
 
-// What a private request was made for, as the view it came from showed it: the background refuses
-// the request once that is no longer what is active.
+// What a private request was made for, as the view it came from showed it: the network and the
+// account. The background refuses the request once either is no longer the active one.
 export interface ShieldedScope {
   networkId: string
+  publicKey: string
 }
 
 export interface ShieldedErrorView {
