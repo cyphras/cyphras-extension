@@ -203,11 +203,13 @@ export default function Home() {
     pools: shieldedPools,
     privateNetworks,
   } = useShieldedAvailable()
-  // On a network without private pools, the networks with them and the first to switch to.
-  const privateNetworkNames = new Intl.ListFormat('en').format(
-    privateNetworks.map((n) => n.name.toLowerCase())
-  )
-  const switchTarget = shieldedPools.length === 0 ? privateNetworks.at(0) : undefined
+  // A network without private pools points the user to the networks that have them. Only the
+  // background knows which those are, so the card waits for it rather than name the shipped
+  // defaults, whose pools it may refuse.
+  const privateNetworkNames =
+    privateNetworks &&
+    new Intl.ListFormat('en').format(privateNetworks.map((n) => n.name.toLowerCase()))
+  const switchTarget = shieldedPools.length === 0 ? privateNetworks?.at(0) : undefined
   // Mainnet's pool holds real funds and is unaudited, so it is marked experimental; any other
   // network's private mode is a testnet preview.
   const mainnetPrivate = activeNetwork.id === 'mainnet' && shieldedPools.length > 0
@@ -862,7 +864,7 @@ export default function Home() {
                 </>
               )}
 
-              {active && !shieldedAvailable && (
+              {active && !shieldedAvailable && privateNetworks && (
                 <div className="flex flex-col gap-3 rounded-xl bg-card p-5 text-center">
                   <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-primary/15">
                     <EyeOff size={20} className="text-primary" />

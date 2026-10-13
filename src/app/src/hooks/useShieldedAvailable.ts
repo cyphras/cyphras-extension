@@ -17,8 +17,9 @@ export interface ShieldedPoolOption {
 interface ShieldedAvailability {
   available: boolean
   pools: ShieldedPoolOption[]
-  // The networks private mode runs on, for a network without it to point to.
-  privateNetworks: NetworkConfig[]
+  // The networks private mode runs on, for a network without it to point to; null until the
+  // background has said which they are.
+  privateNetworks: NetworkConfig[] | null
 }
 
 // Private mode runs where the background gives the network pools, which it does only for a vault
@@ -58,7 +59,7 @@ export function useShieldedAvailable(): ShieldedAvailability {
     icon: p.native ? undefined : icons.get(`${p.assetCode}:${p.assetIssuer}`),
   }))
 
-  const privateNetworks = networks.filter((n) => (n.shielded?.length ?? 0) > 0)
+  const privateNetworks = loading ? null : networks.filter((n) => (n.shielded?.length ?? 0) > 0)
 
   return { available, pools, privateNetworks }
 }
