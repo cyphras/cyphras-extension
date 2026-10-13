@@ -42,7 +42,7 @@ import {
 import { getIconMap } from '@/hooks/useBalances'
 import { getChainIcons, getChainNames } from '@/lib/chainInfo'
 import { LEGACY_NETWORK_TO_CHAIN, chainById } from '@constants/chains'
-import { SERVICE_TYPES } from '@constants/services'
+import { PRIVATE_HINT_KEY, SERVICE_TYPES } from '@constants/services'
 import {
   NetworkFilterButton,
   NetworkFilterSheet,
@@ -75,8 +75,6 @@ import {
   ArrowLeftRight,
 } from 'lucide-react'
 
-// One-time flag: the private-mode coach-mark is shown until dismissed or discovered.
-const PRIVATE_HINT_KEY = 'cyphras_private_hint_seen'
 const WHATS_NEW_KEY = 'cyphras_whats_new_seen'
 const WHATS_NEW_VERSION = '0.4.0'
 

@@ -102,6 +102,11 @@ export const SHIELDED_REVIEW_PORT = 'shielded-review:'
 // update must keep it.
 export const PRIVATE_MAINNET_ACK_KEY = 'cyphras_private_mainnet_ack_v1'
 
+// Set once the user has dismissed the private mode hint, or opened private mode, which counts as
+// having found it. The popup reads it; the background's cleanup of retired private data on update
+// must keep it.
+export const PRIVATE_HINT_KEY = 'cyphras_private_hint_seen'
+
 export const PASSWORD_RULES = {
   MIN_LENGTH: 8,
   MAX_ATTEMPTS: 5,
