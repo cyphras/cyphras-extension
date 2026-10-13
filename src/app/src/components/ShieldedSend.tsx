@@ -957,7 +957,7 @@ export default function ShieldedSend({
         title: 'Deposits wait for screening',
         body: `${
           limits
-            ? `A deposit can be used after ${duration(limits.delaySmall)} of screening, or ${duration(limits.delayLarge)} from ${unit(limits.largeDepositThreshold)}.`
+            ? `A deposit can be used after ${duration(limits.delaySmall)} of screening at the earliest, or ${duration(limits.delayLarge)} from ${unit(limits.largeDepositThreshold)}.`
             : 'A deposit can be used only after screening.'
         } You can cancel it until then.`,
       },
