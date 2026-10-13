@@ -69,7 +69,8 @@ interface ShieldedSendProps {
   native?: boolean
   usdPrice: number | null
   accountPk: string
-  // The pool holds real funds on mainnet, where the first shield waits for an acknowledgement.
+  // The pool holds real funds on mainnet, where the first shield, send or unshield waits for an
+  // acknowledgement.
   mainnet: boolean
   publicBalance?: string | null
   subentryCount?: number
@@ -82,7 +83,7 @@ interface ShieldedSendProps {
 type Step =
   | { kind: 'form' }
   | { kind: 'retry' }
-  | { kind: 'shield-ack' }
+  | { kind: 'ack' }
   | { kind: 'shield-review' }
   | { kind: 'preparing' }
   | { kind: 'review'; review: ShieldedReviewView }
@@ -130,8 +131,8 @@ const STELLAR_DESTINATION = /^([GC][A-Z2-7]{55}|M[A-Z2-7]{68})$/
 // after the flow began; the clock of the plan and of the popup may differ by a little.
 const CLOCK_SKEW_MS = 60_000
 
-// Set once the user has read what private payments on mainnet are, before the first shield there;
-// the update cleanup keeps it.
+// Set once the user has read what private payments on mainnet are, before the first shield, send
+// or unshield there; the update cleanup keeps it.
 const MAINNET_ACK_KEY = 'cyphras_private_mainnet_ack_v1'
 
 // mayLand marks a failure after which the deposit or payment may still land: it was saved
@@ -397,10 +398,12 @@ export default function ShieldedSend({
     }
   }, [open, a, retryPlan, poolId, selfRelay, spendable])
 
+  // The pool's limits: a shield checks its amount against them, and on mainnet the
+  // acknowledgement quotes them.
   useEffect(() => {
     setLimits(null)
     setLimitsError(null)
-    if (!open || a !== 'shield') return
+    if (!open || (a !== 'shield' && !mainnet)) return
     let current = true
     ask(
       sessionNetworkRef.current,
@@ -414,10 +417,10 @@ export default function ShieldedSend({
     return () => {
       current = false
     }
-  }, [open, a, poolId])
+  }, [open, a, poolId, mainnet])
 
   useEffect(() => {
-    if (!open || !mainnet || a !== 'shield') return
+    if (!open || !mainnet) return
     let current = true
     chrome.storage.local.get(MAINNET_ACK_KEY, (res) => {
       if (current) setAcknowledged(res[MAINNET_ACK_KEY] === true)
@@ -425,7 +428,7 @@ export default function ShieldedSend({
     return () => {
       current = false
     }
-  }, [open, mainnet, a])
+  }, [open, mainnet])
 
   // The account submitted the shield itself, so its fee is public anyway.
   const shieldHash = step.kind === 'shielded' ? step.receipt.txHash : null
@@ -531,9 +534,18 @@ export default function ShieldedSend({
   function review() {
     if (!a || units === null) return
     setError(null)
+    if (mainnet && !acknowledged) {
+      setStep({ kind: 'ack' })
+      return
+    }
+    startReview()
+  }
+
+  function startReview() {
+    if (!a || units === null) return
     if (a === 'shield') {
       setShieldAnyway(false)
-      setStep({ kind: mainnet && !acknowledged ? 'shield-ack' : 'shield-review' })
+      setStep({ kind: 'shield-review' })
       return
     }
     setStep({ kind: 'preparing' })
@@ -560,7 +572,7 @@ export default function ShieldedSend({
   function acknowledge() {
     chrome.storage.local.set({ [MAINNET_ACK_KEY]: true })
     setAcknowledged(true)
-    setStep({ kind: 'shield-review' })
+    startReview()
   }
 
   function approveShield() {
@@ -635,7 +647,7 @@ export default function ShieldedSend({
   }
 
   const view: SheetView | null =
-    step.kind === 'shield-ack'
+    step.kind === 'ack'
       ? { kind: 'ack' }
       : step.kind === 'shield-review' || (step.kind === 'working' && !step.review)
         ? { kind: 'shield' }
@@ -927,8 +939,8 @@ export default function ShieldedSend({
     )
   }
 
-  // What private payments on mainnet are, shown once before the first shield there, with the pool's
-  // own limits once they are read.
+  // What private payments on mainnet are, shown once before the first shield, send or unshield
+  // there, with the pool's own limits once they are read.
   function mainnetNotice() {
     const items = [
       {
@@ -957,8 +969,8 @@ export default function ShieldedSend({
       <>
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-5 py-4 [&>*]:shrink-0">
           <p className="rounded-xl bg-amber-500/10 px-4 py-3 text-xs leading-snug text-amber-700 dark:text-amber-400">
-            Private payments on mainnet are experimental and unaudited. This is real money: shield
-            only what you can afford to lose.
+            Private payments on mainnet are experimental and unaudited. This is real money: use only
+            what you can afford to lose.
           </p>
           <ul className="flex flex-col gap-2">
             {items.map(({ icon: Icon, title, body }) => (
@@ -1276,7 +1288,7 @@ export default function ShieldedSend({
   const sheetTitle = !sheetView
     ? ''
     : sheetView.kind === 'ack'
-      ? 'Before you shield'
+      ? 'Private payments on mainnet'
       : sheetView.kind === 'shield'
         ? 'Confirm shield'
         : sheetView.kind === 'spend'
