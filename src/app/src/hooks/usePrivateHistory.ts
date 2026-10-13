@@ -6,6 +6,7 @@ import type { ServiceResponse, ShieldedHistoryItem, ShieldedStatusView } from '@
 // is built from. Items stay null until the first reply, so a page can show its skeleton.
 export function usePrivateHistory(
   enabled: boolean,
+  networkId: string,
   poolId: string,
   status: ShieldedStatusView | null
 ) {
@@ -20,7 +21,7 @@ export function usePrivateHistory(
     const run = ++runRef.current
     setLoading(true)
     chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_HISTORY, poolId },
+      { type: SERVICE_TYPES.SHIELDED_HISTORY, poolId, networkId },
       (r: ServiceResponse) => {
         if (run !== runRef.current) return
         setLoading(false)
@@ -34,7 +35,7 @@ export function usePrivateHistory(
         }
       }
     )
-  }, [poolId])
+  }, [poolId, networkId])
 
   useEffect(() => {
     if (!enabled || !content) {

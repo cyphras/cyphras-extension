@@ -43,10 +43,11 @@ type StatusRequest = typeof SERVICE_TYPES.SHIELDED_STATUS | typeof SERVICE_TYPES
 
 function readStatus(
   type: StatusRequest,
-  poolId: string
+  poolId: string,
+  networkId: string
 ): Promise<{ status: ShieldedStatusView | null; error: ShieldedStatusError | null }> {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type, poolId }, (r: ServiceResponse) => {
+    chrome.runtime.sendMessage({ type, poolId, networkId }, (r: ServiceResponse) => {
       if (chrome.runtime.lastError) {
         resolve({ status: null, error: { poolId, message: 'Extension error', code: null } })
       } else if (r?.shieldedStatus) {
@@ -113,7 +114,7 @@ export function useShieldedStatus(
         syncsRef.current++
         setSyncing(true)
       }
-      const replies = await Promise.all(current.map((p) => readStatus(type, p.poolId)))
+      const replies = await Promise.all(current.map((p) => readStatus(type, p.poolId, networkId)))
       if (runId !== runIdRef.current) return
       if (sync) {
         syncsRef.current--
@@ -132,7 +133,7 @@ export function useShieldedStatus(
       })
       setError(replies.find((r) => r.error)?.error ?? null)
     },
-    [enabled]
+    [enabled, networkId]
   )
 
   const refresh = useCallback(() => {

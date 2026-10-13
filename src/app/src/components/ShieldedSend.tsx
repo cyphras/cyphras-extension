@@ -140,9 +140,13 @@ type Reply<T> =
   | { ok: true; value: T }
   | { ok: false; error: string; code?: string; mayLand: boolean; planId?: string }
 
-function ask<T>(message: object, pick: (r: ServiceResponse) => T | undefined): Promise<Reply<T>> {
+function ask<T>(
+  networkId: string,
+  message: object,
+  pick: (r: ServiceResponse) => T | undefined
+): Promise<Reply<T>> {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (r: ServiceResponse) => {
+    chrome.runtime.sendMessage({ ...message, networkId }, (r: ServiceResponse) => {
       if (chrome.runtime.lastError) {
         resolve({
           ok: false,
@@ -231,6 +235,9 @@ export default function ShieldedSend({
   // the page is closed, never paints.
   const sessionRef = useRef(0)
   const openRef = useRef(false)
+  // The network the page showed when the session began. Every request names it, so the background
+  // refuses one that would run after another surface switched networks.
+  const sessionNetworkRef = useRef('')
   // The port held for the payment in progress, whose token goes with its request: once the port
   // goes, the background declines the payment's open review and any it would still get. And the
   // last review shown, which the next reply answers.
@@ -278,7 +285,11 @@ export default function ShieldedSend({
   useEffect(() => {
     if (step.kind !== 'review') return
     const timer = setInterval(() => {
-      chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_STATUS, poolId })
+      chrome.runtime.sendMessage({
+        type: SERVICE_TYPES.SHIELDED_STATUS,
+        poolId,
+        networkId: sessionNetworkRef.current,
+      })
     }, 20_000)
     return () => clearInterval(timer)
   }, [step.kind, poolId])
@@ -343,9 +354,11 @@ export default function ShieldedSend({
   }, [releaseFlow, onDone, retryPlan])
 
   // Opening starts a session. Ending one, by closing the page here or from the parent as on an
-  // account or network switch, or by opening it for another action, lets its payment's port go.
+  // account switch, by a network switch, or by opening it for another action, lets its payment's
+  // port go.
   useEffect(() => {
     sessionRef.current++
+    sessionNetworkRef.current = activeNetwork.id
     releaseFlow()
     if (!open) return
     setRecipient(retryPlan?.to ?? '')
@@ -356,7 +369,7 @@ export default function ShieldedSend({
     setRefusedWhileSubmitting(false)
     setError(null)
     setStep({ kind: retryPlan ? 'retry' : 'form' })
-  }, [open, action, retryPlan, decimals, releaseFlow])
+  }, [open, action, retryPlan, decimals, releaseFlow, activeNetwork.id])
 
   // Asked again when the route changes, or when a sync changes what the notes can pay.
   const spendable = status?.balance.spendable
@@ -366,6 +379,7 @@ export default function ShieldedSend({
     if (!open || retryPlan || (a !== 'send' && a !== 'unshield')) return
     let current = true
     ask(
+      sessionNetworkRef.current,
       {
         type: SERVICE_TYPES.SHIELDED_QUOTE,
         poolId,
@@ -388,7 +402,11 @@ export default function ShieldedSend({
     setLimitsError(null)
     if (!open || a !== 'shield') return
     let current = true
-    ask({ type: SERVICE_TYPES.SHIELDED_LIMITS, poolId }, (r) => r.shieldedLimits).then((reply) => {
+    ask(
+      sessionNetworkRef.current,
+      { type: SERVICE_TYPES.SHIELDED_LIMITS, poolId },
+      (r) => r.shieldedLimits
+    ).then((reply) => {
       if (!current) return
       if (reply.ok) setLimits(reply.value)
       else setLimitsError(reply.error)
@@ -430,7 +448,7 @@ export default function ShieldedSend({
   // background declined any review in it when the session's port went.
   const requestStep = useCallback(async (message: object): Promise<Reply<ShieldedStep> | null> => {
     const session = sessionRef.current
-    const reply = await ask(message, (r) => r.shieldedStep)
+    const reply = await ask(sessionNetworkRef.current, message, (r) => r.shieldedStep)
     return session === sessionRef.current && openRef.current ? reply : null
   }, [])
 
@@ -551,6 +569,7 @@ export default function ShieldedSend({
     flowStartRef.current = Date.now()
     setStep({ kind: 'working' })
     ask(
+      sessionNetworkRef.current,
       {
         type: SERVICE_TYPES.SHIELDED_SHIELD,
         poolId,

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
+import { useNetwork } from '@/context/NetworkContext'
 import { SERVICE_TYPES } from '@constants/services'
 import type { ServiceResponse } from '@ext-types/index'
 
@@ -16,12 +17,13 @@ export function ShieldedStartFresh({ poolId, message, onStarted }: ShieldedStart
   const [confirming, setConfirming] = useState(false)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { activeNetwork } = useNetwork()
 
   function startFresh() {
     setRunning(true)
     setError(null)
     chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_START_FRESH, poolId },
+      { type: SERVICE_TYPES.SHIELDED_START_FRESH, poolId, networkId: activeNetwork.id },
       (r: ServiceResponse) => {
         setRunning(false)
         if (chrome.runtime.lastError) {

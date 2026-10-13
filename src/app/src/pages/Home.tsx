@@ -232,7 +232,12 @@ export default function Home() {
   const shieldedStatus = shieldedByPool[poolId]?.status ?? null
   const shieldedModel = shieldedStatus ? privateBalance(shieldedStatus) : null
   const [openPart, setOpenPart] = useState<BalancePartKey | null>(null)
-  const privateHistory = usePrivateHistory(active && shieldedAvailable, poolId, shieldedStatus)
+  const privateHistory = usePrivateHistory(
+    active && shieldedAvailable,
+    activeNetwork.id,
+    poolId,
+    shieldedStatus
+  )
   const [historyOpen, setHistoryOpen] = useState(false)
   // By its ID, so the sheet follows the entry as syncs move it on.
   const [entryId, setEntryId] = useState<string | null>(null)
@@ -573,8 +578,9 @@ export default function Home() {
   // records followed may still land.
   const shieldedReset = shieldedStatus?.stateReset ?? null
   const dismissShieldedReset = () =>
-    chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_DISMISS_RESET, poolId }, () =>
-      reloadShielded()
+    chrome.runtime.sendMessage(
+      { type: SERVICE_TYPES.SHIELDED_DISMISS_RESET, poolId, networkId: activeNetwork.id },
+      () => reloadShielded()
     )
 
   return (

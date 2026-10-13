@@ -5,6 +5,7 @@ import { Alert } from '@/components/Alert'
 import { BottomSheet } from '@/components/BottomSheet'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useNetwork } from '@/context/NetworkContext'
 import { useWallet } from '@/context/WalletContext'
 import { useCopy } from '@/hooks/useCopy'
 import { SERVICE_TYPES } from '@constants/services'
@@ -27,6 +28,7 @@ export default function ShieldedReceive({
   onClose: () => void
 }) {
   const { activePublicKey } = useWallet()
+  const { activeNetwork } = useNetwork()
   const [address, setAddress] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const { copied, copy } = useCopy()
@@ -38,7 +40,7 @@ export default function ShieldedReceive({
     setError(null)
     setAddress(null)
     chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_RECEIVE_ADDRESS },
+      { type: SERVICE_TYPES.SHIELDED_RECEIVE_ADDRESS, networkId: activeNetwork.id },
       (r: ServiceResponse) => {
         if (runId !== runIdRef.current) return
         if (chrome.runtime.lastError) setError('The extension restarted. Try again.')
@@ -46,7 +48,7 @@ export default function ShieldedReceive({
         else if (r?.shieldedAddress) setAddress(r.shieldedAddress)
       }
     )
-  }, [])
+  }, [activeNetwork.id])
 
   // Read again on account change, the old address cleared first so it never shows for the wrong
   // account.

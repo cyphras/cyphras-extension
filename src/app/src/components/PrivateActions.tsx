@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { RotateCcw } from 'lucide-react'
+import { useNetwork } from '@/context/NetworkContext'
 import { depositActions, needsRetry, planActions, type AccountAction } from '@/lib/privateActivity'
 import type { ServiceResponse, ShieldedDepositView, ShieldedPlanView } from '@ext-types/index'
 
@@ -23,6 +24,7 @@ export function PrivateActions({
   const [confirming, setConfirming] = useState<string | null>(null)
   const [running, setRunning] = useState<string | null>(null)
   const [outcomes, setOutcomes] = useState<Record<string, { ok: boolean; text: string }>>({})
+  const { activeNetwork } = useNetwork()
   const now = Math.floor(Date.now() / 1000)
 
   if (plan && needsRetry(plan)) {
@@ -46,7 +48,7 @@ export function PrivateActions({
     setConfirming(null)
     setRunning(action.key)
     chrome.runtime.sendMessage(
-      { type: action.type, poolId, id: action.id },
+      { type: action.type, poolId, id: action.id, networkId: activeNetwork.id },
       (r: ServiceResponse) => {
         setRunning(null)
         // A restart after the request left may still have sent the transaction.

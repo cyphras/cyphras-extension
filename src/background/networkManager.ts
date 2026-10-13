@@ -1,6 +1,7 @@
 import { DEFAULT_NETWORKS, NETWORK_STORAGE_KEY, ACTIVE_NETWORK_KEY } from '@constants/networks'
 import type { NetworkConfig } from '@constants/networks'
 import { SHIELDED_DEPLOYMENTS } from './shielded/deployments'
+import { ShieldedRefusal } from './shielded/errors'
 import { pinnedPool } from './shielded/gate'
 
 function validateNetworkConfig(network: NetworkConfig): string | null {
@@ -85,6 +86,20 @@ export async function getActiveNetwork(): Promise<NetworkConfig> {
   const result = await chrome.storage.local.get(ACTIVE_NETWORK_KEY)
   const activeId = result[ACTIVE_NETWORK_KEY] ?? 'mainnet'
   return networks.find((n) => n.id === activeId) ?? networks[0]
+}
+
+// The network a private request runs on: the active one, and only while it is the one the page
+// showed when it made the request. Another surface can switch networks under a page that still
+// shows the old one, and a shield or payment must never run on a network its page did not show.
+export async function getShieldedNetwork(networkId: unknown): Promise<NetworkConfig> {
+  const net = await getActiveNetwork()
+  if (net.id !== networkId) {
+    throw new ShieldedRefusal(
+      'network_changed',
+      'The active network changed, so this did not run. Check the network and try again.'
+    )
+  }
+  return net
 }
 
 export async function setActiveNetwork(networkId: string): Promise<void> {
