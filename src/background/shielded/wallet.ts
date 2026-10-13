@@ -73,8 +73,7 @@ function assertShieldedAllowed(net: NetworkConfig): void {
   }
 }
 
-// The testnet proving key comes from a solo setup that can forge proofs, so a pool opens only on
-// the network its pinned vault lives on, whatever the network config lists.
+// A pool opens only on the network its pinned vault lives on, whatever the network config lists.
 function poolOf(net: NetworkConfig, poolId: string | undefined): ShieldedDeployment {
   const config =
     poolId === undefined ? net.shielded?.[0] : net.shielded?.find((p) => p.poolId === poolId)
@@ -83,9 +82,8 @@ function poolOf(net: NetworkConfig, poolId: string | undefined): ShieldedDeploym
   return pool
 }
 
-// The active account, which must be the one the request names: another surface can switch accounts
-// while the popup, which polls for that, still shows the old one, and a shield or payment must
-// never sign or spend as an account its page did not show. The account checked is the one used.
+// The active account, only if the request names it: another surface can switch accounts under an
+// open page, and a payment must never sign as an account its page did not show.
 async function activeAccount(
   publicKey: unknown
 ): Promise<{ account: AccountInfo; mnemonic: string }> {

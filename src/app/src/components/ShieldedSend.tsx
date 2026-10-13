@@ -70,8 +70,7 @@ interface ShieldedSendProps {
   native?: boolean
   usdPrice: number | null
   accountPk: string
-  // The pool holds real funds on mainnet, where the first shield, send or unshield waits for an
-  // acknowledgement.
+  // On mainnet the first shield, send or unshield waits for an acknowledgement.
   mainnet: boolean
   publicBalance?: string | null
   subentryCount?: number
@@ -98,8 +97,7 @@ type Step =
 
 type ResultStep = Extract<Step, { kind: 'shielded' | 'submitted' | 'stopped' }>
 
-// What the confirm sheet shows: what mainnet private payments are, a shield to approve, a payment's
-// review, or how one ended.
+// The confirm sheet: the mainnet notice, a shield to approve, a payment's review, or its outcome.
 type SheetView =
   | { kind: 'ack' }
   | { kind: 'shield' }
@@ -228,8 +226,7 @@ export default function ShieldedSend({
   const [limitsError, setLimitsError] = useState<string | null>(null)
   // The network fee a shield paid, once Horizon has its transaction.
   const [shieldFee, setShieldFee] = useState<string | null>(null)
-  // Whether mainnet private payments were acknowledged; until it is read, the first shield, send
-  // or unshield asks again.
+  // False until the stored acknowledgement is read, so the first action asks rather than skips.
   const [acknowledged, setAcknowledged] = useState(false)
   // Each opening of the page is a session; a reply from an older session, or one that arrives once
   // the page is closed, never paints.
@@ -248,9 +245,8 @@ export default function ShieldedSend({
   const { accounts } = useWallet()
   const { activeNetwork } = useNetwork()
   const { formatValue, getExplorerTxUrl } = usePreferences()
-  // What the page shows, and what its session opened on. Every request names the session's, set
-  // when the page opens rather than read at a click, so a control still on screen after another
-  // surface switched networks or accounts is refused instead of run where the page did not show it.
+  // Requests name the scope fixed when the page opened, not at click time, so a control left on
+  // screen after a network or account switch elsewhere is refused.
   const shownScope: ShieldedScope = { networkId: activeNetwork.id, publicKey: accountPk }
   const shownScopeRef = useRef(shownScope)
   shownScopeRef.current = shownScope
@@ -400,8 +396,7 @@ export default function ShieldedSend({
     }
   }, [open, a, retryPlan, poolId, selfRelay, spendable])
 
-  // The pool's limits: a shield checks its amount against them, and on mainnet the
-  // acknowledgement quotes them.
+  // A shield checks its amount against these, and the mainnet acknowledgement quotes them.
   useEffect(() => {
     setLimits(null)
     setLimitsError(null)
@@ -941,8 +936,7 @@ export default function ShieldedSend({
     )
   }
 
-  // What private payments on mainnet are, shown once before the first shield, send or unshield
-  // there, with the pool's own limits once they are read.
+  // Shown once before the first shield, send or unshield on mainnet, with the pool's limits.
   function mainnetNotice() {
     const items = [
       {

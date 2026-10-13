@@ -20,8 +20,7 @@ export interface NetworkConfig {
   explorerUrl?: string // custom explorer base URL - if omitted, falls back to stellar.expert
   txTimeout: number // transaction timeout in seconds (default 90)
   isDefault: boolean
-  // Shielded (private-mode) pools. Only the shipped networks carry them, and the background keeps
-  // a pool only while the SDK release pins its vault on that network.
+  // Private-mode pools: only shipped networks carry them, and only while the SDK pins their vault.
   shielded?: ShieldedConfig[]
 }
 

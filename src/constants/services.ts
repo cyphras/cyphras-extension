@@ -53,10 +53,8 @@ export const SERVICE_TYPES = {
   FETCH_BTC_ACTIVITY: 'FETCH_BTC_ACTIVITY',
   SIGN_AND_SUBMIT_EVM_PAYMENT: 'SIGN_AND_SUBMIT_EVM_PAYMENT',
   EVM_TX_STATUS: 'EVM_TX_STATUS',
-  // Private mode. Every request names the network and the account its page showed (networkId,
-  // publicKey) and is refused once either is no longer the active one; poolId selects the pool
-  // (optional for RECEIVE_ADDRESS). Sends, unshields and retries return a review that
-  // SHIELDED_DECIDE answers.
+  // Private mode: each request carries its page's ShieldedScope and a poolId (optional for
+  // RECEIVE_ADDRESS); sends, unshields and retries return a review that SHIELDED_DECIDE answers.
   SHIELDED_RECEIVE_ADDRESS: 'SHIELDED_RECEIVE_ADDRESS',
   SHIELDED_STATUS: 'SHIELDED_STATUS',
   SHIELDED_SYNC: 'SHIELDED_SYNC',
@@ -97,14 +95,10 @@ export type ServiceType = (typeof SERVICE_TYPES)[keyof typeof SERVICE_TYPES]
 // including one that arrives later.
 export const SHIELDED_REVIEW_PORT = 'shielded-review:'
 
-// Set once the user has read what private payments on mainnet are, before the first shield, send
-// or unshield there. The popup reads it; the background's cleanup of retired private data on
-// update must keep it.
+// Set once the mainnet notice is acknowledged; the update cleanup of private data keeps it.
 export const PRIVATE_MAINNET_ACK_KEY = 'cyphras_private_mainnet_ack_v1'
 
-// Set once the user has dismissed the private mode hint, or opened private mode, which counts as
-// having found it. The popup reads it; the background's cleanup of retired private data on update
-// must keep it.
+// Set once the private mode hint is dismissed or private mode opened; the update cleanup keeps it.
 export const PRIVATE_HINT_KEY = 'cyphras_private_hint_seen'
 
 export const PASSWORD_RULES = {

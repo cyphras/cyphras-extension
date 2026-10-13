@@ -62,8 +62,7 @@ function migrateNetwork(n: Partial<NetworkConfig> & { id: string }): NetworkConf
     txTimeout: n.txTimeout ?? defaults?.txTimeout ?? 90,
     isDefault: n.isDefault ?? false,
   }
-  // Only the shipped defaults can enable private mode, with just the pools the background can open
-  // on them, so the popup never offers one it refuses; stored values never do
+  // Pools come from the shipped defaults, never storage, and only ones the background can open.
   return {
     ...network,
     shielded: defaults?.shielded?.filter((p) => pinnedPool(network, p, SHIELDED_DEPLOYMENTS)),
@@ -88,9 +87,8 @@ export async function getActiveNetwork(): Promise<NetworkConfig> {
   return networks.find((n) => n.id === activeId) ?? networks[0]
 }
 
-// The network a private request runs on: the active one, and only while it is the one the page
-// showed when it made the request. Another surface can switch networks under a page that still
-// shows the old one, and a shield or payment must never run on a network its page did not show.
+// The active network, only if it is the one the request's page showed: another surface can switch
+// networks under an open page, and a payment must never run on a network its page did not show.
 export async function getShieldedNetwork(networkId: unknown): Promise<NetworkConfig> {
   const net = await getActiveNetwork()
   if (net.id !== networkId) {

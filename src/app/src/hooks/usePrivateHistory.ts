@@ -7,9 +7,8 @@ import type {
   ShieldedStatusView,
 } from '@ext-types/index'
 
-// The account's private history in a pool, asked for again whenever a sync changes the status it
-// is built from, and for what that status was read for. Items stay null until the first reply, so a
-// page can show its skeleton.
+// Refetched whenever a sync changes the status it is built from, for that status's scope; items
+// stay null until the first reply so a page can show its skeleton.
 export function usePrivateHistory(
   enabled: boolean,
   scope: ShieldedScope | null,

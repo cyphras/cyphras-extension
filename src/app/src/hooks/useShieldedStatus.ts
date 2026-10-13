@@ -29,8 +29,7 @@ interface ShieldedStatusState {
   privateChangePct: number | null
   syncing: boolean
   error: ShieldedStatusError | null
-  // What the statuses and the error were read for. An action on what they show names it rather
-  // than what the popup shows by then, so one left on screen after a switch is refused.
+  // The scope the statuses were read for; actions on them name it, so stale ones are refused.
   scope: ShieldedScope | null
   // Syncs every pool with the chain; reload only rereads what the background holds.
   refresh: () => void
@@ -107,9 +106,7 @@ export function useShieldedStatus(
   const poolsRef = useRef(pools)
   poolsRef.current = pools
   const poolKey = pools.map((p) => p.poolId).join(',')
-  // The network and account the hook reads for now. A refresh or reload kept from a render before
-  // a switch still names the old ones, so its read, which the background would refuse anyway, must
-  // touch nothing: not the syncing count, the statuses, the error or the scope.
+  // A callback kept from before a switch still names the old scope; its read must change nothing.
   const networkIdRef = useRef(networkId)
   networkIdRef.current = networkId
   const accountPkRef = useRef(accountPk)

@@ -106,8 +106,7 @@ export interface CctpFeeBreakdown {
 // Private mode views. Amounts are stroops as decimal strings; times are Unix milliseconds unless a
 // field says seconds.
 
-// What a private request was made for, as the view it came from showed it: the network and the
-// account. The background refuses the request once either is no longer the active one.
+// The network and account a request's view showed; refused once either is no longer active.
 export interface ShieldedScope {
   networkId: string
   publicKey: string
@@ -274,8 +273,7 @@ export interface ShieldedLimitsView {
   largeDepositThreshold: string
   delaySmall: number
   delayLarge: number
-  // What the pool pays out in a UTC day across all its users; a payout past it waits in the exit
-  // queue.
+  // Across all users per UTC day; a payout past it waits in the exit queue.
   maxDailyOutflow: string
   depositsPaused: boolean
   haltedUntil: number | null // Unix seconds
@@ -310,9 +308,7 @@ export interface ServicePayload {
   secretKey?: string // for IMPORT_SECRET_KEY
   walletId?: string // for ADD_ACCOUNT target wallet, REMOVE_HD_WALLET
   walletLabel?: string // for CREATE_HD_WALLET, IMPORT_HD_WALLET, IMPORT_SECRET_KEY
-  // The account SWITCH_ACCOUNT, RENAME_ACCOUNT and REMOVE_ACCOUNT act on. Every private request
-  // carries it too, with networkId, as the ShieldedScope its view was rendered for.
-  publicKey?: string
+  publicKey?: string // for SWITCH_ACCOUNT, RENAME_ACCOUNT, REMOVE_ACCOUNT, every private request
   index?: number // legacy SWITCH_ACCOUNT, RENAME_ACCOUNT, REMOVE_ACCOUNT
   label?: string // for ADD_ACCOUNT, RENAME_ACCOUNT
   order?: string[] // for REORDER_ACCOUNTS (array of publicKeys in new order)

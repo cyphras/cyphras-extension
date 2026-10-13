@@ -1,10 +1,8 @@
 import type { NetworkConfig, ShieldedConfig } from '@constants/networks'
 import type { ShieldedDeployment } from './deployments'
 
-// The deployment a network's pool opens: one whose vault the SDK release pins, on the shipped
-// network that vault lives on, by name and passphrase. So the network the wallet shows is always
-// where private funds move, and a custom network never reaches a vault, not even one stored under
-// a shipped network's id.
+// A pool opens only the vault the SDK pins, on its shipped network matched by name and passphrase,
+// so funds move only on the network shown and a custom network never reaches a vault.
 export function pinnedPool(
   net: NetworkConfig,
   pool: ShieldedConfig,

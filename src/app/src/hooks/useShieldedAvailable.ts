@@ -17,14 +17,12 @@ export interface ShieldedPoolOption {
 interface ShieldedAvailability {
   available: boolean
   pools: ShieldedPoolOption[]
-  // The networks private mode runs on, for a network without it to point to; null until the
-  // background has said which they are.
+  // Where a network without private mode points the user; null until the background says.
   privateNetworks: NetworkConfig[] | null
 }
 
-// Private mode runs where the background gives the network pools, which it does only for a vault
-// the SDK release pins there, and needs an HD account since shielded spend keys derive from the
-// seed phrase.
+// Private mode needs pools the background gives (only for a vault the SDK pins) and an HD account,
+// since shielded spend keys derive from the seed phrase.
 export function useShieldedAvailable(): ShieldedAvailability {
   const { activeNetwork, networks, loading } = useNetwork()
   const { accounts, activePublicKey } = useWallet()
@@ -44,8 +42,7 @@ export function useShieldedAvailable(): ShieldedAvailability {
   const active = accounts.find((a) => a.publicKey === activePublicKey)
   const isHdAccount = !!active && active.index >= 0 && !active.walletId.startsWith('sk:')
 
-  // Until the background answers, the network is the shipped default with every pool it lists,
-  // including ones the background would refuse.
+  // Until the background answers, the network is the shipped default, whose pools it may refuse.
   const shielded = !loading && Array.isArray(activeNetwork.shielded) ? activeNetwork.shielded : []
   const available = shielded.length > 0 && isHdAccount
 

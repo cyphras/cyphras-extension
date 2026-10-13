@@ -201,15 +201,12 @@ export default function Home() {
     pools: shieldedPools,
     privateNetworks,
   } = useShieldedAvailable()
-  // A network without private pools points the user to the networks that have them. Only the
-  // background knows which those are, so the card waits for it rather than name the shipped
-  // defaults, whose pools it may refuse.
+  // Only the background knows which networks have private pools, so the card waits for it.
   const privateNetworkNames =
     privateNetworks &&
     new Intl.ListFormat('en').format(privateNetworks.map((n) => n.name.toLowerCase()))
   const switchTarget = shieldedPools.length === 0 ? privateNetworks?.at(0) : undefined
-  // Mainnet's pool holds real funds and is unaudited, so it is marked experimental; any other
-  // network's private mode is a testnet preview.
+  // Mainnet's pool holds real funds and is unaudited; other networks are a testnet preview.
   const mainnetPrivate = activeNetwork.id === 'mainnet' && shieldedPools.length > 0
   const privateBadge = mainnetPrivate ? 'Experimental' : 'Testnet preview'
   const [switchingNet, setSwitchingNet] = useState(false)

@@ -5,11 +5,8 @@ import {
   type DeploymentName,
 } from '@cyphras/private'
 
-// A vault the SDK release pins, the RPC private mode reads it through, where the extension ships
-// its circuit files, and the most the wallet lets a relayer charge for one payment. The RPC is
-// fixed here rather than taken from network settings, since it decides which notes, roots and
-// payment fates the wallet believes. A second provider, when set, is read beside it: a payment is
-// declared dead only when both show it, and a tree it contradicts is not taken.
+// The RPC is fixed here, not taken from network settings, since it decides which notes, roots and
+// payment fates the wallet believes; a second provider, when set, vetoes what it contradicts.
 export interface ShieldedDeployment {
   readonly name: DeploymentName
   readonly deployment: Deployment
