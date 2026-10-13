@@ -1,6 +1,8 @@
 // The deployments this build opens, with the installed SDK release's pins: the shipped networks
 // open exactly the pools it pins, and every deployment it pins ships circuit files that match
-// those pins byte for byte, since the SDK and the prover refuse any other.
+// those pins byte for byte, since the SDK and the prover refuse any other, and has the second RPC
+// provider the release recommends for it, without which one provider alone decides what the
+// wallet believes.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -27,6 +29,14 @@ test('every pinned deployment ships circuit files that match its pins', () => {
       const bytes = readFileSync(new URL(`../src/app/public/${path}`, import.meta.url))
       const sha256 = createHash('sha256').update(bytes).digest('hex')
       assert.equal(sha256, deployment.artifacts[artifact], `${name}: ${path}`)
+    }
+  }
+})
+
+test('every pinned deployment that recommends a second RPC has one', () => {
+  for (const { name, deployment, secondRpcUrl } of Object.values(SHIELDED_DEPLOYMENTS)) {
+    if (deployment.recommendSecondRpc) {
+      assert.ok(secondRpcUrl, `${name} recommends a second RPC provider and none is set`)
     }
   }
 })
