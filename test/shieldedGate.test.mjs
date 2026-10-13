@@ -48,3 +48,7 @@ test('a custom network on the right passphrase is refused', () => {
     undefined
   )
 })
+
+test('a custom network stored under the id of a shipped one is refused', () => {
+  assert.equal(pinnedPool({ ...mainnet, isDefault: false }, xlm, deployments), undefined)
+})
