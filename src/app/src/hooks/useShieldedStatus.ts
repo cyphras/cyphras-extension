@@ -107,6 +107,13 @@ export function useShieldedStatus(
   const poolsRef = useRef(pools)
   poolsRef.current = pools
   const poolKey = pools.map((p) => p.poolId).join(',')
+  // The network and account the hook reads for now. A refresh or reload kept from a render before
+  // a switch still names the old ones, so its read, which the background would refuse anyway, must
+  // touch nothing: not the syncing count, the statuses, the error or the scope.
+  const networkIdRef = useRef(networkId)
+  networkIdRef.current = networkId
+  const accountPkRef = useRef(accountPk)
+  accountPkRef.current = accountPk
 
   const read = useCallback(
     async (type: StatusRequest) => {
@@ -114,13 +121,18 @@ export function useShieldedStatus(
       if (!enabled || current.length === 0) return
       const runId = runIdRef.current
       const runScope: ShieldedScope = { networkId, publicKey: accountPk }
+      const left = () =>
+        runId !== runIdRef.current ||
+        runScope.networkId !== networkIdRef.current ||
+        runScope.publicKey !== accountPkRef.current
+      if (left()) return
       const sync = type === SERVICE_TYPES.SHIELDED_SYNC
       if (sync) {
         syncsRef.current++
         setSyncing(true)
       }
       const replies = await Promise.all(current.map((p) => readStatus(type, p.poolId, runScope)))
-      if (runId !== runIdRef.current) return
+      if (left()) return
       if (sync) {
         syncsRef.current--
         setSyncing(syncsRef.current > 0)
