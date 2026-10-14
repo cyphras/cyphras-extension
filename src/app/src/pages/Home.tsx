@@ -31,6 +31,7 @@ import { PrivateTxSheet } from '@/components/PrivateTxSheet'
 import { usePrivateHistory } from '@/hooks/usePrivateHistory'
 import { ShieldedStartFresh } from '@/components/ShieldedStartFresh'
 import { PrivateModeHint } from '@/components/PrivateModeHint'
+import { MainnetPrivateNotice } from '@/components/MainnetPrivateNotice'
 import { WhatsNewSheet } from '@/components/WhatsNewSheet'
 import { AnnouncementCarousel } from '@/components/AnnouncementCarousel'
 import {
@@ -42,7 +43,7 @@ import {
 import { getIconMap } from '@/hooks/useBalances'
 import { getChainIcons, getChainNames } from '@/lib/chainInfo'
 import { LEGACY_NETWORK_TO_CHAIN, chainById } from '@constants/chains'
-import { PRIVATE_HINT_KEY, SERVICE_TYPES } from '@constants/services'
+import { PRIVATE_HINT_KEY, PRIVATE_MAINNET_ACK_KEY, SERVICE_TYPES } from '@constants/services'
 import {
   NetworkFilterButton,
   NetworkFilterSheet,
@@ -213,6 +214,18 @@ export default function Home() {
   // Mainnet's pool holds real funds and is unaudited; other networks are a testnet preview.
   const mainnetPrivate = activeNetwork.id === 'mainnet' && shieldedPools.length > 0
   const privateBadge = mainnetPrivate ? 'Experimental' : 'Testnet preview'
+  // Null until read. Mainnet private mode opens no wallet and calls no service before it is true.
+  const [mainnetAck, setMainnetAck] = useState<boolean | null>(null)
+  useEffect(() => {
+    chrome.storage.local.get(PRIVATE_MAINNET_ACK_KEY, (res) =>
+      setMainnetAck(res[PRIVATE_MAINNET_ACK_KEY] === true)
+    )
+  }, [])
+  function acknowledgeMainnet() {
+    chrome.storage.local.set({ [PRIVATE_MAINNET_ACK_KEY]: true })
+    setMainnetAck(true)
+  }
+  const privateReady = !mainnetPrivate || mainnetAck === true
   const [switchingNet, setSwitchingNet] = useState(false)
   // Pool the private surfaces act on; clamped to the active network's pool set.
   const [selectedPoolId, setSelectedPoolId] = useState<string>(shieldedPools[0]?.poolId ?? 'xlm')
@@ -230,7 +243,13 @@ export default function Home() {
     scope: statusScope,
     refresh: refreshShielded,
     reload: reloadShielded,
-  } = useShieldedStatus(shieldedAvailable, active, activePublicKey, activeNetwork.id, shieldedPools)
+  } = useShieldedStatus(
+    shieldedAvailable && privateReady,
+    active,
+    activePublicKey,
+    activeNetwork.id,
+    shieldedPools
+  )
   const shieldedStatus = shieldedByPool[poolId]?.status ?? null
   const shieldedModel = shieldedStatus ? privateBalance(shieldedStatus) : null
   const [openPart, setOpenPart] = useState<BalancePartKey | null>(null)
@@ -1280,7 +1299,6 @@ export default function Home() {
         native={!!selectedPool?.native}
         usdPrice={shieldedByPool[poolId]?.usdPrice ?? null}
         accountPk={activePublicKey}
-        mainnet={mainnetPrivate}
         publicBalance={
           // Pools are Stellar-only while `balances` spans every chain; match on the
           // Stellar chain so the native pool reads XLM, not an EVM native such as ETH.
@@ -1312,6 +1330,12 @@ export default function Home() {
       {!active && shieldedAvailable && !hintSeen && !loading && (
         <PrivateModeHint targetRef={cardRef} mainnet={mainnetPrivate} onDismiss={dismissHint} />
       )}
+
+      <MainnetPrivateNotice
+        open={active && shieldedAvailable && mainnetPrivate && mainnetAck === false}
+        onCancel={exit}
+        onAcknowledge={acknowledgeMainnet}
+      />
 
       {/* after the private-mode coach mark, never on top of it */}
       <WhatsNewSheet

@@ -1,12 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import {
-  ArrowDownToLine,
-  ArrowUpFromLine,
-  ChevronLeft,
-  ExternalLink,
-  Hourglass,
-  TriangleAlert,
-} from 'lucide-react'
+import { ChevronLeft, ExternalLink, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Reveal } from '@/components/Collapse'
 import { ConfirmSheet } from '@/components/ConfirmSheet'
@@ -41,7 +34,7 @@ import {
 import { shortAddress } from '@/lib/address'
 import { trimZeros, stroopsToXlm } from '@/lib/historyUtils'
 import { depositStatus, planStatus, routeText, type ItemStatus } from '@/lib/privateActivity'
-import { PRIVATE_MAINNET_ACK_KEY, SERVICE_TYPES, SHIELDED_REVIEW_PORT } from '@constants/services'
+import { SERVICE_TYPES, SHIELDED_REVIEW_PORT } from '@constants/services'
 import type {
   ServiceResponse,
   ShieldedDepositView,
@@ -70,8 +63,6 @@ interface ShieldedSendProps {
   native?: boolean
   usdPrice: number | null
   accountPk: string
-  // On mainnet the first shield, send or unshield waits for an acknowledgement.
-  mainnet: boolean
   publicBalance?: string | null
   subentryCount?: number
   onChangeAsset?: () => void
@@ -83,7 +74,6 @@ interface ShieldedSendProps {
 type Step =
   | { kind: 'form' }
   | { kind: 'retry' }
-  | { kind: 'ack' }
   | { kind: 'shield-review' }
   | { kind: 'preparing' }
   | { kind: 'review'; review: ShieldedReviewView }
@@ -97,9 +87,8 @@ type Step =
 
 type ResultStep = Extract<Step, { kind: 'shielded' | 'submitted' | 'stopped' }>
 
-// The confirm sheet: the mainnet notice, a shield to approve, a payment's review, or its outcome.
+// The confirm sheet: a shield to approve, a payment's review, or its outcome.
 type SheetView =
-  | { kind: 'ack' }
   | { kind: 'shield' }
   | { kind: 'spend'; review: ShieldedReviewView }
   | { kind: 'result'; step: ResultStep }
@@ -199,7 +188,6 @@ export default function ShieldedSend({
   native = false,
   usdPrice,
   accountPk,
-  mainnet,
   publicBalance = null,
   subentryCount = 0,
   onChangeAsset,
@@ -220,14 +208,11 @@ export default function ShieldedSend({
   // The fee a new send or unshield would pay now, or why the relayer could not say.
   const [quote, setQuote] = useState<ShieldedQuoteView | null>(null)
   const [quoteError, setQuoteError] = useState<string | null>(null)
-  // The pool's limits, which a shield checks and the mainnet acknowledgement quotes, or why they
-  // could not be read.
+  // The pool's deposit limits for a shield, or why they could not be read.
   const [limits, setLimits] = useState<ShieldedLimitsView | null>(null)
   const [limitsError, setLimitsError] = useState<string | null>(null)
   // The network fee a shield paid, once Horizon has its transaction.
   const [shieldFee, setShieldFee] = useState<string | null>(null)
-  // False until the stored acknowledgement is read, so the first action asks rather than skips.
-  const [acknowledged, setAcknowledged] = useState(false)
   // Each opening of the page is a session; a reply from an older session, or one that arrives once
   // the page is closed, never paints.
   const sessionRef = useRef(0)
@@ -396,11 +381,10 @@ export default function ShieldedSend({
     }
   }, [open, a, retryPlan, poolId, selfRelay, spendable])
 
-  // A shield checks its amount against these, and the mainnet acknowledgement quotes them.
   useEffect(() => {
     setLimits(null)
     setLimitsError(null)
-    if (!open || (a !== 'shield' && !mainnet)) return
+    if (!open || a !== 'shield') return
     let current = true
     ask(
       sessionScopeRef.current,
@@ -414,18 +398,7 @@ export default function ShieldedSend({
     return () => {
       current = false
     }
-  }, [open, a, poolId, mainnet])
-
-  useEffect(() => {
-    if (!open || !mainnet) return
-    let current = true
-    chrome.storage.local.get(PRIVATE_MAINNET_ACK_KEY, (res) => {
-      if (current) setAcknowledged(res[PRIVATE_MAINNET_ACK_KEY] === true)
-    })
-    return () => {
-      current = false
-    }
-  }, [open, mainnet])
+  }, [open, a, poolId])
 
   // The account submitted the shield itself, so its fee is public anyway.
   const shieldHash = step.kind === 'shielded' ? step.receipt.txHash : null
@@ -531,15 +504,6 @@ export default function ShieldedSend({
   function review() {
     if (!a || units === null) return
     setError(null)
-    if (mainnet && !acknowledged) {
-      setStep({ kind: 'ack' })
-      return
-    }
-    startReview()
-  }
-
-  function startReview() {
-    if (!a || units === null) return
     if (a === 'shield') {
       setShieldAnyway(false)
       setStep({ kind: 'shield-review' })
@@ -564,12 +528,6 @@ export default function ShieldedSend({
     requestStep({ type: SERVICE_TYPES.SHIELDED_DECIDE, reviewId: r.reviewId, approve }).then(
       (reply) => reply && followStep(reply)
     )
-  }
-
-  function acknowledge() {
-    chrome.storage.local.set({ [PRIVATE_MAINNET_ACK_KEY]: true })
-    setAcknowledged(true)
-    startReview()
   }
 
   function approveShield() {
@@ -644,17 +602,15 @@ export default function ShieldedSend({
   }
 
   const view: SheetView | null =
-    step.kind === 'ack'
-      ? { kind: 'ack' }
-      : step.kind === 'shield-review' || (step.kind === 'working' && !step.review)
-        ? { kind: 'shield' }
-        : step.kind === 'review' || step.kind === 'working' || step.kind === 'cancelling'
-          ? step.review
-            ? { kind: 'spend', review: step.review }
-            : null
-          : step.kind === 'shielded' || step.kind === 'submitted' || step.kind === 'stopped'
-            ? { kind: 'result', step }
-            : null
+    step.kind === 'shield-review' || (step.kind === 'working' && !step.review)
+      ? { kind: 'shield' }
+      : step.kind === 'review' || step.kind === 'working' || step.kind === 'cancelling'
+        ? step.review
+          ? { kind: 'spend', review: step.review }
+          : null
+        : step.kind === 'shielded' || step.kind === 'submitted' || step.kind === 'stopped'
+          ? { kind: 'result', step }
+          : null
   // Keep the last view so the sheet's content stays during its close slide.
   const lastViewRef = useRef<SheetView | null>(null)
   if (open && view) lastViewRef.current = view
@@ -933,66 +889,6 @@ export default function ShieldedSend({
       <Reveal show={busy} gap={12}>
         <p className="text-center text-xs text-muted-foreground">{text}</p>
       </Reveal>
-    )
-  }
-
-  // Shown once before the first shield, send or unshield on mainnet, with the pool's limits.
-  function mainnetNotice() {
-    const items = [
-      {
-        icon: ArrowDownToLine,
-        title: 'Deposits are capped',
-        body: limits
-          ? `${unit(limits.minDeposit)} to ${unit(limits.maxDeposit)} per deposit, and at most ${unit(limits.maxDailyPerDepositor)} a day from one account.`
-          : 'Each deposit is capped, and so is what one account deposits in a day.',
-      },
-      {
-        icon: Hourglass,
-        title: 'Deposits wait for screening',
-        body: `${
-          limits
-            ? `A deposit can be used after ${duration(limits.delaySmall)} of screening at the earliest, or ${duration(limits.delayLarge)} from ${unit(limits.largeDepositThreshold)}.`
-            : 'A deposit can be used only after screening.'
-        } You can cancel it until then.`,
-      },
-      {
-        icon: ArrowUpFromLine,
-        title: 'Withdrawals have a daily limit',
-        body: `The pool pays out ${limits ? `at most ${unit(limits.maxDailyOutflow)}` : 'only so much'} a day across all users. Past that, withdrawals wait in a queue and are paid on later days.`,
-      },
-    ]
-    return (
-      <>
-        <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-5 py-4 [&>*]:shrink-0">
-          <p className="rounded-xl bg-amber-500/10 px-4 py-3 text-xs leading-snug text-amber-700 dark:text-amber-400">
-            Private payments on mainnet are experimental and unaudited. This is real money: use only
-            what you can afford to lose.
-          </p>
-          <ul className="flex flex-col gap-2">
-            {items.map(({ icon: Icon, title, body }) => (
-              <li key={title} className="flex gap-3 rounded-xl bg-card px-4 py-2.5">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                  <Icon size={16} />
-                </span>
-                <span>
-                  <span className="block text-sm font-semibold text-foreground">{title}</span>
-                  <span className="block text-xs leading-relaxed text-muted-foreground">
-                    {body}
-                  </span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div className="flex shrink-0 gap-3 border-t border-border px-5 py-4">
-          <Button variant="outline" className="flex-1" onClick={() => setStep({ kind: 'form' })}>
-            Cancel
-          </Button>
-          <Button className="flex-1" onClick={acknowledge}>
-            I understand
-          </Button>
-        </div>
-      </>
     )
   }
 
@@ -1283,26 +1179,24 @@ export default function ShieldedSend({
 
   const sheetTitle = !sheetView
     ? ''
-    : sheetView.kind === 'ack'
-      ? 'Private payments on mainnet'
-      : sheetView.kind === 'shield'
-        ? 'Confirm shield'
-        : sheetView.kind === 'spend'
-          ? sheetView.review.kind === 'send'
-            ? 'Confirm private send'
-            : 'Confirm unshield'
-          : sheetView.step.kind === 'shielded'
-            ? 'Deposit submitted'
-            : sheetView.step.kind === 'submitted'
-              ? a === 'unshield'
-                ? 'Unshield submitted'
-                : 'Payment submitted'
-              : 'May still land'
+    : sheetView.kind === 'shield'
+      ? 'Confirm shield'
+      : sheetView.kind === 'spend'
+        ? sheetView.review.kind === 'send'
+          ? 'Confirm private send'
+          : 'Confirm unshield'
+        : sheetView.step.kind === 'shielded'
+          ? 'Deposit submitted'
+          : sheetView.step.kind === 'submitted'
+            ? a === 'unshield'
+              ? 'Unshield submitted'
+              : 'Payment submitted'
+            : 'May still land'
 
   // Leaving a confirm step goes back to the form, declining a review on the way; a result closes.
   function leaveSheet() {
     if (busy || !view) return
-    if (view.kind === 'ack' || view.kind === 'shield') setStep({ kind: 'form' })
+    if (view.kind === 'shield') setStep({ kind: 'form' })
     else if (view.kind === 'spend') answerReview(view.review, false)
     else close()
   }
@@ -1395,15 +1289,13 @@ export default function ShieldedSend({
           if (view?.kind !== 'result') leaveSheet()
         }}
       >
-        {sheetView?.kind === 'ack'
-          ? mainnetNotice()
-          : sheetView?.kind === 'shield'
-            ? shieldConfirm()
-            : sheetView?.kind === 'spend'
-              ? spendConfirm(sheetView.review)
-              : sheetView?.kind === 'result'
-                ? result(sheetView.step)
-                : null}
+        {sheetView?.kind === 'shield'
+          ? shieldConfirm()
+          : sheetView?.kind === 'spend'
+            ? spendConfirm(sheetView.review)
+            : sheetView?.kind === 'result'
+              ? result(sheetView.step)
+              : null}
       </ConfirmSheet>
     </>
   )
