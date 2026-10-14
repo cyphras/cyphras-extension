@@ -3322,6 +3322,17 @@ this circuit. The circuit includes templates from circomlib 2.0.5
 The GNU General Public License version 3 is reproduced at the end of this file.
 
 -------------------------------------------------------------------------------
+Cyphras private payments circuit, mainnet build, GPL-3.0, https://github.com/cyphras/cyphras-contracts/tree/mainnet-ceremony-v2-2026-10-14/circuits
+
+circuits/mainnet/ holds the witness generator, proving key and verification key built from
+this circuit, with the proving key from the trusted-setup ceremony released at
+https://github.com/cyphras/cyphras-contracts/releases/tag/mainnet-ceremony-v2-2026-10-14.
+The circuit includes templates from circomlib 2.0.5 (https://github.com/iden3/circomlib),
+Copyright 2018 0KIMS association, licensed GPL-3.0.
+
+The GNU General Public License version 3 is reproduced at the end of this file.
+
+-------------------------------------------------------------------------------
 GNU General Public License version 3
 
                     GNU GENERAL PUBLIC LICENSE
