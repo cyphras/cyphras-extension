@@ -34,6 +34,7 @@ export function MainnetPrivateNotice({
   return (
     <ConfirmSheet
       open={open}
+      modal
       title="Private payments on mainnet"
       stepKey="mainnet-notice"
       onClose={onCancel}
