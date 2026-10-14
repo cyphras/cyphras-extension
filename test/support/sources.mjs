@@ -7,14 +7,9 @@ import { fileURLToPath } from 'node:url'
 const SRC = new URL('../../src/', import.meta.url)
 const ALIASES = { '@constants/': 'constants/', '@ext-types/': 'types/' }
 
-// sdk, when given, is the URL of a module that stands in for @cyphras/private everywhere but in
-// itself, so it can build on the real one.
-export function resolveSources({ sdk } = {}) {
+export function resolveSources() {
   registerHooks({
     resolve(specifier, context, nextResolve) {
-      if (sdk && specifier === '@cyphras/private' && context.parentURL !== sdk) {
-        return { url: sdk, shortCircuit: true }
-      }
       for (const [alias, dir] of Object.entries(ALIASES)) {
         if (specifier.startsWith(alias)) {
           specifier = new URL(dir + specifier.slice(alias.length), SRC).href

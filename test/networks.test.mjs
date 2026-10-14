@@ -1,12 +1,11 @@
 // The networks the background serves, from a fresh install or from what an earlier release stored,
-// and the network a private request may run on. Run against a stand-in for an SDK release that
-// pins the mainnet XLM vault, the state private mode on mainnet waits for.
+// and the network a private request may run on.
 import assert from 'node:assert/strict'
 import { beforeEach, test } from 'node:test'
 import { stubChromeStorage } from './support/chrome.mjs'
 import { resolveSources } from './support/sources.mjs'
 
-resolveSources({ sdk: new URL('./support/pinned-mainnet-sdk.mjs', import.meta.url).href })
+resolveSources()
 const { local } = stubChromeStorage()
 
 const { addNetwork, getNetworks, getShieldedNetwork, setActiveNetwork } =
