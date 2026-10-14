@@ -225,6 +225,7 @@ export default function Home() {
     chrome.storage.local.set({ [PRIVATE_MAINNET_ACK_KEY]: true })
     setMainnetAck(true)
   }
+  // Gates every private surface and read, so none is reachable on mainnet before the notice.
   const privateReady = !mainnetPrivate || mainnetAck === true
   const [switchingNet, setSwitchingNet] = useState(false)
   // Pool the private surfaces act on; clamped to the active network's pool set.
@@ -609,7 +610,9 @@ export default function Home() {
       <Layout
         navbar={
           <WalletNavbar
-            onHistory={active && shieldedAvailable ? () => setHistoryOpen(true) : undefined}
+            onHistory={
+              active && shieldedAvailable && privateReady ? () => setHistoryOpen(true) : undefined
+            }
           />
         }
         bottomBlur={active}
@@ -742,7 +745,7 @@ export default function Home() {
                 />
               </div>
 
-              {active && shieldedAvailable && (
+              {active && shieldedAvailable && privateReady && (
                 <>
                   <div className="grid grid-cols-4 gap-2">
                     <ActionButton
@@ -1190,7 +1193,7 @@ export default function Home() {
       />
 
       <ShieldedReceive
-        open={shieldedReceiveOpen}
+        open={privateReady && shieldedReceiveOpen}
         mainnet={mainnetPrivate}
         onClose={() => setShieldedReceiveOpen(false)}
       />
@@ -1216,7 +1219,7 @@ export default function Home() {
       />
 
       <PrivateTokenPage
-        token={tappedToken}
+        token={privateReady ? tappedToken : null}
         balance={shieldedModel}
         address={shieldedAddr}
         entries={entries}
@@ -1238,7 +1241,7 @@ export default function Home() {
       />
 
       <PrivateHistory
-        open={historyOpen}
+        open={privateReady && historyOpen}
         entries={entries}
         loading={privateHistory.loading || (!shieldedStatus && shieldedSyncing)}
         // History is built on the status, so a status that could not be read is its error too.
@@ -1288,7 +1291,7 @@ export default function Home() {
       )}
 
       <ShieldedSend
-        action={retryPlan ? retryPlan.kind : shieldedAction}
+        action={!privateReady ? null : retryPlan ? retryPlan.kind : shieldedAction}
         retryPlan={retryPlan}
         status={shieldedStatus}
         poolId={poolId}
