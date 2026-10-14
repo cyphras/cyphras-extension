@@ -38,6 +38,25 @@ const VENDORED: {
         GPL_REFERENCE,
       ].join('\n'),
   },
+  {
+    files: [
+      'src/app/public/circuits/mainnet/transaction.wasm',
+      'src/app/public/circuits/mainnet/transaction.zkey',
+      'src/app/public/circuits/mainnet/verification_key.json',
+    ],
+    title:
+      'Cyphras private payments circuit, mainnet build, GPL-3.0, https://github.com/cyphras/cyphras-contracts/tree/mainnet-ceremony-v2-2026-10-14/circuits',
+    text: () =>
+      [
+        'circuits/mainnet/ holds the witness generator, proving key and verification key built from',
+        'this circuit, with the proving key from the trusted-setup ceremony released at',
+        'https://github.com/cyphras/cyphras-contracts/releases/tag/mainnet-ceremony-v2-2026-10-14.',
+        'The circuit includes templates from circomlib 2.0.5 (https://github.com/iden3/circomlib),',
+        'Copyright 2018 0KIMS association, licensed GPL-3.0.',
+        '',
+        GPL_REFERENCE,
+      ].join('\n'),
+  },
 ]
 
 const GPL_REFERENCE =

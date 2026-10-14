@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import { ArrowLeftRight, EyeOff, Lock, ShieldCheck, Wallet } from 'lucide-react'
+import { EyeOff, Lock, ShieldCheck } from 'lucide-react'
 import { BottomSheet } from '@/components/BottomSheet'
 import { Button } from '@/components/ui/button'
 
@@ -9,29 +9,19 @@ const ITEMS: {
   body: string
 }[] = [
   {
-    icon: Wallet,
-    title: 'Bitcoin and Ethereum accounts',
-    body: 'Backed up by your recovery phrase.',
-  },
-  {
-    icon: ArrowLeftRight,
-    title: 'USDC bridge',
-    body: 'Move USDC to and from Ethereum.',
+    icon: EyeOff,
+    title: 'Private payments on mainnet',
+    body: 'Shield XLM and pay cy1 addresses. Experimental, with deposit limits.',
   },
   {
     icon: ShieldCheck,
-    title: 'Trade protection',
-    body: 'A warning before a trade loses value.',
+    title: 'Public trusted setup',
+    body: 'Mainnet proofs use a key from an open ceremony with three contributors.',
   },
   {
     icon: Lock,
-    title: 'Stronger security',
-    body: 'Sites can no longer pose as others or pass a transaction off as a message.',
-  },
-  {
-    icon: EyeOff,
-    title: 'Private mode v2 on testnet',
-    body: 'Pay cyt1 addresses. Screened deposits, private history, never paid twice.',
+    title: 'Network and account checks',
+    body: 'A private payment only runs on the network and account on your screen.',
   },
 ]
 

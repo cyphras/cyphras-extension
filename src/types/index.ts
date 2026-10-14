@@ -105,6 +105,13 @@ export interface CctpFeeBreakdown {
 
 // Private mode views. Amounts are stroops as decimal strings; times are Unix milliseconds unless a
 // field says seconds.
+
+// The network and account a request's view showed; refused once either is no longer active.
+export interface ShieldedScope {
+  networkId: string
+  publicKey: string
+}
+
 export interface ShieldedErrorView {
   code: string
   message: string
@@ -253,9 +260,11 @@ export interface ShieldedQuoteView {
   maxAmount: string | null
 }
 
-// The pool's deposit limits as the chain shows them now, for the active account as the depositor.
+// The pool's limits as the chain shows them now, for the active account as the depositor.
 export interface ShieldedLimitsView {
   minDeposit: string
+  maxDeposit: string
+  maxDailyPerDepositor: string // what one account may deposit in a UTC day
   // The largest deposit the pool takes now: within its maximum, its room before the TVL cap and
   // what is left of the account's daily allowance.
   depositRoom: string
@@ -264,6 +273,8 @@ export interface ShieldedLimitsView {
   largeDepositThreshold: string
   delaySmall: number
   delayLarge: number
+  // Across all users per UTC day; a payout past it waits in the exit queue.
+  maxDailyOutflow: string
   depositsPaused: boolean
   haltedUntil: number | null // Unix seconds
 }
@@ -297,7 +308,7 @@ export interface ServicePayload {
   secretKey?: string // for IMPORT_SECRET_KEY
   walletId?: string // for ADD_ACCOUNT target wallet, REMOVE_HD_WALLET
   walletLabel?: string // for CREATE_HD_WALLET, IMPORT_HD_WALLET, IMPORT_SECRET_KEY
-  publicKey?: string // for SWITCH_ACCOUNT, RENAME_ACCOUNT, REMOVE_ACCOUNT
+  publicKey?: string // for SWITCH_ACCOUNT, RENAME_ACCOUNT, REMOVE_ACCOUNT, every private request
   index?: number // legacy SWITCH_ACCOUNT, RENAME_ACCOUNT, REMOVE_ACCOUNT
   label?: string // for ADD_ACCOUNT, RENAME_ACCOUNT
   order?: string[] // for REORDER_ACCOUNTS (array of publicKeys in new order)

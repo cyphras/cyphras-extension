@@ -5,6 +5,7 @@ import { Alert } from '@/components/Alert'
 import { BottomSheet } from '@/components/BottomSheet'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useNetwork } from '@/context/NetworkContext'
 import { useWallet } from '@/context/WalletContext'
 import { useCopy } from '@/hooks/useCopy'
 import { SERVICE_TYPES } from '@constants/services'
@@ -16,8 +17,18 @@ const PRIVATE_MARK = '/icon.svg'
 // The account's private address as the public Receive sheet shows an address: its QR, the whole
 // address with the parts people compare emphasized, a copy button, and what may be sent to it. The
 // keys behind it stay in the background.
-export default function ShieldedReceive({ open, onClose }: { open: boolean; onClose: () => void }) {
+export default function ShieldedReceive({
+  open,
+  mainnet,
+  onClose,
+}: {
+  open: boolean
+  // Only testnet's pool is a preview that can be reset.
+  mainnet: boolean
+  onClose: () => void
+}) {
   const { activePublicKey } = useWallet()
+  const { activeNetwork } = useNetwork()
   const [address, setAddress] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const { copied, copy } = useCopy()
@@ -29,7 +40,11 @@ export default function ShieldedReceive({ open, onClose }: { open: boolean; onCl
     setError(null)
     setAddress(null)
     chrome.runtime.sendMessage(
-      { type: SERVICE_TYPES.SHIELDED_RECEIVE_ADDRESS },
+      {
+        type: SERVICE_TYPES.SHIELDED_RECEIVE_ADDRESS,
+        networkId: activeNetwork.id,
+        publicKey: activePublicKey,
+      },
       (r: ServiceResponse) => {
         if (runId !== runIdRef.current) return
         if (chrome.runtime.lastError) setError('The extension restarted. Try again.')
@@ -37,7 +52,7 @@ export default function ShieldedReceive({ open, onClose }: { open: boolean; onCl
         else if (r?.shieldedAddress) setAddress(r.shieldedAddress)
       }
     )
-  }, [])
+  }, [activeNetwork.id, activePublicKey])
 
   // Read again on account change, the old address cleared first so it never shows for the wrong
   // account.
@@ -101,8 +116,9 @@ export default function ShieldedReceive({ open, onClose }: { open: boolean; onCl
             </p>
 
             <p className="px-1 text-center text-[11px] leading-relaxed text-muted-foreground">
-              Who pays you and how much stay hidden on-chain. Testnet preview: the testnet pool can
-              be reset, and its balances do not carry over.
+              Who pays you and how much stay hidden on-chain.
+              {!mainnet &&
+                ' Testnet preview: the testnet pool can be reset, and its balances do not carry over.'}
             </p>
           </>
         )}

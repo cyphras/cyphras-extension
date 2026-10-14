@@ -1,5 +1,9 @@
 import { DEFAULT_NETWORKS, NETWORK_STORAGE_KEY, ACTIVE_NETWORK_KEY } from '@constants/networks'
 import type { NetworkConfig } from '@constants/networks'
+import { PRIVATE_MAINNET_ACK_KEY } from '@constants/services'
+import { SHIELDED_DEPLOYMENTS } from './shielded/deployments'
+import { ShieldedRefusal } from './shielded/errors'
+import { pinnedPool } from './shielded/gate'
 
 function validateNetworkConfig(network: NetworkConfig): string | null {
   if (!network.id || typeof network.id !== 'string') return 'Network ID is required'
@@ -48,7 +52,7 @@ function validateNetworkConfig(network: NetworkConfig): string | null {
 
 function migrateNetwork(n: Partial<NetworkConfig> & { id: string }): NetworkConfig {
   const defaults = DEFAULT_NETWORKS.find((d) => d.id === n.id)
-  return {
+  const network: NetworkConfig = {
     id: n.id,
     name: n.name ?? n.id,
     horizonUrl: n.horizonUrl ?? '',
@@ -58,8 +62,11 @@ function migrateNetwork(n: Partial<NetworkConfig> & { id: string }): NetworkConf
     explorerUrl: n.explorerUrl ?? defaults?.explorerUrl,
     txTimeout: n.txTimeout ?? defaults?.txTimeout ?? 90,
     isDefault: n.isDefault ?? false,
-    // Only the shipped defaults can enable private mode; stored values never do
-    shielded: defaults ? defaults.shielded : undefined,
+  }
+  // Pools come from the shipped defaults, never storage, and only ones the background can open.
+  return {
+    ...network,
+    shielded: defaults?.shielded?.filter((p) => pinnedPool(network, p, SHIELDED_DEPLOYMENTS)),
   }
 }
 
@@ -67,7 +74,7 @@ export async function getNetworks(): Promise<NetworkConfig[]> {
   const result = await chrome.storage.local.get(NETWORK_STORAGE_KEY)
   if (!result[NETWORK_STORAGE_KEY]) {
     await chrome.storage.local.set({ [NETWORK_STORAGE_KEY]: DEFAULT_NETWORKS })
-    return DEFAULT_NETWORKS
+    return DEFAULT_NETWORKS.map(migrateNetwork)
   }
   return (result[NETWORK_STORAGE_KEY] as Partial<NetworkConfig>[]).map((n) =>
     migrateNetwork(n as Partial<NetworkConfig> & { id: string })
@@ -79,6 +86,29 @@ export async function getActiveNetwork(): Promise<NetworkConfig> {
   const result = await chrome.storage.local.get(ACTIVE_NETWORK_KEY)
   const activeId = result[ACTIVE_NETWORK_KEY] ?? 'mainnet'
   return networks.find((n) => n.id === activeId) ?? networks[0]
+}
+
+// The active network, only if it is the one the request's page showed: another surface can switch
+// networks under an open page, and a payment must never run on a network its page did not show.
+export async function getShieldedNetwork(networkId: unknown): Promise<NetworkConfig> {
+  const net = await getActiveNetwork()
+  if (net.id !== networkId) {
+    throw new ShieldedRefusal(
+      'network_changed',
+      'The active network changed, so this did not run. Check the network and try again.'
+    )
+  }
+  // Mainnet moves real funds, so its private mode serves nothing until the notice is acknowledged.
+  if (net.id === 'mainnet') {
+    const stored = await chrome.storage.local.get(PRIVATE_MAINNET_ACK_KEY)
+    if (stored[PRIVATE_MAINNET_ACK_KEY] !== true) {
+      throw new ShieldedRefusal(
+        'mainnet_not_acknowledged',
+        'Private payments on mainnet need their notice acknowledged first. Open private mode to read it.'
+      )
+    }
+  }
+  return net
 }
 
 export async function setActiveNetwork(networkId: string): Promise<void> {

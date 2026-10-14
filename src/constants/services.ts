@@ -53,8 +53,8 @@ export const SERVICE_TYPES = {
   FETCH_BTC_ACTIVITY: 'FETCH_BTC_ACTIVITY',
   SIGN_AND_SUBMIT_EVM_PAYMENT: 'SIGN_AND_SUBMIT_EVM_PAYMENT',
   EVM_TX_STATUS: 'EVM_TX_STATUS',
-  // Private mode; poolId selects the pool (optional for RECEIVE_ADDRESS). Sends, unshields and
-  // retries return a review that SHIELDED_DECIDE answers.
+  // Private mode: each request carries its page's ShieldedScope and a poolId (optional for
+  // RECEIVE_ADDRESS); sends, unshields and retries return a review that SHIELDED_DECIDE answers.
   SHIELDED_RECEIVE_ADDRESS: 'SHIELDED_RECEIVE_ADDRESS',
   SHIELDED_STATUS: 'SHIELDED_STATUS',
   SHIELDED_SYNC: 'SHIELDED_SYNC',
@@ -94,6 +94,12 @@ export type ServiceType = (typeof SERVICE_TYPES)[keyof typeof SERVICE_TYPES]
 // the token with the request; once the port goes, the background declines that payment's reviews,
 // including one that arrives later.
 export const SHIELDED_REVIEW_PORT = 'shielded-review:'
+
+// Set once the mainnet notice is acknowledged; the update cleanup of private data keeps it.
+export const PRIVATE_MAINNET_ACK_KEY = 'cyphras_private_mainnet_ack_v1'
+
+// Set once the private mode hint is dismissed or private mode opened; the update cleanup keeps it.
+export const PRIVATE_HINT_KEY = 'cyphras_private_hint_seen'
 
 export const PASSWORD_RULES = {
   MIN_LENGTH: 8,

@@ -31,6 +31,7 @@ import { PrivateTxSheet } from '@/components/PrivateTxSheet'
 import { usePrivateHistory } from '@/hooks/usePrivateHistory'
 import { ShieldedStartFresh } from '@/components/ShieldedStartFresh'
 import { PrivateModeHint } from '@/components/PrivateModeHint'
+import { MainnetPrivateNotice } from '@/components/MainnetPrivateNotice'
 import { WhatsNewSheet } from '@/components/WhatsNewSheet'
 import { AnnouncementCarousel } from '@/components/AnnouncementCarousel'
 import {
@@ -42,7 +43,7 @@ import {
 import { getIconMap } from '@/hooks/useBalances'
 import { getChainIcons, getChainNames } from '@/lib/chainInfo'
 import { LEGACY_NETWORK_TO_CHAIN, chainById } from '@constants/chains'
-import { SERVICE_TYPES } from '@constants/services'
+import { PRIVATE_HINT_KEY, PRIVATE_MAINNET_ACK_KEY, SERVICE_TYPES } from '@constants/services'
 import {
   NetworkFilterButton,
   NetworkFilterSheet,
@@ -75,10 +76,8 @@ import {
   ArrowLeftRight,
 } from 'lucide-react'
 
-// One-time flag: the private-mode coach-mark is shown until dismissed or discovered.
-const PRIVATE_HINT_KEY = 'cyphras_private_hint_seen'
 const WHATS_NEW_KEY = 'cyphras_whats_new_seen'
-const WHATS_NEW_VERSION = '0.4.0'
+const WHATS_NEW_VERSION = '0.5.0'
 
 function BalanceSkeleton() {
   return (
@@ -201,8 +200,33 @@ export default function Home() {
   const {
     available: shieldedAvailable,
     pools: shieldedPools,
-    onTestnet: shieldedOnTestnet,
+    privateNetworks,
   } = useShieldedAvailable()
+  // Only the background knows which networks have private pools, so the card waits for it.
+  const privateNetworkNames =
+    privateNetworks &&
+    new Intl.ListFormat('en').format(privateNetworks.map((n) => n.name.toLowerCase()))
+  // Testnet first, so a single tap never lands the user on real funds.
+  const switchTarget =
+    shieldedPools.length === 0
+      ? (privateNetworks?.find((n) => n.id === 'testnet') ?? privateNetworks?.at(0))
+      : undefined
+  // Mainnet's pool holds real funds and is unaudited; other networks are a testnet preview.
+  const mainnetPrivate = activeNetwork.id === 'mainnet' && shieldedPools.length > 0
+  const privateBadge = mainnetPrivate ? 'Experimental' : 'Testnet preview'
+  // Null until read. Mainnet private mode opens no wallet and calls no service before it is true.
+  const [mainnetAck, setMainnetAck] = useState<boolean | null>(null)
+  useEffect(() => {
+    chrome.storage.local.get(PRIVATE_MAINNET_ACK_KEY, (res) =>
+      setMainnetAck(res[PRIVATE_MAINNET_ACK_KEY] === true)
+    )
+  }, [])
+  function acknowledgeMainnet() {
+    chrome.storage.local.set({ [PRIVATE_MAINNET_ACK_KEY]: true })
+    setMainnetAck(true)
+  }
+  // Gates every private surface and read, so none is reachable on mainnet before the notice.
+  const privateReady = !mainnetPrivate || mainnetAck === true
   const [switchingNet, setSwitchingNet] = useState(false)
   // Pool the private surfaces act on; clamped to the active network's pool set.
   const [selectedPoolId, setSelectedPoolId] = useState<string>(shieldedPools[0]?.poolId ?? 'xlm')
@@ -217,13 +241,25 @@ export default function Home() {
     privateChangePct,
     syncing: shieldedSyncing,
     error: shieldedRequestError,
+    scope: statusScope,
     refresh: refreshShielded,
     reload: reloadShielded,
-  } = useShieldedStatus(shieldedAvailable, active, activePublicKey, activeNetwork.id, shieldedPools)
+  } = useShieldedStatus(
+    shieldedAvailable && privateReady,
+    active,
+    activePublicKey,
+    activeNetwork.id,
+    shieldedPools
+  )
   const shieldedStatus = shieldedByPool[poolId]?.status ?? null
   const shieldedModel = shieldedStatus ? privateBalance(shieldedStatus) : null
   const [openPart, setOpenPart] = useState<BalancePartKey | null>(null)
-  const privateHistory = usePrivateHistory(active && shieldedAvailable, poolId, shieldedStatus)
+  const privateHistory = usePrivateHistory(
+    active && shieldedAvailable,
+    statusScope,
+    poolId,
+    shieldedStatus
+  )
   const [historyOpen, setHistoryOpen] = useState(false)
   // By its ID, so the sheet follows the entry as syncs move it on.
   const [entryId, setEntryId] = useState<string | null>(null)
@@ -564,8 +600,9 @@ export default function Home() {
   // records followed may still land.
   const shieldedReset = shieldedStatus?.stateReset ?? null
   const dismissShieldedReset = () =>
-    chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_DISMISS_RESET, poolId }, () =>
-      reloadShielded()
+    chrome.runtime.sendMessage(
+      { type: SERVICE_TYPES.SHIELDED_DISMISS_RESET, poolId, ...statusScope },
+      () => reloadShielded()
     )
 
   return (
@@ -573,7 +610,9 @@ export default function Home() {
       <Layout
         navbar={
           <WalletNavbar
-            onHistory={active && shieldedAvailable ? () => setHistoryOpen(true) : undefined}
+            onHistory={
+              active && shieldedAvailable && privateReady ? () => setHistoryOpen(true) : undefined
+            }
           />
         }
         bottomBlur={active}
@@ -594,7 +633,7 @@ export default function Home() {
                     <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                       Private balance
                       <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                        Testnet preview
+                        {privateBadge}
                       </span>
                     </p>
                     <span className="rounded-md p-1 text-muted-foreground">
@@ -631,7 +670,7 @@ export default function Home() {
                         <>
                           Private balance
                           <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                            Testnet preview
+                            {privateBadge}
                           </span>
                         </>
                       ) : filteredStats ? (
@@ -706,7 +745,7 @@ export default function Home() {
                 />
               </div>
 
-              {active && shieldedAvailable && (
+              {active && shieldedAvailable && privateReady && (
                 <>
                   <div className="grid grid-cols-4 gap-2">
                     <ActionButton
@@ -818,6 +857,7 @@ export default function Home() {
                   {shieldedRequestError?.code === 'state_unassigned' ? (
                     <ShieldedStartFresh
                       poolId={shieldedRequestError.poolId}
+                      scope={statusScope}
                       message={shieldedRequestError.message}
                       onStarted={refreshShielded}
                     />
@@ -835,6 +875,7 @@ export default function Home() {
                     <ShieldedActivity
                       entries={entries}
                       poolId={poolId}
+                      scope={statusScope}
                       icon={shieldedIcon}
                       chainIcon={chainIcons.get(stellarChainId)}
                       fiatOf={entryFiat}
@@ -847,29 +888,32 @@ export default function Home() {
                 </>
               )}
 
-              {active && !shieldedAvailable && (
+              {active && !shieldedAvailable && privateNetworks && (
                 <div className="flex flex-col gap-3 rounded-xl bg-card p-5 text-center">
                   <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-primary/15">
                     <EyeOff size={20} className="text-primary" />
                   </div>
-                  {!shieldedOnTestnet ? (
+                  {switchTarget ? (
                     <>
                       <p className="text-sm font-medium text-foreground">
-                        Private mode runs on testnet
+                        Private mode runs on {privateNetworkNames}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        Switch to the testnet network to shield, send, and receive privately.
+                        Switch to the {switchTarget.name.toLowerCase()} network to shield, send, and
+                        receive privately.
                       </p>
                       <Button
                         className="w-full"
                         disabled={switchingNet}
                         onClick={async () => {
                           setSwitchingNet(true)
-                          await setActiveNetwork('testnet')
+                          await setActiveNetwork(switchTarget.id)
                           setSwitchingNet(false)
                         }}
                       >
-                        {switchingNet ? 'Switching...' : 'Switch to testnet'}
+                        {switchingNet
+                          ? 'Switching...'
+                          : `Switch to ${switchTarget.name.toLowerCase()}`}
                       </Button>
                     </>
                   ) : (
@@ -1148,7 +1192,11 @@ export default function Home() {
         onClose={() => setFilterOpen(false)}
       />
 
-      <ShieldedReceive open={shieldedReceiveOpen} onClose={() => setShieldedReceiveOpen(false)} />
+      <ShieldedReceive
+        open={privateReady && shieldedReceiveOpen}
+        mainnet={mainnetPrivate}
+        onClose={() => setShieldedReceiveOpen(false)}
+      />
 
       <PrivatePartSheet
         part={openPart}
@@ -1171,7 +1219,7 @@ export default function Home() {
       />
 
       <PrivateTokenPage
-        token={tappedToken}
+        token={privateReady ? tappedToken : null}
         balance={shieldedModel}
         address={shieldedAddr}
         entries={entries}
@@ -1193,7 +1241,7 @@ export default function Home() {
       />
 
       <PrivateHistory
-        open={historyOpen}
+        open={privateReady && historyOpen}
         entries={entries}
         loading={privateHistory.loading || (!shieldedStatus && shieldedSyncing)}
         // History is built on the status, so a status that could not be read is its error too.
@@ -1224,6 +1272,7 @@ export default function Home() {
         chainIcon={chainIcons.get(stellarChainId)}
         fiat={selectedEntry ? entryFiat(selectedEntry) : null}
         poolId={poolId}
+        scope={statusScope}
         onRetry={(plan) => {
           setHistoryOpen(false)
           setTappedPoolId(null)
@@ -1242,7 +1291,7 @@ export default function Home() {
       )}
 
       <ShieldedSend
-        action={retryPlan ? retryPlan.kind : shieldedAction}
+        action={!privateReady ? null : retryPlan ? retryPlan.kind : shieldedAction}
         retryPlan={retryPlan}
         status={shieldedStatus}
         poolId={poolId}
@@ -1282,8 +1331,14 @@ export default function Home() {
       />
 
       {!active && shieldedAvailable && !hintSeen && !loading && (
-        <PrivateModeHint targetRef={cardRef} onDismiss={dismissHint} />
+        <PrivateModeHint targetRef={cardRef} mainnet={mainnetPrivate} onDismiss={dismissHint} />
       )}
+
+      <MainnetPrivateNotice
+        open={active && shieldedAvailable && mainnetPrivate && mainnetAck === false}
+        onCancel={exit}
+        onAcknowledge={acknowledgeMainnet}
+      />
 
       {/* after the private-mode coach mark, never on top of it */}
       <WhatsNewSheet

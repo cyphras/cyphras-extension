@@ -2,7 +2,7 @@ import { ActivityRow } from '@/components/ActivityRow'
 import { PrivateActions } from '@/components/PrivateActions'
 import { hasActions } from '@/lib/privateActivity'
 import type { PrivateEntry } from '@/lib/privateHistory'
-import type { ShieldedPlanView } from '@ext-types/index'
+import type { ShieldedPlanView, ShieldedScope } from '@ext-types/index'
 
 const SHOWN = 5
 
@@ -11,6 +11,7 @@ const SHOWN = 5
 export default function ShieldedActivity({
   entries,
   poolId,
+  scope,
   icon,
   chainIcon,
   fiatOf,
@@ -21,6 +22,7 @@ export default function ShieldedActivity({
 }: {
   entries: PrivateEntry[]
   poolId: string
+  scope: ShieldedScope | null
   icon?: string
   chainIcon?: string
   fiatOf: (entry: PrivateEntry) => string | null
@@ -70,6 +72,7 @@ export default function ShieldedActivity({
                   plan={entry.plan}
                   deposit={entry.deposit}
                   poolId={poolId}
+                  scope={scope}
                   onRetry={onRetry}
                   onChanged={onChanged}
                 />

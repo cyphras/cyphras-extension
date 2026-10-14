@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNetwork } from '@/context/NetworkContext'
 import { useWallet } from '@/context/WalletContext'
 import { getIconMap } from '@/hooks/useBalances'
-import { TESTNET_PASSPHRASE } from '@constants/networks'
-import type { ShieldedConfig } from '@constants/networks'
+import type { NetworkConfig, ShieldedConfig } from '@constants/networks'
 
 export interface ShieldedPoolOption {
   poolId: string
@@ -18,12 +17,14 @@ export interface ShieldedPoolOption {
 interface ShieldedAvailability {
   available: boolean
   pools: ShieldedPoolOption[]
-  onTestnet: boolean
+  // Where a network without private mode points the user; null until the background says.
+  privateNetworks: NetworkConfig[] | null
 }
 
-// Private mode is testnet-only and needs an HD account since shielded spend keys derive from the seed phrase.
+// Private mode needs pools the background gives (only for a vault the SDK pins) and an HD account,
+// since shielded spend keys derive from the seed phrase.
 export function useShieldedAvailable(): ShieldedAvailability {
-  const { activeNetwork } = useNetwork()
+  const { activeNetwork, networks, loading } = useNetwork()
   const { accounts, activePublicKey } = useWallet()
 
   // Pool icons come from the curated asset list, like every other token image.
@@ -41,10 +42,9 @@ export function useShieldedAvailable(): ShieldedAvailability {
   const active = accounts.find((a) => a.publicKey === activePublicKey)
   const isHdAccount = !!active && active.index >= 0 && !active.walletId.startsWith('sk:')
 
-  const shielded = Array.isArray(activeNetwork.shielded) ? activeNetwork.shielded : []
-  const onTestnet =
-    activeNetwork.id === 'testnet' && activeNetwork.passphrase === TESTNET_PASSPHRASE
-  const available = onTestnet && shielded.length > 0 && isHdAccount
+  // Until the background answers, the network is the shipped default, whose pools it may refuse.
+  const shielded = !loading && Array.isArray(activeNetwork.shielded) ? activeNetwork.shielded : []
+  const available = shielded.length > 0 && isHdAccount
 
   const pools: ShieldedPoolOption[] = shielded.map((p: ShieldedConfig) => ({
     poolId: p.poolId,
@@ -56,5 +56,7 @@ export function useShieldedAvailable(): ShieldedAvailability {
     icon: p.native ? undefined : icons.get(`${p.assetCode}:${p.assetIssuer}`),
   }))
 
-  return { available, pools, onTestnet }
+  const privateNetworks = loading ? null : networks.filter((n) => (n.shielded?.length ?? 0) > 0)
+
+  return { available, pools, privateNetworks }
 }

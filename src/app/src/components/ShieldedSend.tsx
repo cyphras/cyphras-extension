@@ -43,6 +43,7 @@ import type {
   ShieldedQuoteView,
   ShieldedReceiptView,
   ShieldedReviewView,
+  ShieldedScope,
   ShieldedStatusView,
   ShieldedStep,
 } from '@ext-types/index'
@@ -86,7 +87,7 @@ type Step =
 
 type ResultStep = Extract<Step, { kind: 'shielded' | 'submitted' | 'stopped' }>
 
-// What the confirm sheet shows: a shield to approve, a payment's review, or how one ended.
+// The confirm sheet: a shield to approve, a payment's review, or its outcome.
 type SheetView =
   | { kind: 'shield' }
   | { kind: 'spend'; review: ShieldedReviewView }
@@ -124,9 +125,13 @@ type Reply<T> =
   | { ok: true; value: T }
   | { ok: false; error: string; code?: string; mayLand: boolean; planId?: string }
 
-function ask<T>(message: object, pick: (r: ServiceResponse) => T | undefined): Promise<Reply<T>> {
+function ask<T>(
+  scope: ShieldedScope,
+  message: object,
+  pick: (r: ServiceResponse) => T | undefined
+): Promise<Reply<T>> {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (r: ServiceResponse) => {
+    chrome.runtime.sendMessage({ ...message, ...scope }, (r: ServiceResponse) => {
       if (chrome.runtime.lastError) {
         resolve({
           ok: false,
@@ -225,6 +230,12 @@ export default function ShieldedSend({
   const { accounts } = useWallet()
   const { activeNetwork } = useNetwork()
   const { formatValue, getExplorerTxUrl } = usePreferences()
+  // Requests name the scope fixed when the page opened, not at click time, so a control left on
+  // screen after a network or account switch elsewhere is refused.
+  const shownScope: ShieldedScope = { networkId: activeNetwork.id, publicKey: accountPk }
+  const shownScopeRef = useRef(shownScope)
+  shownScopeRef.current = shownScope
+  const sessionScopeRef = useRef(shownScope)
 
   // Keep the last non-null action so content stays visible during the close slide.
   const lastActionRef = useRef<ShieldedAction | null>(null)
@@ -259,7 +270,11 @@ export default function ShieldedSend({
   useEffect(() => {
     if (step.kind !== 'review') return
     const timer = setInterval(() => {
-      chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_STATUS, poolId })
+      chrome.runtime.sendMessage({
+        type: SERVICE_TYPES.SHIELDED_STATUS,
+        poolId,
+        ...sessionScopeRef.current,
+      })
     }, 20_000)
     return () => clearInterval(timer)
   }, [step.kind, poolId])
@@ -329,6 +344,7 @@ export default function ShieldedSend({
     sessionRef.current++
     releaseFlow()
     if (!open) return
+    sessionScopeRef.current = shownScopeRef.current
     setRecipient(retryPlan?.to ?? '')
     setStage(retryPlan || action === 'shield' ? 'form' : 'recipient')
     setAmount(retryPlan ? formatUnits(retryPlan.amount, decimals) : '')
@@ -347,6 +363,7 @@ export default function ShieldedSend({
     if (!open || retryPlan || (a !== 'send' && a !== 'unshield')) return
     let current = true
     ask(
+      sessionScopeRef.current,
       {
         type: SERVICE_TYPES.SHIELDED_QUOTE,
         poolId,
@@ -369,7 +386,11 @@ export default function ShieldedSend({
     setLimitsError(null)
     if (!open || a !== 'shield') return
     let current = true
-    ask({ type: SERVICE_TYPES.SHIELDED_LIMITS, poolId }, (r) => r.shieldedLimits).then((reply) => {
+    ask(
+      sessionScopeRef.current,
+      { type: SERVICE_TYPES.SHIELDED_LIMITS, poolId },
+      (r) => r.shieldedLimits
+    ).then((reply) => {
       if (!current) return
       if (reply.ok) setLimits(reply.value)
       else setLimitsError(reply.error)
@@ -400,7 +421,7 @@ export default function ShieldedSend({
   // background declined any review in it when the session's port went.
   const requestStep = useCallback(async (message: object): Promise<Reply<ShieldedStep> | null> => {
     const session = sessionRef.current
-    const reply = await ask(message, (r) => r.shieldedStep)
+    const reply = await ask(sessionScopeRef.current, message, (r) => r.shieldedStep)
     return session === sessionRef.current && openRef.current ? reply : null
   }, [])
 
@@ -515,6 +536,7 @@ export default function ShieldedSend({
     flowStartRef.current = Date.now()
     setStep({ kind: 'working' })
     ask(
+      sessionScopeRef.current,
       {
         type: SERVICE_TYPES.SHIELDED_SHIELD,
         poolId,
@@ -1260,7 +1282,7 @@ export default function ShieldedSend({
               ? `spend:${sheetView.review.reviewId}`
               : sheetView.kind === 'result'
                 ? `result:${sheetView.step.kind}`
-                : 'shield'
+                : sheetView.kind
         }
         onClose={leaveSheet}
         onBackdrop={() => {
