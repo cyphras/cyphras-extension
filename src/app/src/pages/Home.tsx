@@ -77,7 +77,7 @@ import {
 } from 'lucide-react'
 
 const WHATS_NEW_KEY = 'cyphras_whats_new_seen'
-const WHATS_NEW_VERSION = '0.4.0'
+const WHATS_NEW_VERSION = '0.5.0'
 
 function BalanceSkeleton() {
   return (
