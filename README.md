@@ -5,7 +5,7 @@
 
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/manifest-v3-orange.svg" alt="Manifest v3">
-  <img src="https://img.shields.io/badge/version-0.4.0-22c55e.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.5.0-22c55e.svg" alt="Version">
 </div>
 
 ---
@@ -17,7 +17,7 @@ Hold, send, swap and bridge from one recovery phrase, and connect to Stellar dAp
 - Stellar, Ethereum and Bitcoin (native SegWit) accounts from one recovery phrase, with every balance and its history in one list
 - Swap on the Stellar DEX, with a warning before a swap loses value
 - Bridge native USDC between Ethereum and Stellar with Circle CCTP
-- Private mode (testnet preview): shield XLM into a private balance, pay private addresses (`cyt1...`) and unshield to any Stellar address, with zero-knowledge proofs made on your device. Deposits are screened before they enter the pool, and a payment that may still land is never sent twice
+- Private payments, experimental on mainnet: shield XLM into a private balance, pay private addresses (`cy1...`, or `cyt1...` on testnet) and unshield to any Stellar address, with zero-knowledge proofs made on your device. Deposits are screened before they enter the pool, the mainnet proving key comes from a public multi-party ceremony, and a payment that may still land is never sent twice
 - Connect to Stellar dApps with one approval flow, and sign transactions, messages (SEP-53) and authorization entries
 - Create or import wallets with a recovery phrase or a Stellar secret key, with several wallets and accounts side by side
 - Custom assets and tokens, and custom Stellar networks and RPC endpoints
