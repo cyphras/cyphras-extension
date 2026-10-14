@@ -205,7 +205,11 @@ export default function Home() {
   const privateNetworkNames =
     privateNetworks &&
     new Intl.ListFormat('en').format(privateNetworks.map((n) => n.name.toLowerCase()))
-  const switchTarget = shieldedPools.length === 0 ? privateNetworks?.at(0) : undefined
+  // Testnet first, so a single tap never lands the user on real funds.
+  const switchTarget =
+    shieldedPools.length === 0
+      ? (privateNetworks?.find((n) => n.id === 'testnet') ?? privateNetworks?.at(0))
+      : undefined
   // Mainnet's pool holds real funds and is unaudited; other networks are a testnet preview.
   const mainnetPrivate = activeNetwork.id === 'mainnet' && shieldedPools.length > 0
   const privateBadge = mainnetPrivate ? 'Experimental' : 'Testnet preview'
