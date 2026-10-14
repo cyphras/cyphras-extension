@@ -1,5 +1,6 @@
 import { DEFAULT_NETWORKS, NETWORK_STORAGE_KEY, ACTIVE_NETWORK_KEY } from '@constants/networks'
 import type { NetworkConfig } from '@constants/networks'
+import { PRIVATE_MAINNET_ACK_KEY } from '@constants/services'
 import { SHIELDED_DEPLOYMENTS } from './shielded/deployments'
 import { ShieldedRefusal } from './shielded/errors'
 import { pinnedPool } from './shielded/gate'
@@ -96,6 +97,16 @@ export async function getShieldedNetwork(networkId: unknown): Promise<NetworkCon
       'network_changed',
       'The active network changed, so this did not run. Check the network and try again.'
     )
+  }
+  // Mainnet moves real funds, so its private mode serves nothing until the notice is acknowledged.
+  if (net.id === 'mainnet') {
+    const stored = await chrome.storage.local.get(PRIVATE_MAINNET_ACK_KEY)
+    if (stored[PRIVATE_MAINNET_ACK_KEY] !== true) {
+      throw new ShieldedRefusal(
+        'mainnet_not_acknowledged',
+        'Private payments on mainnet need their notice acknowledged first. Open private mode to read it.'
+      )
+    }
   }
   return net
 }

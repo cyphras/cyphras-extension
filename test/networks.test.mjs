@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { beforeEach, test } from 'node:test'
 import { stubChromeStorage } from './support/chrome.mjs'
 import { resolveSources } from './support/sources.mjs'
+import { PRIVATE_MAINNET_ACK_KEY } from '../src/constants/services.ts'
 
 resolveSources()
 const { local } = stubChromeStorage()
@@ -117,6 +118,7 @@ test('a custom network cannot reuse the id of a shipped one', async () => {
 
 test('a private request runs only on the network its page showed', async () => {
   local.put(NETWORKS, [mainnet040, testnet040])
+  local.put(PRIVATE_MAINNET_ACK_KEY, true)
   await setActiveNetwork('testnet')
   assert.equal((await getShieldedNetwork('testnet')).id, 'testnet')
   await assert.rejects(getShieldedNetwork('mainnet'), { code: 'network_changed' })
@@ -125,4 +127,18 @@ test('a private request runs only on the network its page showed', async () => {
   await setActiveNetwork('mainnet')
   await assert.rejects(getShieldedNetwork('testnet'), { code: 'network_changed' })
   assert.equal((await getShieldedNetwork('mainnet')).id, 'mainnet')
+})
+
+test('a mainnet private request is refused until the mainnet notice is acknowledged', async () => {
+  local.put(NETWORKS, [mainnet040, testnet040])
+  await setActiveNetwork('mainnet')
+  await assert.rejects(getShieldedNetwork('mainnet'), { code: 'mainnet_not_acknowledged' })
+  local.put(PRIVATE_MAINNET_ACK_KEY, true)
+  assert.equal((await getShieldedNetwork('mainnet')).id, 'mainnet')
+})
+
+test('a testnet private request needs no mainnet acknowledgement', async () => {
+  local.put(NETWORKS, [mainnet040, testnet040])
+  await setActiveNetwork('testnet')
+  assert.equal((await getShieldedNetwork('testnet')).id, 'testnet')
 })
