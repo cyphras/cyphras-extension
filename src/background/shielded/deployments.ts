@@ -31,8 +31,8 @@ const MAINNET_ARTIFACTS: Readonly<Record<ArtifactName, string>> = {
 }
 
 const MAINNET_RPC_URL = 'https://mainnet.sorobanrpc.com'
-// The SDK recommends a second provider on mainnet; without one, the first alone is believed.
-const MAINNET_SECOND_RPC_URL: string | undefined = undefined
+// Run by another operator than the first, so no single provider decides what the wallet believes.
+const MAINNET_SECOND_RPC_URL = 'https://soroban-rpc.mainnet.stellar.gateway.fm'
 
 function pinned(
   name: DeploymentName,
