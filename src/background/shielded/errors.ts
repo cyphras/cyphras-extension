@@ -50,6 +50,9 @@ function transactionFailedMessage(d: Details, fallback: string): string {
   // what may still land.
   if (d.refused === true) return 'The RPC reports that the network refused the transaction.'
   if (d.vaultError !== undefined) return `The pool refused the transaction (${d.vaultError}).`
+  if (d.conflict === true) {
+    return 'Other deposits kept landing first, so this one did not go through. Try again.'
+  }
   if (d.secondProvider === 'no_diagnostics') {
     return 'The second RPC gave no diagnostics, so the outcome is unknown. Try another provider.'
   }
@@ -120,6 +123,8 @@ function sdkMessage(err: CyphrasError): string {
       return "That address is the asset's issuer, which would burn the payout."
     case 'signer_mismatch':
       return 'The transaction could not be signed.'
+    case 'signer_rejected':
+      return 'Signing was declined, so nothing was sent.'
     case 'transaction_failed':
       return transactionFailedMessage(d, err.message)
     case 'deposit_submitting':
