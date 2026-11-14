@@ -55,7 +55,7 @@ import { Reveal } from '@/components/Collapse'
 import { PrivateBreakdown, PrivatePartSheet } from '@/components/PrivateBalance'
 import type { AssetBalance } from '@/hooks/useBalances'
 import type { ShieldedPlanView } from '@ext-types/index'
-import { formatUnits } from '@/lib/amount'
+import { formatUnits, spendableUnits } from '@/lib/amount'
 import { formatFiat } from '@/lib/activity'
 import { privateEntries, type PrivateEntry } from '@/lib/privateHistory'
 import { PART_LABELS, privateBalance, type BalancePartKey } from '@/lib/privateBalance'
@@ -486,6 +486,17 @@ export default function Home() {
     return price !== null && Number.isFinite(n) ? formatFiat(n * price) : null
   }
   const shieldedIcon = selectedPool ? poolIcon(selectedPool) : undefined
+  // A network fee the account pays itself, in XLM: what it can spend after its minimum balance,
+  // and fiat for an amount, both for fee reviews of its own actions.
+  const xlmBalance = balances.find((b) => b.isNative && b.chain === stellarChainId)?.balance
+  const feeAvailable =
+    xlmBalance === undefined
+      ? null
+      : spendableUnits(xlmBalance, 7, undefined, (2n + BigInt(subentryCount)) * 5_000_000n)
+  const feeFiat = (units: bigint): string | null => {
+    const price = shieldedByPool[poolId]?.usdPrice ?? null
+    return price === null ? null : formatFiat(Number(formatUnits(units, 7)) * price)
+  }
 
   // Native pools use the inline XLM glyph; others reuse the public list's issuer icon.
   function poolIcon(pool: (typeof shieldedPools)[number]): string | undefined {
@@ -896,6 +907,8 @@ export default function Home() {
                       onRetry={openRetry}
                       onChanged={refreshShielded}
                       onSeeAll={() => setHistoryOpen(true)}
+                      feeAvailable={feeAvailable}
+                      feeFiat={feeFiat}
                     />
                   )}
                 </>
@@ -1293,6 +1306,8 @@ export default function Home() {
         }}
         onChanged={refreshShielded}
         onClose={() => setEntryId(null)}
+        feeAvailable={feeAvailable}
+        feeFiat={feeFiat}
       />
 
       {pickerAction && (

@@ -19,6 +19,8 @@ export default function ShieldedActivity({
   onRetry,
   onChanged,
   onSeeAll,
+  feeAvailable,
+  feeFiat,
 }: {
   entries: PrivateEntry[]
   poolId: string
@@ -30,6 +32,9 @@ export default function ShieldedActivity({
   onRetry: (plan: ShieldedPlanView, selfRelay?: boolean) => void
   onChanged: () => void
   onSeeAll: () => void
+  // What the account can spend on a network fee, and fiat for XLM amounts, for fee reviews.
+  feeAvailable: bigint | null
+  feeFiat: (units: bigint) => string | null
 }) {
   if (entries.length === 0) return null
   return (
@@ -75,6 +80,8 @@ export default function ShieldedActivity({
                   scope={scope}
                   onRetry={onRetry}
                   onChanged={onChanged}
+                  available={feeAvailable}
+                  fiatOf={feeFiat}
                 />
               </div>
             )}

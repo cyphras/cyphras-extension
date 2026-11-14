@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { RotateCcw } from 'lucide-react'
 import { InlineFeeReview, PoolRestore } from '@/components/ShieldedFeeSheets'
-import { approvalOf } from '@/lib/privateFees'
+import { REVIEW_TIMED_OUT } from '@/lib/privateFees'
 import {
   depositActions,
   holdOf,
@@ -12,7 +12,6 @@ import {
 import type {
   ServiceResponse,
   ShieldedDepositView,
-  ShieldedFeeApproval,
   ShieldedFeeView,
   ShieldedPlanView,
   ShieldedScope,
@@ -33,6 +32,8 @@ export function PrivateActions({
   scope,
   onRetry,
   onChanged,
+  available = null,
+  fiatOf = () => null,
 }: {
   plan: ShieldedPlanView | null
   deposit: ShieldedDepositView | null
@@ -41,6 +42,9 @@ export function PrivateActions({
   scope: ShieldedScope | null
   onRetry: (plan: ShieldedPlanView, selfRelay?: boolean) => void
   onChanged: () => void
+  // What the account can spend on a network fee, null when not known, and fiat for XLM amounts.
+  available?: bigint | null
+  fiatOf?: (units: bigint) => string | null
 }) {
   const [confirming, setConfirming] = useState<string | null>(null)
   const [running, setRunning] = useState<string | null>(null)
@@ -77,6 +81,8 @@ export function PrivateActions({
               scope={scope}
               account={account}
               heldPayment
+              available={available}
+              fiatOf={fiatOf}
               onChanged={onChanged}
             />
           </div>
@@ -91,7 +97,7 @@ export function PrivateActions({
       : []
   if (actions.length === 0) return null
 
-  function run(action: AccountAction, approval?: ShieldedFeeApproval) {
+  function run(action: AccountAction, approval?: string, approved?: string) {
     setConfirming(null)
     setReviewing(null)
     setRunning(action.key)
@@ -103,7 +109,7 @@ export function PrivateActions({
           setReviewing({
             key: action.key,
             fee: r.shieldedError.fee,
-            approved: approval?.ceiling ?? null,
+            approved: approved ?? null,
           })
           return
         }
@@ -132,14 +138,19 @@ export function PrivateActions({
             subject={action.type === 'SHIELDED_CLAIM' ? 'claim' : 'cancel'}
             account={scope?.publicKey ?? ''}
             approved={reviewing.approved}
-            onDecline={() => {
+            available={available}
+            fiatOf={fiatOf}
+            onDecline={(timedOut) => {
               setReviewing(null)
               setOutcomes((prev) => ({
                 ...prev,
-                [action.key]: { ok: true, text: 'Not sent. Nothing changed.' },
+                [action.key]: {
+                  ok: true,
+                  text: `${timedOut ? `${REVIEW_TIMED_OUT} ` : ''}Not sent. Nothing changed.`,
+                },
               }))
             }}
-            onApprove={() => run(action, approvalOf(reviewing.fee))}
+            onApprove={() => run(action, reviewing.fee.approval, reviewing.fee.most)}
           />
         ) : confirming === action.key ? (
           <div key={action.key} className="rounded-lg bg-muted px-3 py-2">

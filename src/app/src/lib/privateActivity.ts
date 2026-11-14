@@ -1,3 +1,4 @@
+import { NOT_AGAIN } from './privateFees'
 import { SERVICE_TYPES } from '@constants/services'
 import type { ShieldedDepositView, ShieldedPlanView, ShieldedScreening } from '@ext-types/index'
 
@@ -152,7 +153,27 @@ export function holdOf(p: ShieldedPlanView): Hold | null {
     : null
 }
 
-const HOLD_STATUS: Record<Hold, ItemStatus> = {
+function holdStatus(hold: Hold, kind: ShieldedPlanView['kind']): ItemStatus {
+  if (hold === 'network_fee_high') {
+    return {
+      label: 'Not sent yet',
+      tone: 'warn',
+      detail: `The relayer did not send it because the network fee is high. ${kind === 'unshield' ? 'Try again later, or pay the fee from your account.' : 'Try again later.'} ${NOT_AGAIN}`,
+      stage: 'attention',
+    }
+  }
+  if (hold === 'restore_needed') {
+    return {
+      label: 'Not sent yet',
+      tone: 'warn',
+      detail: `The pool needs a restore that relayers do not pay for. Nothing has left your private balance yet. ${NOT_AGAIN}`,
+      stage: 'attention',
+    }
+  }
+  return HOLD_STATUS[hold]
+}
+
+const HOLD_STATUS: Record<'fee_above_cap' | 'fee_above_limit', ItemStatus> = {
   fee_above_cap: {
     label: 'Needs your approval',
     tone: 'warn',
@@ -165,19 +186,6 @@ const HOLD_STATUS: Record<Hold, ItemStatus> = {
     tone: 'warn',
     detail:
       'The network fee is more than one transaction can carry right now. Nothing was sent. Try again later.',
-    stage: 'attention',
-  },
-  network_fee_high: {
-    label: 'Not sent yet',
-    tone: 'warn',
-    detail:
-      'The relayer did not send it because the network fee is high. Try again later, or pay the fee from your account.',
-    stage: 'attention',
-  },
-  restore_needed: {
-    label: 'Not sent yet',
-    tone: 'warn',
-    detail: 'The pool needs a restore that relayers do not pay for. Nothing was sent.',
     stage: 'attention',
   },
 }
@@ -208,7 +216,7 @@ export function planStatus(
 ): ItemStatus {
   const indexerOnly = p.exitConfirmed === false ? ` ${INDEXER_ONLY}` : ''
   const hold = holdOf(p)
-  if (hold) return HOLD_STATUS[hold]
+  if (hold) return holdStatus(hold, p.kind)
   if (p.needsUserDecision) {
     return {
       label: 'Outcome unknown',

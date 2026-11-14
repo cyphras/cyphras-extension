@@ -1,9 +1,4 @@
-import type {
-  ShieldedFeeApproval,
-  ShieldedFeeEntry,
-  ShieldedFeeReason,
-  ShieldedFeeView,
-} from '@ext-types/index'
+import type { ShieldedFeeEntry, ShieldedFeeReason } from '@ext-types/index'
 
 // The most a transaction the account submits itself pays the network without asking: the SDK's
 // caps of 0.01 XLM to get included and 1 XLM of resources.
@@ -12,11 +7,6 @@ export const NETWORK_FEE_CAP_XLM = '1.01'
 
 // A fee review that waits this long for an answer is declined, as a payment review is.
 export const FEE_REVIEW_TIMEOUT_MS = 3 * 60_000
-
-// The approval of a reviewed fee, for that fee's one transaction.
-export function approvalOf(fee: ShieldedFeeView): ShieldedFeeApproval {
-  return { reason: fee.reason, inclusionCap: fee.inclusionCap, ceiling: fee.ceiling }
-}
 
 // What a fee review is about: a transaction the account submits itself for a payment or a deposit,
 // or one of its own actions.
@@ -86,9 +76,14 @@ export function feeNotes(
       `Your account ${account} pays this fee and becomes publicly linked to this withdrawal.`
     )
   }
+  if (reason === 'restore' && subject !== 'restore') {
+    notes.push(
+      `Most you will pay includes up to ${NETWORK_FEE_CAP_XLM} XLM for the transaction that follows the restore.`
+    )
+  }
   notes.push(
-    'Most you will pay is the fee plus 10%, room for it to move before it is sent, never more.',
-    'This approval covers this one transaction only. If the fee goes higher, you are asked again.'
+    'Most you will pay is the fee plus 10%, rounded up to the next 0.01 XLM, so the fee can move a little before it is sent.',
+    'This approval is for this payment only. If its fees would go past this amount, nothing more is sent and you are asked again.'
   )
   const payment = subject === 'shield' || subject === 'unshield'
   return {
@@ -109,10 +104,26 @@ export function shortfall(ceiling: bigint, available: bigint | null): bigint | n
 export const notEnoughText = (more: string): string =>
   `Your account needs about ${more} more XLM to pay this. Add XLM to this account, then try again.`
 
-export const feeChangedText = (fee: string, approved: string): string =>
-  `The fee changed while the payment was prepared. It is now about ${fee} XLM, above the ${approved} XLM you approved. Review it again.`
+// Two XLM amounts as the popup writes them, compared exactly.
+function stroopsOf(amount: string): bigint {
+  const [whole, frac = ''] = amount.split('.')
+  return BigInt(whole) * 10_000_000n + BigInt(frac.padEnd(7, '0').slice(0, 7))
+}
+
+// A fee asked again after an approval: above what was approved, or changed in another way, as when
+// a restore was approved and the transaction after it needs more than the default.
+export function feeChangedText(fee: string, approved: string): string {
+  return stroopsOf(fee) > stroopsOf(approved)
+    ? `The fee changed while the payment was prepared. It is now about ${fee} XLM, above the ${approved} XLM you approved. Review it again.`
+    : `The fee changed while the payment was prepared. It is now about ${fee} XLM. Review it again.`
+}
 
 export const REVIEW_TIMED_OUT = 'The review timed out.'
+
+// The relayer still holds the refused payment's proof until its deadline, so a new payment of the
+// same could land beside it.
+export const NOT_AGAIN =
+  'Do not send it again as a new payment. Use Try again in Private activity: it spends the same notes, so at most one can land.'
 
 export interface RefusalCopy {
   readonly title: string
@@ -139,14 +150,14 @@ export function refusalCopy(
       ? {
           title: 'Relayer did not send it',
           lead,
-          note: 'Your private balance is unchanged. Try again later, when fees are lower, or pay the network fee from your account.',
+          note: `Nothing has left your private balance yet. Try again later, when fees are lower, or pay the network fee from your account. ${NOT_AGAIN}`,
           payNote: `Your account ${account} pays the network fee, at most ${NETWORK_FEE_CAP_XLM} XLM, and becomes publicly linked to this withdrawal. If it needs more, you are asked first.`,
           payLabel: 'Pay the fee myself',
         }
       : {
           title: 'Relayer did not send it',
           lead,
-          note: 'Your private balance is unchanged. Private transfers always go through a relayer. Try again later.',
+          note: `Nothing has left your private balance yet. Private transfers always go through a relayer. Try again later. ${NOT_AGAIN}`,
           payNote: null,
           payLabel: null,
         }
@@ -157,14 +168,14 @@ export function refusalCopy(
     ? {
         title: 'Pool needs a restore',
         lead,
-        note: 'You can pay it from your account. It restores the pool for everyone: the first withdrawal after a long stop pays it once, and later transactions need nothing extra for a long while.',
-        payNote: `Your account ${account} pays the fee and becomes publicly linked to this withdrawal. The fee is shown before anything is sent.`,
+        note: `You can pay it from your account. It restores the pool for everyone: the first withdrawal after a long stop pays it once, and later transactions need nothing extra for a long while. ${NOT_AGAIN}`,
+        payNote: `Your account ${account} pays the fee, at most ${NETWORK_FEE_CAP_XLM} XLM, and becomes publicly linked to this withdrawal. If it needs more, you are asked first.`,
         payLabel: 'Pay from my account',
       }
     : {
         title: 'Pool needs a restore',
         lead,
-        note: 'Private transfers go through a relayer, which does not pay for this. You can restore the pool from your account, then retry your payment, or try again later.',
+        note: `Private transfers go through a relayer, which does not pay for this. You can restore the pool from your account, then retry your payment, or try again later. ${NOT_AGAIN}`,
         payNote: null,
         payLabel: null,
       }
@@ -184,6 +195,12 @@ export function restoreOutcome(restored: number, heldPayment: boolean): string {
     : 'The pool is restored.'
 }
 
+// A private send to an address that a payment of this account has not finished paying.
+export const OPEN_SEND = {
+  lead: 'A payment to this address has not finished yet. Continue it to pay with the same notes, so at most one arrives.',
+  note: 'If you send another payment instead, both may arrive.',
+}
+
 export const OPEN_PAYMENT = {
   title: 'Payment already pending',
   lead: 'A payment to this address has not finished yet. Finish it first so the same payment is not made twice.',
@@ -197,7 +214,7 @@ export const STAYS_PENDING =
 export const RESTORE_NOT_SENT = 'Your payment was not sent. You can retry it from Private activity.'
 
 export const WAITING_NOTE =
-  'Nothing was sent and your funds stay in your private balance. You can review the fee again from Private activity.'
+  'Nothing was sent and your funds stay in your private balance. You can review the fee again from Private activity. Do not send it again as a new payment: the review there spends the same notes, so at most one can land.'
 
 // A relayed payment the pool will queue, whose relayer asks its queued fee: `fee` and `usual` in XLM.
 export function queuedNote(kind: 'send' | 'unshield', fee: string, usual: string): string {
@@ -213,4 +230,4 @@ export const queuedCapHint = (kind: 'send' | 'unshield'): string =>
 // A relayer that keeps refusing a withdrawal, as when a note it spends was spent elsewhere, may
 // still let the account submit it itself.
 export const RELAY_KEEPS_FAILING =
-  'If the relayer keeps refusing it, tick Submit without a relayer: your account pays the network fee and becomes publicly linked to this withdrawal.'
+  'If the relayer keeps refusing it, retry it from Private activity with Submit without a relayer ticked: the retry spends the same notes, and your account pays the network fee and becomes publicly linked to this withdrawal.'

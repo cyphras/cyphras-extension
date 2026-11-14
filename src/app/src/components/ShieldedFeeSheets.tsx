@@ -8,8 +8,9 @@ import {
   FEE_REVIEW_TIMEOUT_MS,
   FEE_TITLES,
   OPEN_PAYMENT,
+  OPEN_SEND,
   RESTORE_ADVANCED,
-  approvalOf,
+  REVIEW_TIMED_OUT,
   entryLines,
   feeChangedText,
   feeLead,
@@ -22,14 +23,12 @@ import {
   type RefusalCopy,
 } from '@/lib/privateFees'
 import { SERVICE_TYPES } from '@constants/services'
-import type {
-  ServiceResponse,
-  ShieldedFeeApproval,
-  ShieldedFeeView,
-  ShieldedScope,
-} from '@ext-types/index'
+import type { ServiceResponse, ShieldedFeeView, ShieldedScope } from '@ext-types/index'
 
 const xlm = (stroops: string | bigint): string => formatUnits(stroops, 7)
+
+// How long the paying button of an inline review stays off after it appears.
+const PAY_DELAY_MS = 1_000
 
 function AmberNote({ children }: { children: ReactNode }) {
   return (
@@ -53,9 +52,9 @@ function withFiat(text: string, fiat: string | null) {
   )
 }
 
-// A network fee above what the wallet pays without asking, for one transaction the account submits
-// itself. Nothing goes until the user approves the most it may pay, which the primary button
-// repeats; declining sends nothing. Where the fee is as large as the payment, Not now is the
+// A network fee above what the wallet pays without asking, for a call the account submits itself.
+// Nothing goes until the user approves the most the call may pay, which the primary button repeats
+// and the background holds it to; declining sends nothing. Where the fee is as large as the payment, Not now is the
 // highlighted button and takes focus; the paying button never does.
 export function FeeReviewBody({
   fee,
@@ -87,7 +86,7 @@ export function FeeReviewBody({
   onDecline: () => void
   onApprove: () => void
 }) {
-  const ceiling = BigInt(fee.ceiling)
+  const ceiling = BigInt(fee.most)
   const large = payment !== null && BigInt(fee.total) >= payment
   const { warning, notes } = feeNotes(fee.reason, subject, shortAddress(account), large)
   const lacking = shortfall(ceiling, available)
@@ -145,7 +144,7 @@ export function FeeReviewBody({
         <Button
           variant={large ? 'outline' : 'default'}
           className="flex-1"
-          disabled={working || lacking !== null}
+          disabled={working || lacking !== null || fee.approval === undefined}
           onClick={onApprove}
         >
           {working ? 'Sending...' : `Pay up to ${most}`}
@@ -198,40 +197,52 @@ export function RefusalBody({
 }
 
 // A payment to the same destination may still land, so a new one waits for it: the way on is that
-// payment's retry, with its own notes.
+// payment's retry, with its own notes. For a private send the user may still send another payment,
+// which the sheet says may arrive beside it.
 export function OpenPaymentBody({
   found,
+  send,
   onBack,
   onOpen,
 }: {
   found: boolean
+  send: boolean
   onBack: () => void
   onOpen: () => void
 }) {
+  const copy = send ? OPEN_SEND : OPEN_PAYMENT
   return (
     <>
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-5 py-4 [&>*]:shrink-0">
-        <AmberNote>{OPEN_PAYMENT.lead}</AmberNote>
-        <MutedNote>{OPEN_PAYMENT.note}</MutedNote>
+        <AmberNote>{copy.lead}</AmberNote>
+        <MutedNote>{copy.note}</MutedNote>
       </div>
       <div className="flex shrink-0 gap-3 border-t border-border px-5 py-4">
         <Button variant="outline" className="flex-1" onClick={onBack}>
-          Back
+          {send ? 'Send another payment' : 'Back'}
         </Button>
         <Button className="flex-1" onClick={onOpen}>
-          {found ? 'Open pending payment' : 'Check Private activity'}
+          {!found
+            ? 'Check Private activity'
+            : send
+              ? 'Continue that payment'
+              : 'Open pending payment'}
         </Button>
       </div>
     </>
   )
 }
 
-// A fee review in the inline box of an account action: the same facts and choices as the sheet.
+// A fee review in the inline box of an account action or a pool restore: the same facts and
+// choices as the sheet. The paying button waits a moment after it appears, so a second tap meant
+// for the button it replaced does not approve.
 export function InlineFeeReview({
   fee,
   subject,
   account,
   approved,
+  available,
+  fiatOf,
   onDecline,
   onApprove,
 }: {
@@ -239,20 +250,32 @@ export function InlineFeeReview({
   subject: FeeSubject
   account: string
   approved: string | null
-  onDecline: () => void
+  available: bigint | null
+  fiatOf: (units: bigint) => string | null
+  onDecline: (timedOut: boolean) => void
   onApprove: () => void
 }) {
   const { notes } = feeNotes(fee.reason, subject, shortAddress(account), false)
   const entries = fee.reason === 'network' ? [] : entryLines(fee.entries)
-  const most = `${xlm(fee.ceiling)} XLM`
+  const ceiling = BigInt(fee.most)
+  const lacking = shortfall(ceiling, available)
+  const most = `${xlm(ceiling)} XLM`
+  const total = fiatOf(BigInt(fee.total))
+  const mostFiat = fiatOf(ceiling)
+  const [ready, setReady] = useState(false)
   // An unanswered review is declined, however often the page around it renders.
   const declineRef = useRef(onDecline)
   useEffect(() => {
     declineRef.current = onDecline
   })
   useEffect(() => {
-    const timer = setTimeout(() => declineRef.current(), FEE_REVIEW_TIMEOUT_MS)
-    return () => clearTimeout(timer)
+    setReady(false)
+    const armed = setTimeout(() => setReady(true), PAY_DELAY_MS)
+    const timer = setTimeout(() => declineRef.current(true), FEE_REVIEW_TIMEOUT_MS)
+    return () => {
+      clearTimeout(armed)
+      clearTimeout(timer)
+    }
   }, [fee])
   return (
     <div className="flex flex-col gap-2 rounded-lg bg-muted px-3 py-2">
@@ -266,14 +289,20 @@ export function InlineFeeReview({
         {feeLead(fee.reason)}
       </p>
       <p className="text-[11px] tabular-nums text-foreground">
-        Network fee about {xlm(fee.total)} XLM.{' '}
+        Network fee about {xlm(fee.total)} XLM{total ? ` (${total})` : ''}.{' '}
         <span className="font-semibold" aria-label={`Most you will pay: ${most}`}>
-          Most you will pay {most}.
+          Most you will pay {most}
+          {mostFiat ? ` (${mostFiat})` : ''}.
         </span>
       </p>
       {entries.length > 0 && (
         <p className="text-[11px] leading-snug text-muted-foreground">
           {fee.reason === 'restore' ? 'Brings back' : 'Renews'}: {entries.join(', ')}.
+        </p>
+      )}
+      {lacking !== null && (
+        <p className="text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+          {notEnoughText(xlm(lacking))}
         </p>
       )}
       {notes.map((note) => (
@@ -283,14 +312,15 @@ export function InlineFeeReview({
       ))}
       <div className="flex gap-2">
         <button
-          onClick={onDecline}
+          onClick={() => onDecline(false)}
           className="cursor-pointer rounded-full px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-background"
         >
           Not now
         </button>
         <button
           onClick={onApprove}
-          className="cursor-pointer rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+          disabled={!ready || lacking !== null || fee.approval === undefined}
+          className="cursor-pointer rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-default disabled:opacity-50"
         >
           Pay up to {most}
         </button>
@@ -301,7 +331,7 @@ export function InlineFeeReview({
 
 type RestoreState =
   | { kind: 'closed' }
-  | { kind: 'confirm' }
+  | { kind: 'confirm'; note?: string }
   | { kind: 'running' }
   | { kind: 'fee'; fee: ShieldedFeeView; approved: string | null }
   | { kind: 'done'; text: string; hash: string | null }
@@ -314,6 +344,8 @@ export function PoolRestore({
   scope,
   account,
   heldPayment,
+  available,
+  fiatOf,
   onChanged,
 }: {
   poolId: string
@@ -321,11 +353,14 @@ export function PoolRestore({
   account: string
   // A payment waits for the restore, and can be retried after it.
   heldPayment: boolean
+  // What the account can spend on the fee, null when not known, and fiat for XLM amounts.
+  available: bigint | null
+  fiatOf: (units: bigint) => string | null
   onChanged: () => void
 }) {
   const [state, setState] = useState<RestoreState>({ kind: 'closed' })
 
-  function run(approval?: ShieldedFeeApproval) {
+  function run(approval?: string, approved?: string) {
     setState({ kind: 'running' })
     chrome.runtime.sendMessage(
       { type: SERVICE_TYPES.SHIELDED_RESTORE, poolId, feeApproval: approval, ...scope },
@@ -344,7 +379,7 @@ export function PoolRestore({
             hash: r.shieldedRestore.txHash,
           })
         } else if (r?.shieldedError?.fee) {
-          setState({ kind: 'fee', fee: r.shieldedError.fee, approved: approval?.ceiling ?? null })
+          setState({ kind: 'fee', fee: r.shieldedError.fee, approved: approved ?? null })
         } else {
           setState({
             kind: 'failed',
@@ -373,8 +408,12 @@ export function PoolRestore({
         subject="restore"
         account={account}
         approved={state.approved}
-        onDecline={() => setState({ kind: 'confirm' })}
-        onApprove={() => run(approvalOf(state.fee))}
+        available={available}
+        fiatOf={fiatOf}
+        onDecline={(timedOut) =>
+          setState({ kind: 'confirm', note: timedOut ? REVIEW_TIMED_OUT : undefined })
+        }
+        onApprove={() => run(state.fee.approval, state.fee.most)}
       />
     )
   }
@@ -385,6 +424,11 @@ export function PoolRestore({
       <p className="text-[11px] leading-snug text-muted-foreground">
         {restoreWarning(shortAddress(account))}
       </p>
+      {state.kind === 'confirm' && state.note && (
+        <p aria-live="polite" className="text-[11px] text-muted-foreground">
+          {state.note}
+        </p>
+      )}
       {outcome && (
         <p
           aria-live="polite"

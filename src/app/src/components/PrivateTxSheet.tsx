@@ -39,6 +39,8 @@ export function PrivateTxSheet({
   onRetry,
   onChanged,
   onClose,
+  feeAvailable,
+  feeFiat,
 }: {
   entry: PrivateEntry | null
   networkId: string
@@ -52,6 +54,9 @@ export function PrivateTxSheet({
   onRetry: (plan: ShieldedPlanView, selfRelay?: boolean) => void
   onChanged: () => void
   onClose: () => void
+  // What the account can spend on a network fee, and fiat for XLM amounts, for fee reviews.
+  feeAvailable: bigint | null
+  feeFiat: (units: bigint) => string | null
 }) {
   const { getExplorerTxUrl } = usePreferences()
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -163,6 +168,8 @@ export function PrivateTxSheet({
               onRetry(p, selfRelay)
             }}
             onChanged={onChanged}
+            available={feeAvailable}
+            fiatOf={feeFiat}
           />
         )}
 
