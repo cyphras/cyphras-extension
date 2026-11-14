@@ -49,7 +49,7 @@ export function PrivateTxSheet({
   fiat: string | null
   poolId: string
   scope: ShieldedScope | null
-  onRetry: (plan: ShieldedPlanView) => void
+  onRetry: (plan: ShieldedPlanView, selfRelay?: boolean) => void
   onChanged: () => void
   onClose: () => void
 }) {
@@ -158,9 +158,9 @@ export function PrivateTxSheet({
             deposit={deposit}
             poolId={poolId}
             scope={scope}
-            onRetry={(p) => {
+            onRetry={(p, selfRelay) => {
               onClose()
-              onRetry(p)
+              onRetry(p, selfRelay)
             }}
             onChanged={onChanged}
           />

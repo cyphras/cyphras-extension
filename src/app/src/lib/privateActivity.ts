@@ -137,10 +137,69 @@ export function depositStatus(d: ShieldedDepositView): ItemStatus {
   }
 }
 
+// Why a payment saved but never sent waits on the user: the account's own fee check stopped it, or
+// the relayer did not send it for a reason the user can act on.
+export type Hold = 'fee_above_cap' | 'fee_above_limit' | 'network_fee_high' | 'restore_needed'
+
+export function holdOf(p: ShieldedPlanView): Hold | null {
+  if (p.state !== 'prepared' || p.needsUserDecision) return null
+  const code = p.route.kind === 'relayer' ? p.relayerCode : p.lastError
+  return code === 'fee_above_cap' ||
+    code === 'fee_above_limit' ||
+    code === 'network_fee_high' ||
+    code === 'restore_needed'
+    ? code
+    : null
+}
+
+const HOLD_STATUS: Record<Hold, ItemStatus> = {
+  fee_above_cap: {
+    label: 'Needs your approval',
+    tone: 'warn',
+    detail:
+      'The network fee is above what this wallet pays without asking. Nothing was sent. Review the fee to go on.',
+    stage: 'attention',
+  },
+  fee_above_limit: {
+    label: 'Not sent yet',
+    tone: 'warn',
+    detail:
+      'The network fee is more than one transaction can carry right now. Nothing was sent. Try again later.',
+    stage: 'attention',
+  },
+  network_fee_high: {
+    label: 'Not sent yet',
+    tone: 'warn',
+    detail:
+      'The relayer did not send it because the network fee is high. Try again later, or pay the fee from your account.',
+    stage: 'attention',
+  },
+  restore_needed: {
+    label: 'Not sent yet',
+    tone: 'warn',
+    detail: 'The pool needs a restore that relayers do not pay for. Nothing was sent.',
+    stage: 'attention',
+  },
+}
+
+// A relayed withdrawal the relayer refused for another reason than the network fee or a restore, as
+// when a note it spends was spent elsewhere: the account may still submit it itself.
+function refusedByRelayer(p: ShieldedPlanView): boolean {
+  return (
+    p.kind === 'unshield' &&
+    p.route.kind === 'relayer' &&
+    p.relayerCode !== null &&
+    !['network_fee_high', 'restore_needed', 'fee_too_low', 'unavailable', 'rate_limited'].includes(
+      p.relayerCode
+    )
+  )
+}
+
 // A payment that may still land, or failed only by the wallet's last reading of the chain, is paid
-// again through a retry with the same notes, so at most one of the two can land.
+// again through a retry with the same notes, so at most one of the two can land. One that waits on
+// the user was never sent, so its retry is offered at once.
 export function needsRetry(p: ShieldedPlanView): boolean {
-  return p.mustRetry && (p.state === 'dead' || p.needsUserDecision)
+  return p.mustRetry && (p.state === 'dead' || p.needsUserDecision || holdOf(p) !== null)
 }
 
 export function planStatus(
@@ -148,6 +207,8 @@ export function planStatus(
   unit: (units: bigint | string) => string
 ): ItemStatus {
   const indexerOnly = p.exitConfirmed === false ? ` ${INDEXER_ONLY}` : ''
+  const hold = holdOf(p)
+  if (hold) return HOLD_STATUS[hold]
   if (p.needsUserDecision) {
     return {
       label: 'Outcome unknown',
@@ -211,8 +272,7 @@ export function planStatus(
       return {
         label: 'Not sent',
         tone: 'bad',
-        detail:
-          'Its deadline passed without it landing, so your funds are back in Available. A retry with the same notes cannot pay twice.',
+        detail: `Its deadline passed without it landing, so your funds are back in Available. A retry with the same notes cannot pay twice.${refusedByRelayer(p) ? ' The relayer refused it; a retry without a relayer may go through, paid from your account.' : ''}`,
         stage: 'attention',
       }
   }

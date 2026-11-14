@@ -266,6 +266,12 @@ export default function Home() {
   const [shieldedReceiveOpen, setShieldedReceiveOpen] = useState(false)
   const [shieldedAction, setShieldedAction] = useState<ShieldedAction | null>(null)
   const [retryPlan, setRetryPlan] = useState<ShieldedPlanView | null>(null)
+  // Whether the retry opened starts self-relayed, as when the user chose to pay the fee.
+  const [retrySelfRelay, setRetrySelfRelay] = useState(false)
+  const openRetry = (plan: ShieldedPlanView, selfRelay = false) => {
+    setRetrySelfRelay(selfRelay)
+    setRetryPlan(plan)
+  }
   // The picker switches the pool of the open send, shield or unshield; tappedPoolId opens the
   // token page.
   const [pickerAction, setPickerAction] = useState<ShieldedAction | null>(null)
@@ -880,7 +886,7 @@ export default function Home() {
                       chainIcon={chainIcons.get(stellarChainId)}
                       fiatOf={entryFiat}
                       onSelect={(entry) => setEntryId(entry.item.id)}
-                      onRetry={(plan) => setRetryPlan(plan)}
+                      onRetry={openRetry}
                       onChanged={refreshShielded}
                       onSeeAll={() => setHistoryOpen(true)}
                     />
@@ -1273,10 +1279,10 @@ export default function Home() {
         fiat={selectedEntry ? entryFiat(selectedEntry) : null}
         poolId={poolId}
         scope={statusScope}
-        onRetry={(plan) => {
+        onRetry={(plan, selfRelay) => {
           setHistoryOpen(false)
           setTappedPoolId(null)
-          setRetryPlan(plan)
+          openRetry(plan, selfRelay)
         }}
         onChanged={refreshShielded}
         onClose={() => setEntryId(null)}
@@ -1293,6 +1299,7 @@ export default function Home() {
       <ShieldedSend
         action={!privateReady ? null : retryPlan ? retryPlan.kind : shieldedAction}
         retryPlan={retryPlan}
+        retrySelfRelay={retrySelfRelay}
         status={shieldedStatus}
         poolId={poolId}
         assetLabel={shieldedLabel}
@@ -1318,6 +1325,10 @@ export default function Home() {
         subentryCount={subentryCount}
         // The picker opens over the form, as on public Send, so what is typed stays.
         onChangeAsset={() => setPickerAction(shieldedAction)}
+        onOpenPlan={(plan) => {
+          setShieldedAction(null)
+          openRetry(plan)
+        }}
         onHistory={() => {
           setShieldedAction(null)
           setRetryPlan(null)

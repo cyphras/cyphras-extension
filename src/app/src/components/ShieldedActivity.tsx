@@ -27,7 +27,7 @@ export default function ShieldedActivity({
   chainIcon?: string
   fiatOf: (entry: PrivateEntry) => string | null
   onSelect: (entry: PrivateEntry) => void
-  onRetry: (plan: ShieldedPlanView) => void
+  onRetry: (plan: ShieldedPlanView, selfRelay?: boolean) => void
   onChanged: () => void
   onSeeAll: () => void
 }) {
