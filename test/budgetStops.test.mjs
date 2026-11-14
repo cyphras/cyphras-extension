@@ -65,7 +65,12 @@ test('a budget stop of a saved payment opens a review of the next step, naming w
   assert.equal(view.fee.total, '5000000')
   assert.equal(view.fee.paid, '6000000')
   assert.equal(feeTitle(view.fee.reason, view.fee.paid), 'Needs your approval')
-  assert.match(feeLead(view.fee.reason, '0.6'), /already paid 0\.6 XLM in network fees/)
+  assert.equal(view.fee.restored, true)
+  assert.equal(view.fee.attempted, false)
+  assert.match(
+    feeLead(view.fee.reason, { signed: '0.6', restored: true, attempted: false }, 'unshield'),
+    /^This payment has signed for up to 0\.6 XLM in network fees so far, including bringing the pool's data back\./
+  )
   assert.doesNotMatch(view.message, /[Tt]ry again/)
 })
 
@@ -132,7 +137,7 @@ test('no ceiling when the inclusion cap alone reaches the envelope limit', () =>
 test('the account key is reachable only through a budget', () => {
   const wallet = source('../src/background/shielded/wallet.ts')
   assert.equal(wallet.match(/vaultSigner\(/g).length, 1)
-  assert.match(wallet, /budgetSigner\(vaultSigner\(keypair, pool\.deployment\), budget\)/)
+  assert.match(wallet, /budgetSigner\(vaultSigner\(keypair, pool\.deployment\), budget, spent\)/)
   assert.doesNotMatch(wallet, /readonly signer: TransactionSigner/)
   assert.doesNotMatch(wallet, /selfRelay: signer\b/)
 })
@@ -157,7 +162,7 @@ test('an offer is bound to its pool and to the deposit mode of a shield', () => 
   assert.throws(() => take(grant(), 'xlm', true), { code: 'invalid_fee_approval' })
   assert.equal(take(grant(), 'xlm', false).pool, 'xlm')
   const declined = grant()
-  dropGrant(declined)
+  dropGrant(declined, 'G')
   assert.throws(() => take(declined, 'xlm', false), { code: 'invalid_fee_approval' })
 })
 
