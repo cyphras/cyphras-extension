@@ -35,6 +35,7 @@ import {
 import { SHIELDED_DEPLOYMENTS, type ShieldedDeployment } from './deployments'
 import { MayStillLand, ShieldedRefusal, errorView } from './errors'
 import { dropGrant } from './approvals'
+import { paymentRows, reachedChain } from './history'
 import { BUDGET_STOP_MESSAGE, DEFAULT_FEE_BUDGET, budgetSigner, type FeeSpent } from './fees'
 import { pinnedPool } from './gate'
 import { offscreenProver, packagedArtifacts } from './prover'
@@ -449,8 +450,7 @@ export async function shieldedHistory(
     ...fields,
   })
   const items: ShieldedHistoryItem[] = []
-  for (const p of plans) {
-    if (p.state === 'superseded') continue
+  for (const p of paymentRows(plans)) {
     items.push(
       item({
         id: `plan:${p.planId}`,
@@ -469,7 +469,7 @@ export async function shieldedHistory(
       .filter((h) => h.kind === 'shield' && h.txHash !== undefined)
       .map((h) => [h.txHash, h.time ?? h.closedAt])
   )
-  for (const d of deposits) {
+  for (const d of deposits.filter(reachedChain)) {
     const time = d.txHash === undefined ? null : (shieldedAt.get(d.txHash) ?? null)
     const of = {
       amount: d.amount.toString(),

@@ -17,6 +17,25 @@ interface OpenReview {
 }
 
 const open = new Map<string, OpenReview>()
+// Warning codes the user confirmed in a payment's flow, by the holder of its popup, and the holder
+// of each review answered. An offer made after them carries the codes, so the retry it approves
+// asks again only for a review that warns of something new.
+const confirmedCodes = new Map<string, Set<string>>()
+const reviewHolders = new Map<string, string>()
+
+function noteConfirmed(holder: string, review: SpendReview): void {
+  const codes = confirmedCodes.get(holder) ?? new Set<string>()
+  for (const w of review.warnings) codes.add(w.code)
+  confirmedCodes.set(holder, codes)
+}
+
+export function confirmedWarnings(holder: unknown): string[] {
+  return typeof holder === 'string' ? [...(confirmedCodes.get(holder) ?? [])] : []
+}
+
+export function holderOfReview(reviewId: unknown): string | undefined {
+  return typeof reviewId === 'string' ? reviewHolders.get(reviewId) : undefined
+}
 // Tokens of the ports popups hold for the payments they started.
 const holders = new Set<string>()
 // Moves on whenever the wallets close, as at a lock, so a spend that started before cannot be
@@ -85,6 +104,7 @@ export function startReviewed(
         return
       }
       if (accepted?.(review)) {
+        noteConfirmed(holder, review)
         answer(true)
         return
       }
@@ -92,8 +112,11 @@ export function startReviewed(
       const decide = (approve: boolean): Promise<ShieldedStep> => {
         clearTimeout(timer)
         open.delete(reviewId)
+        reviewHolders.set(reviewId, holder)
+        const yes = approve && generation === started
+        if (yes) noteConfirmed(holder, review)
         const after = nextStep()
-        answer(approve && generation === started)
+        answer(yes)
         return after
       }
       const decline = () => {
@@ -139,6 +162,8 @@ export function watchReviewPort(port: chrome.runtime.Port): boolean {
   holders.add(holder)
   port.onDisconnect.addListener(() => {
     holders.delete(holder)
+    confirmedCodes.delete(holder)
+    for (const [reviewId, of] of reviewHolders) if (of === holder) reviewHolders.delete(reviewId)
     for (const review of [...open.values()]) if (review.holder === holder) review.decline()
   })
   return true
@@ -147,5 +172,7 @@ export function watchReviewPort(port: chrome.runtime.Port): boolean {
 export function declineAllReviews(): void {
   generation++
   dropGrants()
+  confirmedCodes.clear()
+  reviewHolders.clear()
   for (const review of [...open.values()]) review.decline()
 }
