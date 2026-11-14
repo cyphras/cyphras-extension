@@ -73,7 +73,9 @@ function feeView(d: Details): ShieldedFeeView | undefined {
     inclusionCap: caps.inclusionCap.toString(),
     ceiling: caps.ceiling.toString(),
     most: caps.ceiling.toString(),
-    ...(typeof d.paid === 'string' && /^\d+$/.test(d.paid) ? { paid: d.paid } : {}),
+    ...(typeof d.paid === 'string' && /^\d+$/.test(d.paid)
+      ? { paid: d.paid, restored: d.restored === true, attempted: d.attempted === true }
+      : {}),
     entries,
   }
 }
@@ -291,7 +293,9 @@ function cyphrasView(err: CyphrasError): ShieldedErrorView {
             reason: 'network',
             inclusion: stop.inclusion.toString(),
             resource: stop.resource.toString(),
-            paid: stop.paid.toString(),
+            paid: stop.spent.signed.toString(),
+            restored: stop.spent.restored,
+            attempted: stop.spent.attempted,
           }
         : d
     )

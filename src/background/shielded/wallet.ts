@@ -35,7 +35,7 @@ import {
 import { SHIELDED_DEPLOYMENTS, type ShieldedDeployment } from './deployments'
 import { MayStillLand, ShieldedRefusal, errorView } from './errors'
 import { dropGrant } from './approvals'
-import { DEFAULT_FEE_BUDGET, budgetSigner } from './fees'
+import { BUDGET_STOP_MESSAGE, DEFAULT_FEE_BUDGET, budgetSigner, type FeeSpent } from './fees'
 import { pinnedPool } from './gate'
 import { offscreenProver, packagedArtifacts } from './prover'
 import { declineAllReviews, decideReview, startReviewed } from './reviews'
@@ -47,7 +47,7 @@ interface OpenWallet {
   readonly pool: ShieldedDeployment
   // The account's key for one call it pays the network fees of, held to `budget` in all; there is
   // no signer without a budget.
-  readonly payer: (budget: bigint) => TransactionSigner
+  readonly payer: (budget: bigint, spent?: FeeSpent) => TransactionSigner
   readonly publicKey: string
   // Names the account's records beside the SDK's: the notice of a fresh start, and its own actions.
   readonly scope: string
@@ -201,7 +201,7 @@ async function openWallet(
   return {
     wallet,
     pool,
-    payer: (budget) => budgetSigner(vaultSigner(keypair, pool.deployment), budget),
+    payer: (budget, spent) => budgetSigner(vaultSigner(keypair, pool.deployment), budget, spent),
     publicKey: keypair.publicKey(),
     scope,
     sync: undefined,
@@ -287,6 +287,17 @@ function depositView(d: DepositInfo): ShieldedDepositView {
   }
 }
 
+// Why the plan's submission last stopped. A signing refusal is a budget stop only when the SDK kept
+// the budget's own message; any other refusal of the key reads signer_refused, so it is never shown
+// as a fee to review.
+function lastErrorCode(p: PlanView): string | null {
+  if (p.lastError === undefined) return null
+  if (p.lastError.code === 'signer_mismatch' && p.lastError.message !== BUDGET_STOP_MESSAGE) {
+    return 'signer_refused'
+  }
+  return p.lastError.code
+}
+
 // `continued`: another plan retries this one, so why this one stopped no longer says where the
 // payment stands, and no second retry of it is offered.
 function planView(p: PlanView, continued: boolean): ShieldedPlanView {
@@ -305,7 +316,7 @@ function planView(p: PlanView, continued: boolean): ShieldedPlanView {
     strandedExits: p.exitParts.filter((part) => part.stranded).map((part) => part.id),
     relayerStatus: orNull(p.relayerStatus),
     relayerCode: continued ? null : orNull(p.relayerCode),
-    lastError: continued ? null : (p.lastError?.code ?? null),
+    lastError: continued ? null : lastErrorCode(p),
     mustRetry: p.mustRetry,
     needsUserDecision: p.needsUserDecision,
     retryOf: orNull(p.retryOf),
@@ -539,10 +550,11 @@ export async function shieldedShield(
   amount: bigint,
   whileSubmitting: boolean,
   networkFeeCaps: NetworkFeeCaps | undefined,
-  budget = DEFAULT_FEE_BUDGET
+  budget = DEFAULT_FEE_BUDGET,
+  spent?: FeeSpent
 ): Promise<ShieldedReceiptView> {
   const { wallet, payer } = await walletFor(net, publicKey, poolId)
-  const signer = payer(budget)
+  const signer = payer(budget, spent)
   const before = (await wallet.deposits()).length
   try {
     const receipt = await track(wallet.shield({ amount, signer, whileSubmitting, networkFeeCaps }))
@@ -678,7 +690,8 @@ export async function shieldedRetry(
   selfRelay: boolean,
   networkFeeCaps: NetworkFeeCaps | undefined,
   shown?: readonly string[],
-  budget = DEFAULT_FEE_BUDGET
+  budget = DEFAULT_FEE_BUDGET,
+  spent?: FeeSpent
 ): Promise<ShieldedStep> {
   const { wallet, pool, payer } = await walletFor(net, publicKey, poolId)
   const plans = await wallet.plans()
@@ -698,7 +711,7 @@ export async function shieldedRetry(
   // The SDK retries a relayed plan through its relayer first, then the others. A self-relayed one
   // it moves to relayers only when they are named.
   const route = selfRelay
-    ? { selfRelay: payer(budget), networkFeeCaps }
+    ? { selfRelay: payer(budget, spent), networkFeeCaps }
     : plan?.route.kind === 'self'
       ? { relayer: pool.deployment.relayers.map((r) => r.url), maxFee: pool.maxRelayerFee }
       : { maxFee: pool.maxRelayerFee }
@@ -731,10 +744,11 @@ export async function shieldedAccountAction(
   action: 'cancel' | 'refund' | 'claim',
   id: number,
   networkFeeCaps: NetworkFeeCaps | undefined,
-  budget = DEFAULT_FEE_BUDGET
+  budget = DEFAULT_FEE_BUDGET,
+  spent?: FeeSpent
 ): Promise<string> {
   const { wallet, payer, scope } = await walletFor(net, publicKey, poolId)
-  const signer = payer(budget)
+  const signer = payer(budget, spent)
   const claimed =
     action === 'claim'
       ? (await wallet.plans()).find((p) => p.exitParts.some((part) => part.id === id))
@@ -781,11 +795,12 @@ export async function shieldedRestorePool(
   publicKey: unknown,
   poolId: string,
   networkFeeCaps: NetworkFeeCaps | undefined,
-  budget = DEFAULT_FEE_BUDGET
+  budget = DEFAULT_FEE_BUDGET,
+  spent?: FeeSpent
 ): Promise<ShieldedRestoreView> {
   const { pool, payer } = await walletFor(net, publicKey, poolId)
   const restore = await track(
-    PrivateWallet.restoreVault(payer(budget), {
+    PrivateWallet.restoreVault(payer(budget, spent), {
       deployment: pool.name,
       rpcUrl: pool.rpcUrl,
       networkFeeCaps,
@@ -797,7 +812,7 @@ export async function shieldedRestorePool(
 // The user said no to an offer to pay a fee; it ends at once rather than at its expiry.
 export async function shieldedDropOffer(publicKey: unknown, offer: unknown): Promise<void> {
   await activeAccount(publicKey)
-  dropGrant(offer)
+  dropGrant(offer, publicKey)
 }
 
 export async function shieldedDecide(

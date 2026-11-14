@@ -166,6 +166,7 @@ import {
 } from './shielded/approvals'
 import { errorView } from './shielded/errors'
 import { isOffscreenDocument } from './shielded/senders'
+import { PROVER_PORT } from './shielded/wire'
 import { DEFAULT_FEE_BUDGET, grantBudget, grantCaps } from './shielded/fees'
 import { watchReviewPort } from './shielded/reviews'
 import { acceptProverPort } from './shielded/prover'
@@ -506,6 +507,14 @@ function shieldedOffer(
         caps: grantCaps(view.fee.reason, BigInt(view.fee.inclusionCap), ceiling),
         budget: most,
         warnings: retry ? [LINKS_ACCOUNT] : [],
+        spent:
+          view.fee.paid === undefined
+            ? undefined
+            : {
+                signed: BigInt(view.fee.paid),
+                restored: view.fee.restored === true,
+                attempted: view.fee.attempted === true,
+              },
       }),
     }
   }
@@ -777,6 +786,14 @@ chrome.idle.onStateChanged.addListener((state) => {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (!port.sender || !isExtensionPage(port.sender)) return
+  // The offscreen document holds only the prover port; any other port from it is closed.
+  if (
+    port.name !== PROVER_PORT &&
+    isOffscreenDocument(port.sender, chrome.runtime.getURL('offscreen.html'))
+  ) {
+    port.disconnect()
+    return
+  }
   if (watchReviewPort(port) || acceptProverPort(port)) return
 
   if (port.name === 'wallet-popup') {
@@ -3482,7 +3499,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           BigInt(m.amount),
           m.whileSubmitting === true,
           grant?.caps,
-          grant?.budget
+          grant?.budget,
+          grant?.spent
         )
         sendResponse({ shieldedReceipt: receipt })
       } catch (err) {
@@ -3650,7 +3668,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           m.selfRelay === true || grant !== undefined,
           grant?.caps,
           grant?.warnings,
-          grant?.budget
+          grant?.budget,
+          grant?.spent
         )
         sendResponse({ shieldedStep: step })
       } catch (err) {
@@ -3691,7 +3710,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
             action,
             m.id,
             grant?.caps,
-            grant?.budget
+            grant?.budget,
+            grant?.spent
           ),
         })
       } catch (err) {
@@ -3715,7 +3735,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
             message.publicKey,
             m.poolId,
             grant?.caps,
-            grant?.budget
+            grant?.budget,
+            grant?.spent
           ),
         })
       } catch (err) {

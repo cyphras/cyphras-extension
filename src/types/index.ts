@@ -138,9 +138,13 @@ export interface ShieldedFeeView {
   inclusionCap: string
   ceiling: string
   most: string
-  // What the call already signed for in network fees before it stopped at the most it was shown,
-  // as a restore of the pool; the review is for the next step only.
+  // What the payment, deposit or action has signed for in network fees so far, over every call
+  // its fees stopped; an upper bound of what the network charged. restored: one of those was a
+  // restore of the pool's entries; attempted: one was the call itself, which did not go through.
+  // The review is for the next step only.
   paid?: string
+  restored?: boolean
+  attempted?: boolean
   entries: ShieldedFeeEntry[]
   approval?: string
 }

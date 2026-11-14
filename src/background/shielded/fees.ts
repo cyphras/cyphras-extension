@@ -79,41 +79,69 @@ export function grantBudget(
   return reason === 'restore' && !restoreOnly ? ceiling + DEFAULT_FEE_BUDGET : ceiling
 }
 
+// The message of a budget refusal. The SDK keeps it on the plan the refusal stopped, which tells a
+// budget stop from any other signing refusal after a worker restart too.
+export const BUDGET_STOP_MESSAGE =
+  'the network fees of this call would pass the most the user was shown'
+
+// What the account's key signed for in the calls of one payment, deposit or action so far: the fee
+// fields of the envelopes, an upper bound of what the network charged; whether one was a restore of
+// the pool's entries, and whether one was the call itself, whose attempt then did not go through.
+export interface FeeSpent {
+  readonly signed: bigint
+  readonly restored: boolean
+  readonly attempted: boolean
+}
+
+export const NOTHING_SPENT: FeeSpent = { signed: 0n, restored: false, attempted: false }
+
 // Where a call stopped at its budget: the fee of the transaction it was not signed for, and what
-// the call had already signed for. It rides as the refusal's cause, which the SDK keeps when it
-// names the payment the refusal stopped.
+// was signed for so far. It rides as the refusal's cause, which the SDK keeps when it names the
+// payment the refusal stopped.
 export class FeeBudgetStop {
   readonly inclusion: bigint
   readonly resource: bigint
-  readonly paid: bigint
+  readonly spent: FeeSpent
 
-  constructor(inclusion: bigint, resource: bigint, paid: bigint) {
+  constructor(inclusion: bigint, resource: bigint, spent: FeeSpent) {
     this.inclusion = inclusion
     this.resource = resource
-    this.paid = paid
+    this.spent = spent
   }
 }
 
-// The fee field of an envelope, split into the inclusion bid and the resource fee it declares.
-function feeOf(envelope: string, networkPassphrase: string): { total: bigint; resource: bigint } {
+// The fee field of an envelope, split into the inclusion bid and the resource fee it declares, and
+// whether its one operation restores archived entries.
+function feeOf(
+  envelope: string,
+  networkPassphrase: string
+): { total: bigint; resource: bigint; restore: boolean } {
   const tx = TransactionBuilder.fromXDR(envelope, networkPassphrase)
-  if (!(tx instanceof Transaction)) return { total: BigInt(tx.fee), resource: 0n }
+  if (!(tx instanceof Transaction)) return { total: BigInt(tx.fee), resource: 0n, restore: false }
   const ext = tx.toEnvelope().v1().tx().ext()
   const resource = ext.switch() === 1 ? BigInt(ext.sorobanData().resourceFee().toString()) : 0n
-  return { total: BigInt(tx.fee), resource }
+  const restore = tx.operations.length === 1 && tx.operations[0].type === 'restoreFootprint'
+  return { total: BigInt(tx.fee), resource, restore }
 }
 
 // The signer of one SDK call. It signs envelopes whose fee fields add up to at most `budget`, the
 // most the user was shown for the call, however many transactions the call sends: a restore before
 // the call, a call sent again after an archival or a conflict. Past it, it refuses before signing,
-// naming what the call already signed for and the fee it was asked for, so the next step can be
-// reviewed. A fee counts from the moment it is asked for, so two signs at once cannot both pass.
-export function budgetSigner(signer: TransactionSigner, budget: bigint): TransactionSigner {
+// naming the fee it was asked for and what was signed for so far, `before` included, so the next
+// step can be reviewed. A fee counts from the moment it is asked for, so two signs at once cannot
+// both pass.
+export function budgetSigner(
+  signer: TransactionSigner,
+  budget: bigint,
+  before: FeeSpent = NOTHING_SPENT
+): TransactionSigner {
   let signed = 0n
+  let restored = before.restored
+  let attempted = before.attempted
   return {
     publicKey: signer.publicKey,
     async signTransaction(envelope: string, networkPassphrase: string): Promise<unknown> {
-      let fee: { total: bigint; resource: bigint }
+      let fee: { total: bigint; resource: bigint; restore: boolean }
       try {
         fee = feeOf(envelope, networkPassphrase)
       } catch {
@@ -122,14 +150,23 @@ export function budgetSigner(signer: TransactionSigner, budget: bigint): Transac
       if (signed + fee.total > budget) {
         throw new CyphrasError(
           'signer_mismatch',
-          'the network fees of this call would pass the most the user was shown',
+          BUDGET_STOP_MESSAGE,
           { feeBudget: true },
-          { cause: new FeeBudgetStop(fee.total - fee.resource, fee.resource, signed) }
+          {
+            cause: new FeeBudgetStop(fee.total - fee.resource, fee.resource, {
+              signed: before.signed + signed,
+              restored,
+              attempted,
+            }),
+          }
         )
       }
       signed += fee.total
       try {
-        return await signer.signTransaction(envelope, networkPassphrase)
+        const reply = await signer.signTransaction(envelope, networkPassphrase)
+        if (fee.restore) restored = true
+        else attempted = true
+        return reply
       } catch (err) {
         signed -= fee.total
         throw err

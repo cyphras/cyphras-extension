@@ -1,5 +1,6 @@
 import type { NetworkFeeCaps } from '@cyphras/private'
 import { ShieldedRefusal } from './errors'
+import type { FeeSpent } from './fees'
 
 // How long an offer to pay a fee from the account stays open, as long as a payment review.
 const APPROVAL_TTL_MS = 3 * 60_000
@@ -25,6 +26,8 @@ export interface FeeGrant {
   // The SDK warning codes whose meaning the sheet stated, which a review of the retry may carry
   // without being shown again.
   readonly warnings: readonly string[]
+  // What earlier calls of the same payment, deposit or action signed for, which a later stop adds to.
+  readonly spent?: FeeSpent
 }
 
 // Offers the background made, by a random ID the popup returns with the user's yes. They live in
@@ -70,8 +73,9 @@ export function takeGrant(
   return grant
 }
 
-export function dropGrant(id: unknown): void {
-  if (typeof id === 'string') grants.delete(id)
+// Ends an offer the user said no to, only at the request of the account it was made for.
+export function dropGrant(id: unknown, account: unknown): void {
+  if (typeof id === 'string' && grants.get(id)?.account === account) grants.delete(id)
 }
 
 export function dropGrants(): void {
