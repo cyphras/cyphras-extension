@@ -20,6 +20,7 @@ import {
   restoreOutcome,
   restoreWarning,
   shortfall,
+  type FeeStop,
   type FeeSubject,
   type RefusalCopy,
 } from '@/lib/privateFees'
@@ -27,6 +28,16 @@ import { SERVICE_TYPES } from '@constants/services'
 import type { ServiceResponse, ShieldedFeeView, ShieldedScope } from '@ext-types/index'
 
 const xlm = (stroops: string | bigint): string => formatUnits(stroops, 7)
+
+// What a call its fees stopped has signed for so far, as the lead of its review states it.
+function stopOf(fee: ShieldedFeeView): FeeStop | undefined {
+  if (fee.paid === undefined) return undefined
+  return {
+    signed: xlm(fee.paid),
+    restored: fee.restored === true,
+    attempted: fee.attempted === true,
+  }
+}
 
 // How long the paying button of an inline review stays off after it appears.
 const PAY_DELAY_MS = 1_000
@@ -99,7 +110,7 @@ export function FeeReviewBody({
         {approved !== null && (
           <AmberNote>{feeChangedText(xlm(fee.total), xlm(approved))}</AmberNote>
         )}
-        <AmberNote>{feeLead(fee.reason, fee.paid && xlm(fee.paid))}</AmberNote>
+        <AmberNote>{feeLead(fee.reason, stopOf(fee), subject)}</AmberNote>
         {amountCard}
         <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
           <DetailRow label="Paid by">
@@ -160,6 +171,7 @@ export function FeeReviewBody({
 export function RefusalBody({
   copy,
   working,
+  expired,
   progress,
   advanced,
   onLater,
@@ -167,6 +179,8 @@ export function RefusalBody({
 }: {
   copy: RefusalCopy
   working: boolean
+  // Why paying from the account is no longer offered here, once its offer ended.
+  expired: string | null
   progress: string
   advanced: ReactNode
   onLater: () => void
@@ -179,6 +193,7 @@ export function RefusalBody({
         <MutedNote>{copy.note}</MutedNote>
         {advanced}
         {copy.payNote && <MutedNote>{copy.payNote}</MutedNote>}
+        {expired && <AmberNote>{expired}</AmberNote>}
         <p aria-live="polite" className="text-center text-xs text-muted-foreground">
           {working ? progress : ''}
         </p>
@@ -188,7 +203,7 @@ export function RefusalBody({
           Try later
         </Button>
         {copy.payLabel && (
-          <Button className="flex-1" disabled={working} onClick={onPay}>
+          <Button className="flex-1" disabled={working || expired !== null} onClick={onPay}>
             {working ? 'Sending...' : copy.payLabel}
           </Button>
         )}
@@ -287,7 +302,7 @@ export function InlineFeeReview({
         </p>
       )}
       <p className="text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-        {feeLead(fee.reason, fee.paid && xlm(fee.paid))}
+        {feeLead(fee.reason, stopOf(fee), subject)}
       </p>
       <p className="text-[11px] tabular-nums text-foreground">
         Network fee about {xlm(fee.total)} XLM{total ? ` (${total})` : ''}.{' '}

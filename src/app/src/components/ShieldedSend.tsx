@@ -49,6 +49,7 @@ import {
 import {
   FEE_REVIEW_TIMEOUT_MS,
   OFFER_EXPIRED,
+  refusalExpired,
   feeTitle,
   FEE_TOO_LARGE_NOTE,
   NETWORK_FEE_CAP_STROOPS,
@@ -132,7 +133,15 @@ type Step =
   | { kind: 'waiting'; planId: string; timedOut: boolean }
   // Nothing was sent and nothing can be approved now: the fee is above what one transaction
   // carries, or the restore before it failed on chain.
-  | { kind: 'blocked'; code: string; message: string; planId?: string; hash?: string }
+  | {
+      kind: 'blocked'
+      code: string
+      message: string
+      planId?: string
+      hash?: string
+      // The relayer's refusal the user answered by paying from the account, when one did.
+      refusal?: 'network_fee_high' | 'restore_needed'
+    }
 
 interface FeeStep {
   kind: 'fee'
@@ -144,8 +153,10 @@ interface FeeStep {
 
 interface RefusedStep {
   kind: 'refused'
-  // The background's offer to submit the withdrawal from the account; absent for a send.
+  // The background's offer to submit the withdrawal from the account; absent for a send. It is
+  // shown as expired once the popup's review time for it ends.
   selfPay: string | undefined
+  expired: boolean
   refusal: 'network_fee_high' | 'restore_needed'
   planId: string
   fee: string | null
@@ -238,10 +249,14 @@ function ask<T>(
 
 // What a "Not sent" result adds under its message, each pointing only at what Private activity
 // then offers for the payment.
-function blockedNote(code: string, saved: boolean): string {
+function blockedNote(
+  code: string,
+  saved: boolean,
+  refusal: 'network_fee_high' | 'restore_needed' | undefined
+): string {
   switch (code) {
     case 'invalid_fee_approval':
-      return OFFER_EXPIRED
+      return refusal ? refusalExpired(refusal) : OFFER_EXPIRED
     case 'fee_above_limit':
       return `${FEE_TOO_LARGE_NOTE}${saved ? ` ${STAYS_PENDING}` : ''}`
     case 'restore_failed':
@@ -329,6 +344,7 @@ export default function ShieldedSend({
   // The saved payment a fee approval or a self-paid retry continues: whatever becomes of the
   // request, the user lands on a result or a review of it, never back on an empty form.
   const heldRef = useRef<string | null>(null)
+  const heldRefusalRef = useRef<'network_fee_high' | 'restore_needed' | null>(null)
   // The most the user approved for the self-relayed retry in progress, which a review the SDK then
   // asks shows in place of the default.
   const flowMostRef = useRef<string | null>(null)
@@ -402,9 +418,11 @@ export default function ShieldedSend({
       const approved = approvedRef.current
       approvedRef.current = null
       const held = heldRef.current
+      const heldRefusal = heldRefusalRef.current
       if (!reply.ok || reply.value.kind !== 'review') {
         lastReviewRef.current = null
         heldRef.current = null
+        heldRefusalRef.current = null
         releaseFlow()
       }
       if (!reply.ok) {
@@ -423,6 +441,7 @@ export default function ShieldedSend({
             kind: 'refused',
             refusal: view.refusal,
             selfPay: view.selfPay,
+            expired: false,
             planId,
             fee: answered && !answered.selfRelay ? answered.fee : null,
             working: false,
@@ -458,6 +477,7 @@ export default function ShieldedSend({
                 ? 'Nothing was sent. The payment waits in Private activity, where its retry spends the same notes.'
                 : reply.error,
             planId: held,
+            refusal: heldRefusal ?? undefined,
           })
         } else {
           if (reply.code !== 'not_confirmed') {
@@ -524,6 +544,7 @@ export default function ShieldedSend({
     setError(null)
     approvedRef.current = null
     heldRef.current = null
+    heldRefusalRef.current = null
     flowMostRef.current = null
     setStep({ kind: retryPlan ? 'retry' : 'form' })
   }, [open, action, retryPlan, retrySelfRelay, decimals, releaseFlow])
@@ -666,6 +687,7 @@ export default function ShieldedSend({
     setError(null)
     approvedRef.current = null
     heldRef.current = null
+    heldRefusalRef.current = null
     flowMostRef.current = null
     setStep({ kind: 'preparing' })
     requestStep({
@@ -699,6 +721,7 @@ export default function ShieldedSend({
     }
     approvedRef.current = null
     heldRef.current = null
+    heldRefusalRef.current = null
     flowMostRef.current = null
     setStep({ kind: 'preparing' })
     requestStep({
@@ -818,6 +841,7 @@ export default function ShieldedSend({
   function payRefused(s: RefusedStep) {
     approvedRef.current = null
     heldRef.current = s.planId
+    heldRefusalRef.current = s.refusal
     flowMostRef.current = null
     setStep({ ...s, working: true })
     requestStep({
@@ -830,6 +854,17 @@ export default function ShieldedSend({
       feeApproval: s.selfPay,
     }).then((reply) => reply && followStep(reply))
   }
+
+  // An offer to pay a refused withdrawal from the account ends before the background's does.
+  useEffect(() => {
+    if (step.kind !== 'refused' || step.working || step.expired || !step.selfPay) return
+    const shown = step
+    const timer = setTimeout(() => {
+      dropOffer(shown.selfPay, sessionScopeRef.current)
+      setStep({ ...shown, expired: true })
+    }, FEE_REVIEW_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [step])
 
   // A fee review left unanswered is declined, as a payment review is.
   const feeTimeoutRef = useRef<FeeStep | null>(null)
@@ -1427,7 +1462,7 @@ export default function ShieldedSend({
           />
           {s.kind === 'blocked' && (
             <p className="px-1 text-[11px] leading-snug text-muted-foreground">
-              {blockedNote(s.code, s.planId !== undefined)}
+              {blockedNote(s.code, s.planId !== undefined, s.refusal)}
             </p>
           )}
           {s.kind === 'stopped' && (
@@ -1595,6 +1630,7 @@ export default function ShieldedSend({
       <RefusalBody
         copy={copy}
         working={r.working}
+        expired={r.expired && copy.payLabel !== null ? refusalExpired(r.refusal) : null}
         progress="Proving on this device and submitting. This can take a minute."
         advanced={
           r.refusal === 'restore_needed' && (

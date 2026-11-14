@@ -25,11 +25,33 @@ export const FEE_TITLES: Record<ShieldedFeeReason, string> = {
 export const feeTitle = (reason: ShieldedFeeReason, paid: string | undefined): string =>
   paid === undefined ? FEE_TITLES[reason] : 'Needs your approval'
 
-// `paid`, in XLM, is what the call already paid in network fees before it stopped at the most it
-// was shown, as for a restore of the pool before the payment.
-export function feeLead(reason: ShieldedFeeReason, paid?: string): string {
-  if (paid !== undefined) {
-    return `This payment already paid ${paid} XLM in network fees, as for bringing the pool's data back, and its next transaction would take its fees past the most you were shown. Nothing more was sent. Approve the next transaction to go on.`
+// What a call its fees stopped has signed for so far: `signed` in XLM, an upper bound of what the
+// network charged, whether a restore of the pool was among it, and whether an attempt of the call
+// itself was, which then did not go through.
+export interface FeeStop {
+  readonly signed: string
+  readonly restored: boolean
+  readonly attempted: boolean
+}
+
+const STOP_SUBJECTS: Record<FeeSubject, string> = {
+  shield: 'This deposit',
+  unshield: 'This payment',
+  cancel: 'This action',
+  refund: 'This action',
+  claim: 'This action',
+  restore: 'This pool restore',
+}
+
+export function feeLead(
+  reason: ShieldedFeeReason,
+  stop?: FeeStop,
+  subject: FeeSubject = 'unshield'
+): string {
+  if (stop !== undefined) {
+    const restore = stop.restored ? ", including bringing the pool's data back" : ''
+    const attempt = stop.attempted ? ' An earlier attempt did not go through.' : ''
+    return `${STOP_SUBJECTS[subject]} has signed for up to ${stop.signed} XLM in network fees so far${restore}.${attempt} Its next transaction would take its fees past the most you were shown, so nothing more was sent. Approve the next transaction to go on.`
   }
   const more = `more than the ${NETWORK_FEE_CAP_XLM} XLM this wallet pays without asking`
   switch (reason) {
@@ -226,6 +248,11 @@ export const STAYS_PENDING =
 export const RESTORE_NOT_SENT = 'Your payment was not sent. You can retry it from Private activity.'
 
 export const OFFER_EXPIRED = 'The approval expired. Review the fee again from Private activity.'
+
+// An offer to pay a relayer's refused withdrawal from the account ended; Private activity offers it
+// again under the button of its row.
+export const refusalExpired = (refusal: 'network_fee_high' | 'restore_needed'): string =>
+  `The offer to pay from your account expired. Use ${refusal === 'network_fee_high' ? 'Pay the fee myself' : 'Pay from my account'} in Private activity to go on.`
 
 export const WAITING_NOTE =
   'Nothing was sent and your funds stay in your private balance. You can review the fee again from Private activity. Do not send it again as a new payment: the review there spends the same notes, so at most one can land.'

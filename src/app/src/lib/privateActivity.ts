@@ -138,10 +138,10 @@ export function depositStatus(d: ShieldedDepositView): ItemStatus {
   }
 }
 
-// Why a payment saved but never sent waits on the user: the account's own fee check stopped it, its
-// fees would have gone past the most the user was shown (the account's key then refuses to sign,
-// signer_mismatch), the restore before it failed, or the relayer did not send it for a reason the
-// user can act on.
+// Why a payment saved but not landed waits on the user: the account's own fee check stopped it, its
+// fees would have gone past the most the user was shown (the account's key then refused to sign; a
+// plan's view says signer_mismatch only for that, signer_refused for any other refusal), the
+// restore before it failed, or the relayer did not send it for a reason the user can act on.
 export type Hold =
   | 'fee_above_cap'
   | 'fee_above_limit'
@@ -151,7 +151,13 @@ export type Hold =
   | 'restore_needed'
 
 export function holdOf(p: ShieldedPlanView): Hold | null {
-  if (p.state !== 'prepared' || p.needsUserDecision) return null
+  if (p.needsUserDecision) return null
+  // A budget stop can follow an attempt that was sent and failed, which leaves the plan submitted:
+  // the SDK signs again only after the earlier attempt's end is known, so the retry is safe.
+  if (p.route.kind === 'self' && p.lastError === 'signer_mismatch') {
+    return p.state === 'prepared' || p.state === 'submitted' ? 'fee_budget' : null
+  }
+  if (p.state !== 'prepared') return null
   if (p.route.kind === 'relayer') {
     return p.relayerCode === 'network_fee_high' || p.relayerCode === 'restore_needed'
       ? p.relayerCode
@@ -162,8 +168,6 @@ export function holdOf(p: ShieldedPlanView): Hold | null {
     case 'fee_above_limit':
     case 'restore_failed':
       return p.lastError
-    case 'signer_mismatch':
-      return 'fee_budget'
     default:
       return null
   }
@@ -186,7 +190,11 @@ export function unfinishedSendTo(
   )
 }
 
-function holdStatus(hold: Hold, kind: ShieldedPlanView['kind']): ItemStatus {
+function holdStatus(
+  hold: Hold,
+  kind: ShieldedPlanView['kind'],
+  state: ShieldedPlanView['state']
+): ItemStatus {
   if (hold === 'network_fee_high') {
     return {
       label: 'Not sent yet',
@@ -201,6 +209,13 @@ function holdStatus(hold: Hold, kind: ShieldedPlanView['kind']): ItemStatus {
       tone: 'warn',
       detail: `The pool needs a restore that relayers do not pay for. Nothing has left your private balance yet. ${NOT_AGAIN}`,
       stage: 'attention',
+    }
+  }
+  if (hold === 'fee_budget' && state === 'submitted') {
+    return {
+      ...HOLD_STATUS.fee_budget,
+      detail:
+        'Its earlier attempt did not go through, and the next one would have taken its network fees past the most you were shown, so nothing more was sent. Review the fee to go on.',
     }
   }
   return HOLD_STATUS[hold]
@@ -266,7 +281,7 @@ export function planStatus(
 ): ItemStatus {
   const indexerOnly = p.exitConfirmed === false ? ` ${INDEXER_ONLY}` : ''
   const hold = holdOf(p)
-  if (hold) return holdStatus(hold, p.kind)
+  if (hold) return holdStatus(hold, p.kind, p.state)
   if (p.needsUserDecision) {
     return {
       label: 'Outcome unknown',
