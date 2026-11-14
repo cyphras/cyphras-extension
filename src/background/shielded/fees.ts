@@ -1,6 +1,6 @@
 import type { NetworkFeeCaps, TransactionSigner } from '@cyphras/private'
 import { CyphrasError } from '@cyphras/private'
-import { TransactionBuilder } from '@stellar/stellar-sdk'
+import { Transaction, TransactionBuilder } from '@stellar/stellar-sdk'
 import type { ShieldedFeeReason } from '@ext-types/index'
 
 // The most one transaction envelope's fee field holds; this wallet's signer takes no fee bumps, so
@@ -40,6 +40,7 @@ export function feeCeiling(inclusion: unknown, resource: unknown): FeeCeiling | 
   if (i === null || r === null || i + r > MAX_ENVELOPE_FEE) return null
   const over = tenPercentOver(i)
   const inclusionCap = over > MIN_INCLUSION_CAP ? over : MIN_INCLUSION_CAP
+  if (inclusionCap >= MAX_ENVELOPE_FEE) return null
   const rounded = ((tenPercentOver(r) + RESOURCE_STEP - 1n) / RESOURCE_STEP) * RESOURCE_STEP
   const resourceCap =
     inclusionCap + rounded > MAX_ENVELOPE_FEE ? MAX_ENVELOPE_FEE - inclusionCap : rounded
@@ -78,31 +79,61 @@ export function grantBudget(
   return reason === 'restore' && !restoreOnly ? ceiling + DEFAULT_FEE_BUDGET : ceiling
 }
 
+// Where a call stopped at its budget: the fee of the transaction it was not signed for, and what
+// the call had already signed for. It rides as the refusal's cause, which the SDK keeps when it
+// names the payment the refusal stopped.
+export class FeeBudgetStop {
+  readonly inclusion: bigint
+  readonly resource: bigint
+  readonly paid: bigint
+
+  constructor(inclusion: bigint, resource: bigint, paid: bigint) {
+    this.inclusion = inclusion
+    this.resource = resource
+    this.paid = paid
+  }
+}
+
+// The fee field of an envelope, split into the inclusion bid and the resource fee it declares.
+function feeOf(envelope: string, networkPassphrase: string): { total: bigint; resource: bigint } {
+  const tx = TransactionBuilder.fromXDR(envelope, networkPassphrase)
+  if (!(tx instanceof Transaction)) return { total: BigInt(tx.fee), resource: 0n }
+  const ext = tx.toEnvelope().v1().tx().ext()
+  const resource = ext.switch() === 1 ? BigInt(ext.sorobanData().resourceFee().toString()) : 0n
+  return { total: BigInt(tx.fee), resource }
+}
+
 // The signer of one SDK call. It signs envelopes whose fee fields add up to at most `budget`, the
 // most the user was shown for the call, however many transactions the call sends: a restore before
 // the call, a call sent again after an archival or a conflict. Past it, it refuses before signing,
-// so the call stops and the next attempt asks again.
+// naming what the call already signed for and the fee it was asked for, so the next step can be
+// reviewed. A fee counts from the moment it is asked for, so two signs at once cannot both pass.
 export function budgetSigner(signer: TransactionSigner, budget: bigint): TransactionSigner {
   let signed = 0n
   return {
     publicKey: signer.publicKey,
     async signTransaction(envelope: string, networkPassphrase: string): Promise<unknown> {
-      let fee: bigint
+      let fee: { total: bigint; resource: bigint }
       try {
-        fee = BigInt(TransactionBuilder.fromXDR(envelope, networkPassphrase).fee)
+        fee = feeOf(envelope, networkPassphrase)
       } catch {
         throw new CyphrasError('signer_mismatch', 'the transaction to sign could not be read')
       }
-      if (signed + fee > budget) {
+      if (signed + fee.total > budget) {
         throw new CyphrasError(
           'signer_mismatch',
           'the network fees of this call would pass the most the user was shown',
-          { feeBudget: true }
+          { feeBudget: true },
+          { cause: new FeeBudgetStop(fee.total - fee.resource, fee.resource, signed) }
         )
       }
-      const reply = await signer.signTransaction(envelope, networkPassphrase)
-      signed += fee
-      return reply
+      signed += fee.total
+      try {
+        return await signer.signTransaction(envelope, networkPassphrase)
+      } catch (err) {
+        signed -= fee.total
+        throw err
+      }
     },
   }
 }

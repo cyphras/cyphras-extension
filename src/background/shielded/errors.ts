@@ -1,6 +1,6 @@
 import { CyphrasError } from '@cyphras/private'
 import type { ShieldedErrorView, ShieldedFeeEntry, ShieldedFeeView } from '@ext-types/index'
-import { feeCeiling } from './fees'
+import { FeeBudgetStop, feeCeiling } from './fees'
 
 // A failure after the transaction was sent: the deposit or payment it carries may still land.
 export class MayStillLand extends Error {
@@ -73,6 +73,7 @@ function feeView(d: Details): ShieldedFeeView | undefined {
     inclusionCap: caps.inclusionCap.toString(),
     ceiling: caps.ceiling.toString(),
     most: caps.ceiling.toString(),
+    ...(typeof d.paid === 'string' && /^\d+$/.test(d.paid) ? { paid: d.paid } : {}),
     entries,
   }
 }
@@ -234,7 +235,7 @@ function sdkMessage(err: CyphrasError): string {
       return "That address is the asset's issuer, which would burn the payout."
     case 'signer_mismatch':
       return d.feeBudget === true
-        ? 'The network fees of this would go past the most you were shown, so nothing more was sent. Try again to see the fee.'
+        ? 'The network fees of this would go past the most you were shown, so nothing more was sent.'
         : 'The transaction could not be signed.'
     case 'signer_rejected':
       return 'Signing was declined, so nothing was sent.'
@@ -282,8 +283,18 @@ function cyphrasView(err: CyphrasError): ShieldedErrorView {
     view.planId = d.planId
     if (!waitsForUser(err)) view.mayLand = true
   }
-  if (err.code === 'fee_above_cap') {
-    const fee = feeView(d)
+  const stop = err.cause instanceof FeeBudgetStop ? err.cause : undefined
+  if (err.code === 'fee_above_cap' || (err.code === 'signer_mismatch' && stop)) {
+    const fee = feeView(
+      stop
+        ? {
+            reason: 'network',
+            inclusion: stop.inclusion.toString(),
+            resource: stop.resource.toString(),
+            paid: stop.paid.toString(),
+          }
+        : d
+    )
     if (fee) view.fee = fee
     if (d.queued === true) view.queued = true
   }

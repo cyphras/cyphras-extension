@@ -138,6 +138,9 @@ export interface ShieldedFeeView {
   inclusionCap: string
   ceiling: string
   most: string
+  // What the call already signed for in network fees before it stopped at the most it was shown,
+  // as a restore of the pool; the review is for the next step only.
+  paid?: string
   entries: ShieldedFeeEntry[]
   approval?: string
 }

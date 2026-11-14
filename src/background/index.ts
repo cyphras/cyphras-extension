@@ -143,6 +143,7 @@ import {
   settleShieldedWallets,
   shieldedDecide,
   shieldedDismissReset,
+  shieldedDropOffer,
   shieldedHistory,
   shieldedLimits,
   shieldedQuote,
@@ -164,6 +165,7 @@ import {
   type FeeGrant,
 } from './shielded/approvals'
 import { errorView } from './shielded/errors'
+import { isOffscreenDocument } from './shielded/senders'
 import { DEFAULT_FEE_BUDGET, grantBudget, grantCaps } from './shielded/fees'
 import { watchReviewPort } from './shielded/reviews'
 import { acceptProverPort } from './shielded/prover'
@@ -466,15 +468,29 @@ function shieldedFailure(err: unknown): ServiceResponse {
 // shows it states that paying from the account links it to the withdrawal.
 const LINKS_ACCOUNT = 'self_relay_links_account'
 
+// What else an offer is bound to: the pool, a shield's deposit mode, and the kind of payment, as
+// only a withdrawal can be paid from the account.
+interface OfferBinding {
+  readonly pool: unknown
+  readonly whileSubmitting?: boolean
+  readonly kind?: unknown
+}
+
 function shieldedOffer(
   err: unknown,
   call: FeeCall,
   target: string | undefined,
-  message: { publicKey?: unknown; networkId?: unknown }
+  message: { publicKey?: unknown; networkId?: unknown },
+  bound: OfferBinding
 ): ServiceResponse {
   const response = shieldedFailure(err)
   const view = response.shieldedError
-  const scope = { account: String(message.publicKey), network: String(message.networkId) }
+  const scope = {
+    account: String(message.publicKey),
+    network: String(message.networkId),
+    pool: typeof bound.pool === 'string' ? bound.pool : undefined,
+    ...(call === 'shield' ? { whileSubmitting: bound.whileSubmitting === true } : {}),
+  }
   const retry = call === 'retry'
   const on = retry ? view?.planId : target
   if (view?.fee && on !== undefined) {
@@ -493,7 +509,7 @@ function shieldedOffer(
       }),
     }
   }
-  if (view?.refusal && view.planId) {
+  if (view?.refusal && view.planId && bound.kind === 'unshield') {
     view.selfPay = issueGrant({
       call: 'retry',
       target: view.planId,
@@ -511,10 +527,20 @@ function grantFor(
   approval: unknown,
   call: FeeCall,
   target: string,
-  message: { publicKey?: unknown; networkId?: unknown }
+  message: { publicKey?: unknown; networkId?: unknown },
+  pool: string,
+  whileSubmitting?: boolean
 ): FeeGrant | undefined {
   if (approval === undefined) return undefined
-  return takeGrant(approval, call, target, message.publicKey, message.networkId)
+  return takeGrant(
+    approval,
+    call,
+    target,
+    message.publicKey,
+    message.networkId,
+    pool,
+    whileSubmitting
+  )
 }
 
 // A payment cannot create an unfunded destination, so a never-funded account is created with XLM
@@ -842,6 +868,8 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   // Everything else drives the wallet itself (approvals, keys, signing), so only
   // the wallet's own pages and approval windows may send it.
   if (!isExtensionPage(sender)) return false
+  // The offscreen document only proves, over its own port; it never drives the wallet.
+  if (isOffscreenDocument(sender, chrome.runtime.getURL('offscreen.html'))) return false
 
   if (message.type === 'APPROVAL_RESPONSE') {
     const { id, approved } = message as ApprovalResponseMessage
@@ -3439,7 +3467,14 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        const grant = grantFor(m.feeApproval, 'shield', m.amount, message)
+        const grant = grantFor(
+          m.feeApproval,
+          'shield',
+          m.amount,
+          message,
+          m.poolId,
+          m.whileSubmitting === true
+        )
         const receipt = await shieldedShield(
           net,
           message.publicKey,
@@ -3451,7 +3486,12 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         )
         sendResponse({ shieldedReceipt: receipt })
       } catch (err) {
-        sendResponse(shieldedOffer(err, 'shield', m.amount, message))
+        sendResponse(
+          shieldedOffer(err, 'shield', m.amount, message, {
+            pool: m.poolId,
+            whileSubmitting: m.whileSubmitting === true,
+          })
+        )
       }
       break
     }
@@ -3574,7 +3614,9 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         })
         sendResponse({ shieldedStep: step })
       } catch (err) {
-        sendResponse(shieldedOffer(err, 'retry', undefined, message))
+        sendResponse(
+          shieldedOffer(err, 'retry', undefined, message, { pool: m.poolId, kind: m.kind })
+        )
       }
       break
     }
@@ -3586,6 +3628,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         planId?: string
         selfRelay?: boolean
         feeApproval?: unknown
+        kind?: string
       }
       if (
         !isNonEmptyString(m.poolId) ||
@@ -3597,7 +3640,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        const grant = grantFor(m.feeApproval, 'retry', m.planId, message)
+        const grant = grantFor(m.feeApproval, 'retry', m.planId, message, m.poolId)
         const step = await shieldedRetry(
           net,
           message.publicKey,
@@ -3611,7 +3654,9 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         )
         sendResponse({ shieldedStep: step })
       } catch (err) {
-        sendResponse(shieldedOffer(err, 'retry', undefined, message))
+        sendResponse(
+          shieldedOffer(err, 'retry', undefined, message, { pool: m.poolId, kind: m.kind })
+        )
       }
       break
     }
@@ -3637,7 +3682,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
             : 'claim'
       try {
         const net = await getShieldedNetwork(message.networkId)
-        const grant = grantFor(m.feeApproval, action, String(m.id), message)
+        const grant = grantFor(m.feeApproval, action, String(m.id), message, m.poolId)
         sendResponse({
           txHash: await shieldedAccountAction(
             net,
@@ -3650,7 +3695,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           ),
         })
       } catch (err) {
-        sendResponse(shieldedOffer(err, action, String(m.id), message))
+        sendResponse(shieldedOffer(err, action, String(m.id), message, { pool: m.poolId }))
       }
       break
     }
@@ -3663,7 +3708,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        const grant = grantFor(m.feeApproval, 'restore', m.poolId, message)
+        const grant = grantFor(m.feeApproval, 'restore', m.poolId, message, m.poolId)
         sendResponse({
           shieldedRestore: await shieldedRestorePool(
             net,
@@ -3674,13 +3719,18 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           ),
         })
       } catch (err) {
-        sendResponse(shieldedOffer(err, 'restore', m.poolId, message))
+        sendResponse(shieldedOffer(err, 'restore', m.poolId, message, { pool: m.poolId }))
       }
       break
     }
 
     case SERVICE_TYPES.SHIELDED_DECIDE: {
-      const m = message as unknown as { reviewId?: string; approve?: boolean }
+      const m = message as unknown as {
+        reviewId?: string
+        approve?: boolean
+        poolId?: string
+        kind?: string
+      }
       if (!isNonEmptyString(m.reviewId) || typeof m.approve !== 'boolean') {
         sendResponse({ error: 'reviewId and approve are required' })
         return
@@ -3691,7 +3741,21 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           shieldedStep: await shieldedDecide(message.publicKey, m.reviewId, m.approve),
         })
       } catch (err) {
-        sendResponse(shieldedOffer(err, 'retry', undefined, message))
+        sendResponse(
+          shieldedOffer(err, 'retry', undefined, message, { pool: m.poolId, kind: m.kind })
+        )
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_DROP_OFFER: {
+      const m = message as unknown as { offer?: unknown }
+      try {
+        await getShieldedNetwork(message.networkId)
+        await shieldedDropOffer(message.publicKey, m.offer)
+        sendResponse({ ok: true })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
       }
       break
     }

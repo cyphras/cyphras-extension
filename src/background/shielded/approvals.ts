@@ -15,6 +15,9 @@ export interface FeeGrant {
   readonly target: string
   readonly account: string
   readonly network: string
+  readonly pool?: string
+  // A shield that goes while an earlier deposit is still submitting.
+  readonly whileSubmitting?: boolean
   // Caps for that call alone; undefined keeps the default caps.
   readonly caps: NetworkFeeCaps | undefined
   // The most every transaction of the call may pay together, as the user was shown.
@@ -29,19 +32,23 @@ export interface FeeGrant {
 const grants = new Map<string, FeeGrant & { readonly expires: number }>()
 
 export function issueGrant(grant: FeeGrant): string {
+  const now = Date.now()
+  for (const [id, open] of grants) if (open.expires < now) grants.delete(id)
   const id = crypto.randomUUID()
   grants.set(id, { ...grant, expires: Date.now() + APPROVAL_TTL_MS })
   return id
 }
 
 // The grant `id` names, used up at once; refused unless it is still open and for exactly this
-// call, target, account and network.
+// call, target, account, network, pool and, for a shield, deposit mode.
 export function takeGrant(
   id: unknown,
   call: FeeCall,
   target: string,
   account: unknown,
-  network: unknown
+  network: unknown,
+  pool?: unknown,
+  whileSubmitting?: boolean
 ): FeeGrant {
   const grant = typeof id === 'string' ? grants.get(id) : undefined
   if (typeof id === 'string') grants.delete(id)
@@ -51,7 +58,9 @@ export function takeGrant(
     grant.call !== call ||
     grant.target !== target ||
     grant.account !== account ||
-    grant.network !== network
+    grant.network !== network ||
+    grant.pool !== pool ||
+    grant.whileSubmitting !== whileSubmitting
   ) {
     throw new ShieldedRefusal(
       'invalid_fee_approval',
@@ -59,6 +68,10 @@ export function takeGrant(
     )
   }
   return grant
+}
+
+export function dropGrant(id: unknown): void {
+  if (typeof id === 'string') grants.delete(id)
 }
 
 export function dropGrants(): void {

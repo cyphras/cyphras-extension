@@ -81,6 +81,8 @@ export const SERVICE_TYPES = {
   SHIELDED_CLAIM: 'SHIELDED_CLAIM',
   // The account pays to bring the pool's archived entries back, for every user of the pool.
   SHIELDED_RESTORE: 'SHIELDED_RESTORE',
+  // Ends an offer to pay a fee the user said no to.
+  SHIELDED_DROP_OFFER: 'SHIELDED_DROP_OFFER',
   // CCTP cross-chain USDC bridge (Stellar <-> Ethereum)
   CCTP_QUOTE: 'CCTP_QUOTE',
   CCTP_START: 'CCTP_START',
