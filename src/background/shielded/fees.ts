@@ -93,7 +93,7 @@ export interface FeeSpent {
   readonly attempted: boolean
 }
 
-export const NOTHING_SPENT: FeeSpent = { signed: 0n, restored: false, attempted: false }
+const NOTHING_SPENT: FeeSpent = { signed: 0n, restored: false, attempted: false }
 
 // Where a call stopped at its budget: the fee of the transaction it was not signed for, and what
 // was signed for so far. It rides as the refusal's cause, which the SDK keeps when it names the

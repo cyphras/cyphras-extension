@@ -56,6 +56,7 @@ import {
   NETWORK_FEE_CAP_XLM,
   OPEN_PAYMENT,
   RELAY_KEEPS_FAILING,
+  blockedLook,
   RESTORE_NOT_SENT,
   REVIEW_TIMED_OUT,
   dropOffer,
@@ -1414,7 +1415,7 @@ export default function ShieldedSend({
     const relayed = plan ? plan.route.kind === 'relayer' : !shielding && !selfRelay
     const hero =
       s.kind === 'blocked'
-        ? 'failed'
+        ? blockedLook(s.code).hero
         : s.kind === 'waiting'
           ? 'pending'
           : plan
@@ -1567,11 +1568,7 @@ export default function ShieldedSend({
       case 'waiting':
         return 'Waiting for your approval'
       case 'blocked':
-        return s.code === 'fee_above_limit'
-          ? 'Fee too large'
-          : s.code === 'restore_failed'
-            ? 'Restore did not go through'
-            : 'Not sent'
+        return blockedLook(s.code).title
       case 'stopped':
         return 'May still land'
     }

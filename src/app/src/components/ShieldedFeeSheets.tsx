@@ -66,8 +66,8 @@ function withFiat(text: string, fiat: string | null) {
 
 // A network fee above what the wallet pays without asking, for a call the account submits itself.
 // Nothing goes until the user approves the most the call may pay, which the primary button repeats
-// and the background holds it to; declining sends nothing. Where the fee is as large as the payment, Not now is the
-// highlighted button and takes focus; the paying button never does.
+// and the background holds it to; declining sends nothing. Where the fee is as large as the
+// payment, Not now is the highlighted button and takes focus; the paying button never does.
 export function FeeReviewBody({
   fee,
   subject,

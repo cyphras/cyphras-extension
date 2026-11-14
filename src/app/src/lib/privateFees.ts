@@ -14,7 +14,7 @@ export const FEE_REVIEW_TIMEOUT_MS = 3 * 60_000 - 15_000
 // or one of its own actions.
 export type FeeSubject = 'shield' | 'unshield' | 'cancel' | 'refund' | 'claim' | 'restore'
 
-export const FEE_TITLES: Record<ShieldedFeeReason, string> = {
+const FEE_TITLES: Record<ShieldedFeeReason, string> = {
   network: 'Network fee is high',
   rent: 'Pool storage fee',
   restore: 'Pool restore fee',
@@ -277,4 +277,19 @@ export const RELAY_KEEPS_FAILING =
 export function dropOffer(offer: string | undefined, scope: ShieldedScope | null): void {
   if (offer === undefined) return
   chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_DROP_OFFER, offer, ...scope })
+}
+
+// The title and look of a result that sent nothing more. A newer attempt already on its way is not
+// a failure: the payment goes on there.
+export function blockedLook(code: string): { title: string; hero: 'pending' | 'failed' } {
+  switch (code) {
+    case 'already_continued':
+      return { title: 'Already continued', hero: 'pending' }
+    case 'fee_above_limit':
+      return { title: 'Fee too large', hero: 'failed' }
+    case 'restore_failed':
+      return { title: 'Restore did not go through', hero: 'failed' }
+    default:
+      return { title: 'Not sent', hero: 'failed' }
+  }
 }

@@ -152,22 +152,23 @@ export type Hold =
 
 export function holdOf(p: ShieldedPlanView): Hold | null {
   if (p.needsUserDecision) return null
-  // A budget stop can follow an attempt that was sent and failed, which leaves the plan submitted:
-  // the SDK signs again only after the earlier attempt's end is known, so the retry is safe.
-  if (p.route.kind === 'self' && p.lastError === 'signer_mismatch') {
-    return p.state === 'prepared' || p.state === 'submitted' ? 'fee_budget' : null
-  }
-  if (p.state !== 'prepared') return null
   if (p.route.kind === 'relayer') {
+    if (p.state !== 'prepared') return null
     return p.relayerCode === 'network_fee_high' || p.relayerCode === 'restore_needed'
       ? p.relayerCode
       : null
   }
+  // A self-submitted plan can stop after an attempt that was sent and failed, which leaves it
+  // submitted: the SDK checks the next fee, restores and signs again only once the earlier
+  // attempt's end is known, so its retry is safe in either state.
+  if (p.state !== 'prepared' && p.state !== 'submitted') return null
   switch (p.lastError) {
     case 'fee_above_cap':
     case 'fee_above_limit':
     case 'restore_failed':
       return p.lastError
+    case 'signer_mismatch':
+      return 'fee_budget'
     default:
       return null
   }
@@ -216,6 +217,17 @@ function holdStatus(
       ...HOLD_STATUS.fee_budget,
       detail:
         'Its earlier attempt did not go through, and the next one would have taken its network fees past the most you were shown, so nothing more was sent. Review the fee to go on.',
+    }
+  }
+  // A sent attempt that failed came first, so the row says so rather than that nothing was sent.
+  if (
+    state === 'submitted' &&
+    (hold === 'fee_above_cap' || hold === 'fee_above_limit' || hold === 'restore_failed')
+  ) {
+    const detail = HOLD_STATUS[hold].detail ?? ''
+    return {
+      ...HOLD_STATUS[hold],
+      detail: `Its earlier attempt did not go through. ${detail.replace('Nothing was sent.', 'Nothing more was sent.')}`,
     }
   }
   return HOLD_STATUS[hold]
