@@ -43,18 +43,13 @@ test('the most a review lets a transaction pay is the fee plus the 10% its note 
   // A 1.5 XLM resource fee with the network's lowest inclusion bid.
   const inclusion = 150n
   const resource = 15_000_000n
-  const total = inclusion + resource
   const { ceiling } = feeCeiling(inclusion.toString(), resource.toString())
   const { notes } = feeNotes('network', 'unshield', 'GABC...WXYZ', false)
   const slackNote = notes.find((n) => /10%/.test(n))
-  assert.ok(slackNote)
-  if (/never more/.test(slackNote)) {
-    const tenPercentOver = (total * 11n + 9n) / 10n
-    assert.ok(
-      ceiling <= tenPercentOver,
-      `the note says the fee plus 10%, never more, which is ${xlm(tenPercentOver)} XLM, and the review approves ${xlm(ceiling)} XLM`
-    )
-  }
+  assert.match(slackNote, /plus 10%, rounded up to the next 0\.01 XLM/)
+  assert.doesNotMatch(slackNote, /never more/)
+  // 1.5000150 XLM: 10% over each part, each rounded up to the next 0.01 XLM.
+  assert.equal(xlm(ceiling), '1.66')
 })
 
 test('a review asked again for a fee below the approval does not call it above the approval', () => {
