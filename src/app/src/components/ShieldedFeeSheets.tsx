@@ -6,10 +6,11 @@ import { formatUnits } from '@/lib/amount'
 import { shortAddress } from '@/lib/address'
 import {
   FEE_REVIEW_TIMEOUT_MS,
-  FEE_TITLES,
+  feeTitle,
   OPEN_PAYMENT,
   OPEN_SEND,
   RESTORE_ADVANCED,
+  dropOffer,
   REVIEW_TIMED_OUT,
   entryLines,
   feeChangedText,
@@ -98,7 +99,7 @@ export function FeeReviewBody({
         {approved !== null && (
           <AmberNote>{feeChangedText(xlm(fee.total), xlm(approved))}</AmberNote>
         )}
-        <AmberNote>{feeLead(fee.reason)}</AmberNote>
+        <AmberNote>{feeLead(fee.reason, fee.paid && xlm(fee.paid))}</AmberNote>
         {amountCard}
         <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
           <DetailRow label="Paid by">
@@ -279,14 +280,14 @@ export function InlineFeeReview({
   }, [fee])
   return (
     <div className="flex flex-col gap-2 rounded-lg bg-muted px-3 py-2">
-      <p className="text-xs font-semibold text-foreground">{FEE_TITLES[fee.reason]}</p>
+      <p className="text-xs font-semibold text-foreground">{feeTitle(fee.reason, fee.paid)}</p>
       {approved !== null && (
         <p className="text-[11px] leading-snug text-amber-700 dark:text-amber-400">
           {feeChangedText(xlm(fee.total), xlm(approved))}
         </p>
       )}
       <p className="text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-        {feeLead(fee.reason)}
+        {feeLead(fee.reason, fee.paid && xlm(fee.paid))}
       </p>
       <p className="text-[11px] tabular-nums text-foreground">
         Network fee about {xlm(fee.total)} XLM{total ? ` (${total})` : ''}.{' '}
@@ -410,9 +411,10 @@ export function PoolRestore({
         approved={state.approved}
         available={available}
         fiatOf={fiatOf}
-        onDecline={(timedOut) =>
+        onDecline={(timedOut) => {
+          dropOffer(state.fee.approval, scope)
           setState({ kind: 'confirm', note: timedOut ? REVIEW_TIMED_OUT : undefined })
-        }
+        }}
         onApprove={() => run(state.fee.approval, state.fee.most)}
       />
     )

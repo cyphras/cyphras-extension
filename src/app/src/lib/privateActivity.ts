@@ -138,19 +138,52 @@ export function depositStatus(d: ShieldedDepositView): ItemStatus {
   }
 }
 
-// Why a payment saved but never sent waits on the user: the account's own fee check stopped it, or
-// the relayer did not send it for a reason the user can act on.
-export type Hold = 'fee_above_cap' | 'fee_above_limit' | 'network_fee_high' | 'restore_needed'
+// Why a payment saved but never sent waits on the user: the account's own fee check stopped it, its
+// fees would have gone past the most the user was shown (the account's key then refuses to sign,
+// signer_mismatch), the restore before it failed, or the relayer did not send it for a reason the
+// user can act on.
+export type Hold =
+  | 'fee_above_cap'
+  | 'fee_above_limit'
+  | 'fee_budget'
+  | 'restore_failed'
+  | 'network_fee_high'
+  | 'restore_needed'
 
 export function holdOf(p: ShieldedPlanView): Hold | null {
   if (p.state !== 'prepared' || p.needsUserDecision) return null
-  const code = p.route.kind === 'relayer' ? p.relayerCode : p.lastError
-  return code === 'fee_above_cap' ||
-    code === 'fee_above_limit' ||
-    code === 'network_fee_high' ||
-    code === 'restore_needed'
-    ? code
-    : null
+  if (p.route.kind === 'relayer') {
+    return p.relayerCode === 'network_fee_high' || p.relayerCode === 'restore_needed'
+      ? p.relayerCode
+      : null
+  }
+  switch (p.lastError) {
+    case 'fee_above_cap':
+    case 'fee_above_limit':
+    case 'restore_failed':
+      return p.lastError
+    case 'signer_mismatch':
+      return 'fee_budget'
+    default:
+      return null
+  }
+}
+
+// An unfinished private send to `to`, the latest attempt of its payment: continuing it spends the
+// same notes, so only one of the two can arrive. Addresses compare without case or spaces, as the
+// address format does not depend on either.
+export function unfinishedSendTo(
+  plans: readonly ShieldedPlanView[],
+  to: string
+): ShieldedPlanView | undefined {
+  const address = to.trim().toLowerCase()
+  return plans.find(
+    (p) =>
+      p.kind === 'send' &&
+      p.to.trim().toLowerCase() === address &&
+      (p.state === 'prepared' || p.state === 'submitted') &&
+      !plans.some((q) => q.retryOf === p.planId)
+  )
 }
 
 function holdStatus(hold: Hold, kind: ShieldedPlanView['kind']): ItemStatus {
@@ -173,7 +206,24 @@ function holdStatus(hold: Hold, kind: ShieldedPlanView['kind']): ItemStatus {
   return HOLD_STATUS[hold]
 }
 
-const HOLD_STATUS: Record<'fee_above_cap' | 'fee_above_limit', ItemStatus> = {
+const HOLD_STATUS: Record<
+  'fee_above_cap' | 'fee_above_limit' | 'fee_budget' | 'restore_failed',
+  ItemStatus
+> = {
+  fee_budget: {
+    label: 'Needs your approval',
+    tone: 'warn',
+    detail:
+      'Its network fees would have gone past the most you were shown, so it stopped before anything more was sent. Review the fee to go on.',
+    stage: 'attention',
+  },
+  restore_failed: {
+    label: 'Not sent yet',
+    tone: 'warn',
+    detail:
+      "The restore of the pool's data before it did not go through, so it was not sent. Try again.",
+    stage: 'attention',
+  },
   fee_above_cap: {
     label: 'Needs your approval',
     tone: 'warn',

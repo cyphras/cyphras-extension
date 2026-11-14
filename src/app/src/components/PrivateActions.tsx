@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { RotateCcw } from 'lucide-react'
 import { InlineFeeReview, PoolRestore } from '@/components/ShieldedFeeSheets'
-import { REVIEW_TIMED_OUT } from '@/lib/privateFees'
+import { REVIEW_TIMED_OUT, dropOffer } from '@/lib/privateFees'
 import {
   depositActions,
   holdOf,
@@ -63,7 +63,7 @@ export function PrivateActions({
       <div className="flex flex-wrap gap-2">
         <button onClick={() => onRetry(plan)} className={PILL}>
           <RotateCcw size={12} />
-          {hold === 'fee_above_cap'
+          {hold === 'fee_above_cap' || hold === 'fee_budget'
             ? 'Review fee'
             : hold
               ? 'Try again'
@@ -141,6 +141,7 @@ export function PrivateActions({
             available={available}
             fiatOf={fiatOf}
             onDecline={(timedOut) => {
+              dropOffer(reviewing.fee.approval, scope)
               setReviewing(null)
               setOutcomes((prev) => ({
                 ...prev,

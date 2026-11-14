@@ -1,12 +1,14 @@
-import type { ShieldedFeeEntry, ShieldedFeeReason } from '@ext-types/index'
+import { SERVICE_TYPES } from '@constants/services'
+import type { ShieldedFeeEntry, ShieldedFeeReason, ShieldedScope } from '@ext-types/index'
 
 // The most a transaction the account submits itself pays the network without asking: the SDK's
 // caps of 0.01 XLM to get included and 1 XLM of resources.
 export const NETWORK_FEE_CAP_STROOPS = 10_100_000n
 export const NETWORK_FEE_CAP_XLM = '1.01'
 
-// A fee review that waits this long for an answer is declined, as a payment review is.
-export const FEE_REVIEW_TIMEOUT_MS = 3 * 60_000
+// A fee review that waits this long for an answer is declined. It ends before the background's
+// offer does, so an approval in the last moment never meets an offer that just expired.
+export const FEE_REVIEW_TIMEOUT_MS = 3 * 60_000 - 15_000
 
 // What a fee review is about: a transaction the account submits itself for a payment or a deposit,
 // or one of its own actions.
@@ -18,7 +20,17 @@ export const FEE_TITLES: Record<ShieldedFeeReason, string> = {
   restore: 'Pool restore fee',
 }
 
-export function feeLead(reason: ShieldedFeeReason): string {
+// The title of a review: by what the fee pays for, or, for a call its own fees stopped, what it
+// asks of the user.
+export const feeTitle = (reason: ShieldedFeeReason, paid: string | undefined): string =>
+  paid === undefined ? FEE_TITLES[reason] : 'Needs your approval'
+
+// `paid`, in XLM, is what the call already paid in network fees before it stopped at the most it
+// was shown, as for a restore of the pool before the payment.
+export function feeLead(reason: ShieldedFeeReason, paid?: string): string {
+  if (paid !== undefined) {
+    return `This payment already paid ${paid} XLM in network fees, as for bringing the pool's data back, and its next transaction would take its fees past the most you were shown. Nothing more was sent. Approve the next transaction to go on.`
+  }
   const more = `more than the ${NETWORK_FEE_CAP_XLM} XLM this wallet pays without asking`
   switch (reason) {
     case 'network':
@@ -213,6 +225,8 @@ export const STAYS_PENDING =
   'Your payment stays pending; you can retry it later from Private activity.'
 export const RESTORE_NOT_SENT = 'Your payment was not sent. You can retry it from Private activity.'
 
+export const OFFER_EXPIRED = 'The approval expired. Review the fee again from Private activity.'
+
 export const WAITING_NOTE =
   'Nothing was sent and your funds stay in your private balance. You can review the fee again from Private activity. Do not send it again as a new payment: the review there spends the same notes, so at most one can land.'
 
@@ -231,3 +245,9 @@ export const queuedCapHint = (kind: 'send' | 'unshield'): string =>
 // still let the account submit it itself.
 export const RELAY_KEEPS_FAILING =
   'If the relayer keeps refusing it, retry it from Private activity with Submit without a relayer ticked: the retry spends the same notes, and your account pays the network fee and becomes publicly linked to this withdrawal.'
+
+// Tells the background the user said no, so the offer ends now rather than at its expiry.
+export function dropOffer(offer: string | undefined, scope: ShieldedScope | null): void {
+  if (offer === undefined) return
+  chrome.runtime.sendMessage({ type: SERVICE_TYPES.SHIELDED_DROP_OFFER, offer, ...scope })
+}
