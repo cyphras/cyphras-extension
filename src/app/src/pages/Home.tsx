@@ -877,6 +877,13 @@ export default function Home() {
                     )
                   )}
 
+                  {!shieldedNotice && shieldedStatus?.syncSource === 'archive' && (
+                    <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+                      The network no longer keeps all of the pool's history, so the last sync read
+                      the pool's published archive copies, checked against the chain.
+                    </p>
+                  )}
+
                   {entries && (
                     <ShieldedActivity
                       entries={entries}
