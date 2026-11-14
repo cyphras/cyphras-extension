@@ -13,6 +13,7 @@ export function ConfirmSheet({
   actions,
   closeDisabled = false,
   modal = false,
+  escapeCloses = false,
   stepKey,
   onClose,
   onBackdrop,
@@ -24,12 +25,18 @@ export function ConfirmSheet({
   closeDisabled?: boolean
   // Over the whole app, which goes inert while it is open, so focus can reach nothing behind it.
   modal?: boolean
+  // In a modal sheet, the first Escape closes it, before any key handler of the page behind.
+  escapeCloses?: boolean
   stepKey: string
   onClose: () => void
   onBackdrop: () => void
   children: ReactNode
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
+  const closeRef = useRef(onClose)
+  useEffect(() => {
+    closeRef.current = onClose
+  })
   const titleId = useId()
 
   useEffect(() => {
@@ -39,6 +46,12 @@ export function ConfirmSheet({
     app?.setAttribute('inert', '')
     panel?.focus()
     const keepFocus = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && escapeCloses) {
+        e.preventDefault()
+        e.stopPropagation()
+        closeRef.current()
+        return
+      }
       if (e.key !== 'Tab' || !panel) return
       const items = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
         (el) => !el.matches(':disabled')
@@ -53,12 +66,12 @@ export function ConfirmSheet({
         ;(e.shiftKey ? last : first).focus()
       }
     }
-    document.addEventListener('keydown', keepFocus)
+    window.addEventListener('keydown', keepFocus, true)
     return () => {
-      document.removeEventListener('keydown', keepFocus)
+      window.removeEventListener('keydown', keepFocus, true)
       app?.removeAttribute('inert')
     }
-  }, [modal, open])
+  }, [modal, open, escapeCloses])
 
   // A closed sheet stays mounted for its slide, but none of its buttons may take focus.
   const sheet = (

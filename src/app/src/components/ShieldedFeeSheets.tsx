@@ -39,6 +39,10 @@ function stopOf(fee: ShieldedFeeView): FeeStop | undefined {
   }
 }
 
+// Sheet footers stack their buttons, the main one on top, so the longest labels fit a 360 px
+// window; the safe one still comes first in tab order.
+const FOOTER = 'flex shrink-0 flex-col-reverse gap-2 border-t border-border px-5 py-4'
+
 // How long the paying button of an inline review stays off after it appears.
 const PAY_DELAY_MS = 1_000
 
@@ -110,7 +114,7 @@ export function FeeReviewBody({
         {approved !== null && (
           <AmberNote>{feeChangedText(xlm(fee.total), xlm(approved))}</AmberNote>
         )}
-        <AmberNote>{feeLead(fee.reason, stopOf(fee), subject)}</AmberNote>
+        <AmberNote>{feeLead(fee.reason, stopOf(fee), subject, BigInt(fee.total))}</AmberNote>
         {amountCard}
         <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
           <DetailRow label="Paid by">
@@ -143,10 +147,10 @@ export function FeeReviewBody({
           {working ? progress : ''}
         </p>
       </div>
-      <div className="flex shrink-0 gap-3 border-t border-border px-5 py-4">
+      <div className={FOOTER}>
         <Button
           variant={large ? 'default' : 'outline'}
-          className="flex-1"
+          className="w-full"
           disabled={working}
           autoFocus={large}
           onClick={onDecline}
@@ -155,7 +159,7 @@ export function FeeReviewBody({
         </Button>
         <Button
           variant={large ? 'outline' : 'default'}
-          className="flex-1"
+          className="w-full"
           disabled={working || lacking !== null || fee.approval === undefined}
           onClick={onApprove}
         >
@@ -198,12 +202,12 @@ export function RefusalBody({
           {working ? progress : ''}
         </p>
       </div>
-      <div className="flex shrink-0 gap-3 border-t border-border px-5 py-4">
-        <Button variant="outline" className="flex-1" disabled={working} onClick={onLater}>
+      <div className={FOOTER}>
+        <Button variant="outline" className="w-full" disabled={working} onClick={onLater}>
           Try later
         </Button>
         {copy.payLabel && (
-          <Button className="flex-1" disabled={working || expired !== null} onClick={onPay}>
+          <Button className="w-full" disabled={working || expired !== null} onClick={onPay}>
             {working ? 'Sending...' : copy.payLabel}
           </Button>
         )}
@@ -233,11 +237,11 @@ export function OpenPaymentBody({
         <AmberNote>{copy.lead}</AmberNote>
         <MutedNote>{copy.note}</MutedNote>
       </div>
-      <div className="flex shrink-0 gap-3 border-t border-border px-5 py-4">
-        <Button variant="outline" className="flex-1" onClick={onBack}>
+      <div className={FOOTER}>
+        <Button variant="outline" className="w-full" onClick={onBack}>
           {send ? 'Send another payment' : 'Back'}
         </Button>
-        <Button className="flex-1" onClick={onOpen}>
+        <Button className="w-full" onClick={onOpen}>
           {!found
             ? 'Check Private activity'
             : send
@@ -302,7 +306,7 @@ export function InlineFeeReview({
         </p>
       )}
       <p className="text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-        {feeLead(fee.reason, stopOf(fee), subject)}
+        {feeLead(fee.reason, stopOf(fee), subject, BigInt(fee.total))}
       </p>
       <p className="text-[11px] tabular-nums text-foreground">
         Network fee about {xlm(fee.total)} XLM{total ? ` (${total})` : ''}.{' '}
@@ -326,7 +330,7 @@ export function InlineFeeReview({
           {note}
         </p>
       ))}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <button
           onClick={() => onDecline(false)}
           className="cursor-pointer rounded-full px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-background"
@@ -460,7 +464,7 @@ export function PoolRestore({
         </div>
       )}
       {state.kind !== 'done' && (
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setState({ kind: 'closed' })}
             disabled={state.kind === 'running'}

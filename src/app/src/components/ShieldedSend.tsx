@@ -1163,6 +1163,14 @@ export default function ShieldedSend({
     )
   }
 
+  // The most a self-submitted payment may pay: the approved amount after a fee review in this flow,
+  // else what the wallet pays without asking.
+  function selfFeeText(): string {
+    return flowMostRef.current === null
+      ? NETWORK_FEE_CAP
+      : `Up to ${formatUnits(flowMostRef.current, 7)} XLM, from your account`
+  }
+
   // The amount at the top of a confirm step, the token spinning while it is proved and submitted.
   function amountCard(value: string | bigint) {
     const fiat = fiatOf(value)
@@ -1326,11 +1334,7 @@ export default function ShieldedSend({
               <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
             </DetailRow>
             {r.selfRelay ? (
-              <DetailRow label="Network fee">
-                {flowMostRef.current === null
-                  ? NETWORK_FEE_CAP
-                  : `Up to ${formatUnits(flowMostRef.current, 7)} XLM, from your account`}
-              </DetailRow>
+              <DetailRow label="Network fee">{selfFeeText()}</DetailRow>
             ) : (
               <DetailRow label="Relayer fee">
                 <span className="tabular-nums">
@@ -1504,7 +1508,7 @@ export default function ShieldedSend({
                 <span className="tabular-nums">{unit(s.fee)}</span>
               </DetailRow>
             ) : (
-              !relayed && <DetailRow label="Network fee">{NETWORK_FEE_CAP}</DetailRow>
+              !relayed && <DetailRow label="Network fee">{selfFeeText()}</DetailRow>
             )}
             {plan && <DetailRow label="Route">{routeText(plan)}</DetailRow>}
             {s.kind === 'shielded' && s.receipt.depositId !== null && (
@@ -1671,6 +1675,9 @@ export default function ShieldedSend({
     )
   }
 
+  // The sheets that ask the user before anything more is sent are dialogs over the whole popup.
+  const dialog = open && (view?.kind === 'fee' || view?.kind === 'refused' || view?.kind === 'open')
+
   // Leaving a confirm step goes back to the form, declining a review on the way; a result closes.
   function leaveSheet() {
     if (busy || !view) return
@@ -1753,6 +1760,8 @@ export default function ShieldedSend({
 
       <ConfirmSheet
         open={open && view !== null}
+        modal={dialog}
+        escapeCloses={dialog}
         title={sheetTitle}
         closeDisabled={busy}
         stepKey={

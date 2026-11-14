@@ -122,6 +122,8 @@ export function PrivatePartSheet({
   onItem: (item: BalanceItem) => void
 }) {
   const shown = part && balance ? balance.parts.find((p) => p.key === part) : undefined
+  // An earlier attempt of a payment, counted by its newest one, is not a row of its own.
+  const rows = (shown?.items ?? []).filter((item) => item.kind === 'deposit' || item.amount > 0n)
   return (
     <BottomSheet
       open={!!shown}
@@ -151,9 +153,9 @@ export function PrivatePartSheet({
               next sync tells whether they were spent.
             </p>
           )}
-          {shown.items.length > 0 && (
+          {rows.length > 0 && (
             <div className="flex flex-col gap-2">
-              {shown.items.map((item) => {
+              {rows.map((item) => {
                 const s =
                   item.kind === 'deposit'
                     ? depositStatus(item.deposit)

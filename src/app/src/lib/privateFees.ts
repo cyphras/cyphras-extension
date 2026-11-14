@@ -43,10 +43,13 @@ const STOP_SUBJECTS: Record<FeeSubject, string> = {
   restore: 'This pool restore',
 }
 
+// `total` is the fee in stroops: a high network fee can call for a review while the whole fee is
+// still within the 1.01 XLM, when the bid to get included is above its own cap.
 export function feeLead(
   reason: ShieldedFeeReason,
   stop?: FeeStop,
-  subject: FeeSubject = 'unshield'
+  subject: FeeSubject = 'unshield',
+  total?: bigint
 ): string {
   if (stop !== undefined) {
     const restore = stop.restored ? ", including bringing the pool's data back" : ''
@@ -56,7 +59,9 @@ export function feeLead(
   const more = `more than the ${NETWORK_FEE_CAP_XLM} XLM this wallet pays without asking`
   switch (reason) {
     case 'network':
-      return `The network is charging more than usual, so this transaction needs ${more}.`
+      return total !== undefined && total <= NETWORK_FEE_CAP_STROOPS
+        ? 'The network is charging more than usual to include transactions, above what this wallet pays without asking.'
+        : `The network is charging more than usual, so this transaction needs ${more}.`
     case 'rent':
       return `The pool's data is close to expiring on the network. This transaction also pays to renew it, which costs ${more}.`
     case 'restore':
