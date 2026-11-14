@@ -8,7 +8,8 @@ import { resolveSources } from './support/sources.mjs'
 resolveSources()
 
 const { earlierMayLand, paymentRows } = await import('../src/background/shielded/history.ts')
-const { EARLIER_MAY_LAND, planStatus } = await import('../src/app/src/lib/privateActivity.ts')
+const { planStatus } = await import('../src/app/src/lib/privateActivity.ts')
+const { EARLIER_MAY_LAND } = await import('../src/app/src/lib/privateFees.ts')
 
 const attempt = (planId, fields) => ({
   planId,
