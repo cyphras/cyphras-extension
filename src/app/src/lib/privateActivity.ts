@@ -287,10 +287,33 @@ export function needsRetry(p: ShieldedPlanView): boolean {
   return p.mustRetry && (p.state === 'dead' || p.needsUserDecision || holdOf(p) !== null)
 }
 
+export const EARLIER_MAY_LAND = 'An earlier attempt of this payment may still land.'
+
+// The status of the newest attempt of a payment whose earlier attempt may still land: it says so
+// first, and none of its words say the funds are back or that nothing went out.
+function withEarlier(status: ItemStatus, p: ShieldedPlanView): ItemStatus {
+  if (p.state === 'dead') {
+    return {
+      ...status,
+      detail: `This attempt's deadline passed without it landing. ${EARLIER_MAY_LAND} A retry with the same notes cannot pay twice.`,
+    }
+  }
+  const detail = (status.detail ?? '')
+    .replace('Nothing has left your private balance yet. ', '')
+    .replace('Nothing more was sent.', 'This attempt sent nothing more.')
+    .replace('Nothing was sent.', 'This attempt was not sent.')
+  return { ...status, detail: `${EARLIER_MAY_LAND} ${detail}`.trim() }
+}
+
 export function planStatus(
   p: ShieldedPlanView,
   unit: (units: bigint | string) => string
 ): ItemStatus {
+  const status = attemptStatus(p, unit)
+  return p.earlierMayLand ? withEarlier(status, p) : status
+}
+
+function attemptStatus(p: ShieldedPlanView, unit: (units: bigint | string) => string): ItemStatus {
   const indexerOnly = p.exitConfirmed === false ? ` ${INDEXER_ONLY}` : ''
   const hold = holdOf(p)
   if (hold) return holdStatus(hold, p.kind, p.state)

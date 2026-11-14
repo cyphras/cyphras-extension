@@ -35,7 +35,7 @@ import {
 import { SHIELDED_DEPLOYMENTS, type ShieldedDeployment } from './deployments'
 import { MayStillLand, ShieldedRefusal, errorView } from './errors'
 import { dropGrant } from './approvals'
-import { paymentRows, reachedChain } from './history'
+import { earlierMayLand, paymentRows, reachedChain } from './history'
 import { BUDGET_STOP_MESSAGE, DEFAULT_FEE_BUDGET, budgetSigner, type FeeSpent } from './fees'
 import { pinnedPool } from './gate'
 import { offscreenProver, packagedArtifacts } from './prover'
@@ -301,7 +301,8 @@ function lastErrorCode(p: PlanView): string | null {
 
 // `continued`: another plan retries this one, so why this one stopped no longer says where the
 // payment stands, and no second retry of it is offered.
-function planView(p: PlanView, continued: boolean): ShieldedPlanView {
+// `earlier`: an older attempt of the same payment may still land.
+function planView(p: PlanView, continued: boolean, earlier: boolean): ShieldedPlanView {
   return {
     planId: p.planId,
     kind: p.kind,
@@ -316,6 +317,7 @@ function planView(p: PlanView, continued: boolean): ShieldedPlanView {
     exitConfirmed: orNull(p.exitConfirmed),
     strandedExits: p.exitParts.filter((part) => part.stranded).map((part) => part.id),
     relayerStatus: orNull(p.relayerStatus),
+    earlierMayLand: earlier,
     relayerCode: continued ? null : orNull(p.relayerCode),
     lastError: continued ? null : lastErrorCode(p),
     mustRetry: p.mustRetry,
@@ -354,7 +356,8 @@ async function statusOf(entry: OpenWallet): Promise<ShieldedStatusView> {
       .map((p) =>
         planView(
           p,
-          plans.some((q) => q.retryOf === p.planId)
+          plans.some((q) => q.retryOf === p.planId),
+          earlierMayLand(p, plans)
         )
       )
       .sort((a, b) => b.createdAt - a.createdAt),

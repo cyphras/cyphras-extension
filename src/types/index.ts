@@ -246,6 +246,9 @@ export interface ShieldedPlanView {
   // Exits of this payout that the destination could not receive, each claimable on its own.
   strandedExits: number[]
   relayerStatus: string | null
+  // An older attempt of the same payment may still land, while none has; what this attempt says
+  // must not suggest the payment cannot arrive.
+  earlierMayLand?: boolean
   // Why its submission last stopped before anything was sent: the relayer's refusal code, or the
   // wallet's own error code for a self-relayed one; null once it landed.
   relayerCode: string | null
