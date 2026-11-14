@@ -812,6 +812,20 @@ export async function shieldedRestorePool(
   return { txHash: orNull(restore.txHash), restored: restore.restored.length }
 }
 
+// Whether an older attempt of the payment `planId` belongs to may still land, by the same rule as
+// the plan views of the status, so what a failed request says agrees with the payment's row.
+export async function shieldedEarlierMayLand(
+  net: NetworkConfig,
+  publicKey: unknown,
+  poolId: string,
+  planId: string
+): Promise<boolean> {
+  const { wallet } = await walletFor(net, publicKey, poolId)
+  const plans = await wallet.plans()
+  const plan = plans.find((p) => p.planId === planId)
+  return plan !== undefined && earlierMayLand(plan, plans)
+}
+
 // The user said no to an offer to pay a fee; it ends at once rather than at its expiry.
 export async function shieldedDropOffer(publicKey: unknown, offer: unknown): Promise<void> {
   await activeAccount(publicKey)

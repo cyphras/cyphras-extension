@@ -9,6 +9,7 @@ import {
   feeTitle,
   OPEN_PAYMENT,
   OPEN_SEND,
+  EARLIER_MAY_LAND,
   RESTORE_ADVANCED,
   dropOffer,
   REVIEW_TIMED_OUT,
@@ -74,6 +75,7 @@ function withFiat(text: string, fiat: string | null) {
 // payment, Not now is the highlighted button and takes focus; the paying button never does.
 export function FeeReviewBody({
   fee,
+  earlier,
   subject,
   account,
   available,
@@ -87,6 +89,8 @@ export function FeeReviewBody({
   onApprove,
 }: {
   fee: ShieldedFeeView
+  // An older attempt of the payment may still land, which the sheet states first.
+  earlier: boolean
   subject: FeeSubject
   account: string
   // What the account can spend on the fee; null when its balance is not known.
@@ -114,6 +118,7 @@ export function FeeReviewBody({
         {approved !== null && (
           <AmberNote>{feeChangedText(xlm(fee.total), xlm(approved))}</AmberNote>
         )}
+        {earlier && <AmberNote>{EARLIER_MAY_LAND}</AmberNote>}
         <AmberNote>{feeLead(fee.reason, stopOf(fee), subject, BigInt(fee.total))}</AmberNote>
         {amountCard}
         <div className="flex flex-col divide-y divide-border/60 rounded-xl bg-card px-4">
@@ -283,6 +288,12 @@ export function InlineFeeReview({
   const total = fiatOf(BigInt(fee.total))
   const mostFiat = fiatOf(ceiling)
   const [ready, setReady] = useState(false)
+  // In a long list the review can open under the popup's bottom strip; it is brought into view so
+  // its buttons are not covered.
+  const boxRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    boxRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [fee])
   // An unanswered review is declined, however often the page around it renders.
   const declineRef = useRef(onDecline)
   useEffect(() => {
@@ -298,7 +309,7 @@ export function InlineFeeReview({
     }
   }, [fee])
   return (
-    <div className="flex flex-col gap-2 rounded-lg bg-muted px-3 py-2">
+    <div ref={boxRef} className="flex flex-col gap-2 rounded-lg bg-muted px-3 py-2">
       <p className="text-xs font-semibold text-foreground">{feeTitle(fee.reason, fee.paid)}</p>
       {approved !== null && (
         <p className="text-[11px] leading-snug text-amber-700 dark:text-amber-400">

@@ -174,13 +174,23 @@ export interface RefusalCopy {
   readonly payLabel: string | null
 }
 
+export const EARLIER_MAY_LAND = 'An earlier attempt of this payment may still land.'
+
+// Where a payment stands after an attempt that was not sent: an earlier attempt of it may still
+// land, or, when `nothingLeft` is to be said, nothing has left the private balance.
+export function standing(earlier: boolean, nothingLeft: boolean): string {
+  if (earlier) return `${EARLIER_MAY_LAND} `
+  return nothingLeft ? 'Nothing has left your private balance yet. ' : ''
+}
+
 // A relayer that did not send a payment, and what the user can do. `fee` is the relayer's fee of
-// the payment in XLM, when the popup knows it.
+// the payment in XLM, when the popup knows it; `earlier`: an older attempt of it may still land.
 export function refusalCopy(
   refusal: 'network_fee_high' | 'restore_needed',
   kind: 'send' | 'unshield',
   fee: string | null,
-  account: string
+  account: string,
+  earlier = false
 ): RefusalCopy {
   if (refusal === 'network_fee_high') {
     const covers = fee === null ? "the relayer's fee" : `the relayer's fee of ${fee} XLM`
@@ -189,14 +199,14 @@ export function refusalCopy(
       ? {
           title: 'Relayer did not send it',
           lead,
-          note: `Nothing has left your private balance yet. Try again later, when fees are lower, or pay the network fee from your account. ${NOT_AGAIN}`,
+          note: `${standing(earlier, true)}Try again later, when fees are lower, or pay the network fee from your account. ${NOT_AGAIN}`,
           payNote: `Your account ${account} pays the network fee, at most ${NETWORK_FEE_CAP_XLM} XLM, and becomes publicly linked to this withdrawal. If it needs more, you are asked first.`,
           payLabel: 'Pay the fee myself',
         }
       : {
           title: 'Relayer did not send it',
           lead,
-          note: `Nothing has left your private balance yet. Private transfers always go through a relayer. Try again later. ${NOT_AGAIN}`,
+          note: `${standing(earlier, true)}Private transfers always go through a relayer. Try again later. ${NOT_AGAIN}`,
           payNote: null,
           payLabel: null,
         }
@@ -207,14 +217,14 @@ export function refusalCopy(
     ? {
         title: 'Pool needs a restore',
         lead,
-        note: `You can pay it from your account. It restores the pool for everyone: the first withdrawal after a long stop pays it once, and later transactions need nothing extra for a long while. ${NOT_AGAIN}`,
+        note: `${standing(earlier, false)}You can pay it from your account. It restores the pool for everyone: the first withdrawal after a long stop pays it once, and later transactions need nothing extra for a long while. ${NOT_AGAIN}`,
         payNote: `Your account ${account} pays the fee, at most ${NETWORK_FEE_CAP_XLM} XLM, and becomes publicly linked to this withdrawal. If it needs more, you are asked first.`,
         payLabel: 'Pay from my account',
       }
     : {
         title: 'Pool needs a restore',
         lead,
-        note: `Private transfers go through a relayer, which does not pay for this. You can restore the pool from your account, then retry your payment, or try again later. ${NOT_AGAIN}`,
+        note: `${standing(earlier, false)}Private transfers go through a relayer, which does not pay for this. You can restore the pool from your account, then retry your payment, or try again later. ${NOT_AGAIN}`,
         payNote: null,
         payLabel: null,
       }
@@ -259,8 +269,13 @@ export const OFFER_EXPIRED = 'The approval expired. Review the fee again from Pr
 export const refusalExpired = (refusal: 'network_fee_high' | 'restore_needed'): string =>
   `The offer to pay from your account expired. Use ${refusal === 'network_fee_high' ? 'Pay the fee myself' : 'Pay from my account'} in Private activity to go on.`
 
-export const WAITING_NOTE =
-  'Nothing was sent and your funds stay in your private balance. You can review the fee again from Private activity. Do not send it again as a new payment: the review there spends the same notes, so at most one can land.'
+// After a fee review of a saved payment was declined.
+export function waitingNote(earlier: boolean): string {
+  const sent = earlier
+    ? `${EARLIER_MAY_LAND} This attempt was not sent.`
+    : 'Nothing was sent and your funds stay in your private balance.'
+  return `${sent} You can review the fee again from Private activity. Do not send it again as a new payment: the review there spends the same notes, so at most one can land.`
+}
 
 // A relayed payment the pool will queue, whose relayer asks its queued fee: `fee` and `usual` in XLM.
 export function queuedNote(kind: 'send' | 'unshield', fee: string, usual: string): string {

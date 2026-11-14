@@ -144,6 +144,7 @@ import {
   shieldedDecide,
   shieldedDismissReset,
   shieldedDropOffer,
+  shieldedEarlierMayLand,
   shieldedHistory,
   shieldedLimits,
   shieldedQuote,
@@ -454,6 +455,24 @@ async function requireUnlockedAndAllowed(
 function shieldedFailure(err: unknown): ServiceResponse {
   const view = errorView(err)
   return { error: view.message, shieldedError: view }
+}
+
+// Marks a failure that names a payment whose older attempt may still land, so the sheet that
+// shows it says what the payment's row says.
+async function withEarlierAttempt(
+  response: ServiceResponse,
+  message: { publicKey?: unknown; networkId?: unknown },
+  poolId: unknown
+): Promise<ServiceResponse> {
+  const view = response.shieldedError
+  if (!view?.planId || typeof poolId !== 'string') return response
+  try {
+    const net = await getShieldedNetwork(message.networkId)
+    view.earlierMayLand = await shieldedEarlierMayLand(net, message.publicKey, poolId, view.planId)
+  } catch {
+    // The payment's attempts could not be read, as after a lock; the failure goes without the mark.
+  }
+  return response
 }
 
 // The offer a request accepts, if it names one; refused unless it is open and for this very call.
@@ -3558,11 +3577,15 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         sendResponse({ shieldedStep: step })
       } catch (err) {
         sendResponse(
-          shieldedOffer(err, 'retry', undefined, message, {
-            pool: m.poolId,
-            kind: m.kind,
-            confirmed: confirmedWarnings(m.holder),
-          })
+          await withEarlierAttempt(
+            shieldedOffer(err, 'retry', undefined, message, {
+              pool: m.poolId,
+              kind: m.kind,
+              confirmed: confirmedWarnings(m.holder),
+            }),
+            message,
+            m.poolId
+          )
         )
       }
       break
@@ -3603,11 +3626,15 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         sendResponse({ shieldedStep: step })
       } catch (err) {
         sendResponse(
-          shieldedOffer(err, 'retry', undefined, message, {
-            pool: m.poolId,
-            kind: m.kind,
-            confirmed: confirmedWarnings(m.holder),
-          })
+          await withEarlierAttempt(
+            shieldedOffer(err, 'retry', undefined, message, {
+              pool: m.poolId,
+              kind: m.kind,
+              confirmed: confirmedWarnings(m.holder),
+            }),
+            message,
+            m.poolId
+          )
         )
       }
       break
@@ -3696,11 +3723,15 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         })
       } catch (err) {
         sendResponse(
-          shieldedOffer(err, 'retry', undefined, message, {
-            pool: m.poolId,
-            kind: m.kind,
-            confirmed: confirmedWarnings(holderOfReview(m.reviewId)),
-          })
+          await withEarlierAttempt(
+            shieldedOffer(err, 'retry', undefined, message, {
+              pool: m.poolId,
+              kind: m.kind,
+              confirmed: confirmedWarnings(holderOfReview(m.reviewId)),
+            }),
+            message,
+            m.poolId
+          )
         )
       }
       break

@@ -1,4 +1,4 @@
-import { NOT_AGAIN } from './privateFees'
+import { EARLIER_MAY_LAND, NOT_AGAIN } from './privateFees'
 import { SERVICE_TYPES } from '@constants/services'
 import type { ShieldedDepositView, ShieldedPlanView, ShieldedScreening } from '@ext-types/index'
 
@@ -286,8 +286,6 @@ function refusedByRelayer(p: ShieldedPlanView): boolean {
 export function needsRetry(p: ShieldedPlanView): boolean {
   return p.mustRetry && (p.state === 'dead' || p.needsUserDecision || holdOf(p) !== null)
 }
-
-export const EARLIER_MAY_LAND = 'An earlier attempt of this payment may still land.'
 
 // The status of the newest attempt of a payment whose earlier attempt may still land: it says so
 // first, and none of its words say the funds are back or that nothing went out.

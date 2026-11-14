@@ -61,7 +61,8 @@ import {
   REVIEW_TIMED_OUT,
   dropOffer,
   STAYS_PENDING,
-  WAITING_NOTE,
+  EARLIER_MAY_LAND,
+  waitingNote,
   queuedCapHint,
   queuedNote,
   refusalCopy,
@@ -131,7 +132,7 @@ type Step =
   // another one.
   | { kind: 'open'; planId: string; send: boolean }
   // A fee review of a saved payment was declined: nothing was sent and it waits.
-  | { kind: 'waiting'; planId: string; timedOut: boolean }
+  | { kind: 'waiting'; planId: string; timedOut: boolean; earlier: boolean }
   // Nothing was sent and nothing can be approved now: the fee is above what one transaction
   // carries, or the restore before it failed on chain.
   | {
@@ -142,6 +143,8 @@ type Step =
       hash?: string
       // The relayer's refusal the user answered by paying from the account, when one did.
       refusal?: 'network_fee_high' | 'restore_needed'
+      // An older attempt of the payment may still land.
+      earlier?: boolean
     }
 
 interface FeeStep {
@@ -150,6 +153,8 @@ interface FeeStep {
   target: { kind: 'shield' } | { kind: 'retry'; planId: string }
   approved: string | null
   working: boolean
+  // An older attempt of the payment may still land.
+  earlier: boolean
 }
 
 interface RefusedStep {
@@ -162,6 +167,8 @@ interface RefusedStep {
   planId: string
   fee: string | null
   working: boolean
+  // An older attempt of the payment may still land.
+  earlier: boolean
 }
 
 type ResultStep = Extract<
@@ -346,6 +353,8 @@ export default function ShieldedSend({
   // request, the user lands on a result or a review of it, never back on an empty form.
   const heldRef = useRef<string | null>(null)
   const heldRefusalRef = useRef<'network_fee_high' | 'restore_needed' | null>(null)
+  // Whether an older attempt of that payment may still land, as the sheet that started it said.
+  const heldEarlierRef = useRef(false)
   // The most the user approved for the self-relayed retry in progress, which a review the SDK then
   // asks shows in place of the default.
   const flowMostRef = useRef<string | null>(null)
@@ -420,10 +429,12 @@ export default function ShieldedSend({
       approvedRef.current = null
       const held = heldRef.current
       const heldRefusal = heldRefusalRef.current
+      const heldEarlier = heldEarlierRef.current
       if (!reply.ok || reply.value.kind !== 'review') {
         lastReviewRef.current = null
         heldRef.current = null
         heldRefusalRef.current = null
+        heldEarlierRef.current = false
         releaseFlow()
       }
       if (!reply.ok) {
@@ -436,6 +447,7 @@ export default function ShieldedSend({
             target: { kind: 'retry', planId },
             approved,
             working: false,
+            earlier: view.earlierMayLand === true,
           })
         } else if (view?.refusal && planId) {
           setStep({
@@ -446,6 +458,7 @@ export default function ShieldedSend({
             planId,
             fee: answered && !answered.selfRelay ? answered.fee : null,
             working: false,
+            earlier: view.earlierMayLand === true,
           })
         } else if (view?.openPlanId) {
           setStep({ kind: 'open', planId: view.openPlanId, send: false })
@@ -456,6 +469,7 @@ export default function ShieldedSend({
             message: reply.error,
             planId,
             hash: view.hash,
+            earlier: view.earlierMayLand === true,
           })
         } else if (reply.mayLand || answered?.repriced) {
           // A relayed withdrawal retried after a stall that the relayer refuses again may go
@@ -475,10 +489,11 @@ export default function ShieldedSend({
             code: reply.code ?? 'unexpected',
             message:
               reply.code === 'not_confirmed'
-                ? 'Nothing was sent. The payment waits in Private activity, where its retry spends the same notes.'
+                ? `${heldEarlier ? `${EARLIER_MAY_LAND} This attempt was not sent.` : 'Nothing was sent.'} The payment waits in Private activity, where its retry spends the same notes.`
                 : reply.error,
             planId: held,
             refusal: heldRefusal ?? undefined,
+            earlier: heldEarlier,
           })
         } else {
           if (reply.code !== 'not_confirmed') {
@@ -546,6 +561,7 @@ export default function ShieldedSend({
     approvedRef.current = null
     heldRef.current = null
     heldRefusalRef.current = null
+    heldEarlierRef.current = false
     flowMostRef.current = null
     setStep({ kind: retryPlan ? 'retry' : 'form' })
   }, [open, action, retryPlan, retrySelfRelay, decimals, releaseFlow])
@@ -689,6 +705,7 @@ export default function ShieldedSend({
     approvedRef.current = null
     heldRef.current = null
     heldRefusalRef.current = null
+    heldEarlierRef.current = false
     flowMostRef.current = null
     setStep({ kind: 'preparing' })
     requestStep({
@@ -723,6 +740,7 @@ export default function ShieldedSend({
     approvedRef.current = null
     heldRef.current = null
     heldRefusalRef.current = null
+    heldEarlierRef.current = false
     flowMostRef.current = null
     setStep({ kind: 'preparing' })
     requestStep({
@@ -783,6 +801,7 @@ export default function ShieldedSend({
             target: { kind: 'shield' },
             approved: approved ?? null,
             working: false,
+            earlier: false,
           })
           return
         }
@@ -812,6 +831,7 @@ export default function ShieldedSend({
     }
     approvedRef.current = s.fee.most
     heldRef.current = s.target.planId
+    heldEarlierRef.current = s.earlier
     flowMostRef.current = s.fee.most
     requestStep({
       type: SERVICE_TYPES.SHIELDED_RETRY,
@@ -833,7 +853,7 @@ export default function ShieldedSend({
       if (timedOut) setError(REVIEW_TIMED_OUT)
       return
     }
-    setStep({ kind: 'waiting', planId: s.target.planId, timedOut })
+    setStep({ kind: 'waiting', planId: s.target.planId, timedOut, earlier: s.earlier })
     onDone()
   }
 
@@ -843,6 +863,7 @@ export default function ShieldedSend({
     approvedRef.current = null
     heldRef.current = s.planId
     heldRefusalRef.current = s.refusal
+    heldEarlierRef.current = s.earlier
     flowMostRef.current = null
     setStep({ ...s, working: true })
     requestStep({
@@ -1431,7 +1452,7 @@ export default function ShieldedSend({
                 : 'pending'
     const fallbackNote =
       s.kind === 'waiting'
-        ? `${s.timedOut ? `${REVIEW_TIMED_OUT} ` : ''}${WAITING_NOTE}`
+        ? `${s.timedOut ? `${REVIEW_TIMED_OUT} ` : ''}${waitingNote(s.earlier)}`
         : s.kind === 'blocked'
           ? s.message
           : s.kind === 'shielded'
@@ -1467,6 +1488,7 @@ export default function ShieldedSend({
           />
           {s.kind === 'blocked' && (
             <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+              {s.earlier && !s.message.startsWith(EARLIER_MAY_LAND) ? `${EARLIER_MAY_LAND} ` : ''}
               {blockedNote(s.code, s.planId !== undefined, s.refusal)}
             </p>
           )}
@@ -1598,6 +1620,7 @@ export default function ShieldedSend({
     return (
       <FeeReviewBody
         fee={f.fee}
+        earlier={f.earlier}
         subject={f.target.kind === 'shield' ? 'shield' : 'unshield'}
         account={accountPk}
         available={feeRoom(f.target)}
@@ -1623,7 +1646,8 @@ export default function ShieldedSend({
       r.refusal,
       kind,
       r.fee === null ? null : formatUnits(r.fee, decimals),
-      shortAddress(accountPk)
+      shortAddress(accountPk),
+      r.earlier
     )
     // Paying from the account goes only with the background's offer for this withdrawal.
     const copy = r.selfPay ? offered : { ...offered, payLabel: null, payNote: null }

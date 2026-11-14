@@ -163,6 +163,8 @@ export interface ShieldedErrorView {
   refusal?: 'network_fee_high' | 'restore_needed'
   // The background's offer to submit that retry from the account, at most the default fee.
   selfPay?: string
+  // An older attempt of the payment planId names may still land, as its row in the status says.
+  earlierMayLand?: boolean
   // The relayer's fee for a payment the pool queues is above what this wallet allows.
   queued?: boolean
   // A payment to the same destination that may still land; a new one waits for it.
