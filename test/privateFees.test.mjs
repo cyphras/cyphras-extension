@@ -9,7 +9,7 @@ import { resolveSources } from './support/sources.mjs'
 resolveSources()
 
 const { holdOf, needsRetry, planStatus } = await import('../src/app/src/lib/privateActivity.ts')
-const { entryLines, feeNotes, refusalCopy, shortfall, queuedNote } =
+const { NOT_AGAIN, entryLines, feeChangedText, feeNotes, refusalCopy, shortfall, queuedNote } =
   await import('../src/app/src/lib/privateFees.ts')
 const { privateBalance } = await import('../src/app/src/lib/privateBalance.ts')
 
@@ -104,7 +104,10 @@ test('the notes of a fee review say what it does, what it links and how far it g
   assert.match(restore.notes[0], /restores the pool for everyone/)
   assert.match(restore.notes[1], /GABC\.\.\.WXYZ pays this fee and becomes publicly linked/)
   assert.match(restore.notes.at(-2), /plus 10%/)
-  assert.match(restore.notes.at(-1), /this one transaction only/)
+  assert.match(restore.notes.at(-3), /includes up to 1\.01 XLM for the transaction that follows/)
+  assert.match(restore.notes.at(-1), /If its fees would go past this amount, nothing more is sent/)
+  assert.doesNotMatch(restore.notes.join(' '), /never more|one transaction only/)
+  assert.doesNotMatch(feeNotes('restore', 'restore', 'G', false).notes.join(' '), /follows/)
   const rent = feeNotes('rent', 'cancel', 'G', true)
   assert.equal(rent.warning, null)
   assert.equal(
@@ -148,4 +151,33 @@ test('notes that may already be spent elsewhere stay part of Available and are n
   assert.equal(model.total, 50_000_000n)
   assert.equal(model.maybeSpent, 20_000_000n)
   assert.equal(model.parts.find((p) => p.key === 'available').amount, 50_000_000n)
+})
+
+test('a refused payment is never presented as safe to send again as a new one', () => {
+  for (const refusal of ['network_fee_high', 'restore_needed']) {
+    for (const kind of ['send', 'unshield']) {
+      const copy = refusalCopy(refusal, kind, null, 'G')
+      assert.ok(copy.note.includes(NOT_AGAIN), `${refusal} ${kind}`)
+      assert.doesNotMatch(copy.note, /unchanged/)
+      const status = planStatus(plan({ kind, relayerCode: refusal }), unit)
+      assert.ok(status.detail.includes(NOT_AGAIN), `${refusal} ${kind}`)
+    }
+  }
+  // A private transfer cannot be paid from the account.
+  assert.doesNotMatch(
+    planStatus(plan({ kind: 'send', relayerCode: 'network_fee_high' }), unit).detail,
+    /from your account/
+  )
+})
+
+test('paying a restore from the account states the most it pays before it goes', () => {
+  const copy = refusalCopy('restore_needed', 'unshield', null, 'G')
+  assert.match(copy.payNote, /at most 1\.01 XLM/)
+  assert.doesNotMatch(copy.payNote, /shown before anything is sent/)
+})
+
+test('a fee asked again says above the approval only when it is above it', () => {
+  assert.match(feeChangedText('8', '7'), /above the 7 XLM you approved/)
+  assert.doesNotMatch(feeChangedText('7', '7'), /above/)
+  assert.doesNotMatch(feeChangedText('1.5', '7.01'), /above/)
 })

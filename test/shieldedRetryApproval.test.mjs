@@ -41,6 +41,16 @@ session.put('cyphras_session_mnemonic', mnemonic)
 // unshield to an old account in a large pool: a request without a confirm goes only when there
 // are none.
 const requests = []
+// The saved payment the retry continues, as the SDK lists it.
+PrivateWallet.prototype.plans = async () => [
+  {
+    planId: 'held',
+    kind: 'unshield',
+    amount: 10n * XLM,
+    to: account,
+    route: { kind: 'self', account },
+  },
+]
 PrivateWallet.prototype.retry = async function (planId, request) {
   requests.push(request)
   const warnings = unshieldWarnings({
@@ -105,16 +115,9 @@ test('paying the fee from the account after a review or a refusal is not dropped
   const approved = { inclusion: 100_000n, resource: 16_500_000n, restore: 0n }
   for (const caps of [undefined, approved]) {
     requests.length = 0
-    const step = await shieldedRetry(
-      testnet,
-      account,
-      'xlm',
-      holderPort(),
-      'held',
-      true,
-      caps,
-      true
-    )
+    const step = await shieldedRetry(testnet, account, 'xlm', holderPort(), 'held', true, caps, [
+      'self_relay_links_account',
+    ])
     assert.equal(requests.length, 1)
     assert.ok(step.kind === 'submitted' || step.kind === 'review', JSON.stringify(step))
   }
