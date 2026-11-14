@@ -128,22 +128,18 @@ export type ShieldedFeeEntry =
   | 'other'
 
 // A network fee above what the wallet pays without asking, as the wallet's own simulation reported
-// it, and the most one approval lets that one transaction pay: 10% above the fee, the resource part
-// rounded up to 0.01 XLM, so the next simulation has room.
+// it. ceiling is the most its transaction may pay once approved: 10% above the fee, the resource
+// part rounded up to 0.01 XLM. most is what the whole call may pay, the ceiling plus the default
+// room of a transaction after a restore; the background holds the call to it. approval names the
+// background's offer, which the popup returns with the user's yes, once.
 export interface ShieldedFeeView {
   reason: ShieldedFeeReason
   total: string
   inclusionCap: string
   ceiling: string
+  most: string
   entries: ShieldedFeeEntry[]
-}
-
-// What the popup approved after a fee review, for one transaction only; the background turns it
-// into that call's network fee caps.
-export interface ShieldedFeeApproval {
-  reason: ShieldedFeeReason
-  inclusionCap: string
-  ceiling: string
+  approval?: string
 }
 
 export interface ShieldedErrorView {
@@ -155,8 +151,11 @@ export interface ShieldedErrorView {
   planId?: string
   // The fee to review before the transaction goes again with a higher cap.
   fee?: ShieldedFeeView
-  // The relayer did not send the payment, and why; planId names it, and nothing of it is out.
+  // The relayer did not send the payment, and why; planId names it. The relayer still holds its
+  // proof, so it is paid again only through a retry with the same notes.
   refusal?: 'network_fee_high' | 'restore_needed'
+  // The background's offer to submit that retry from the account, at most the default fee.
+  selfPay?: string
   // The relayer's fee for a payment the pool queues is above what this wallet allows.
   queued?: boolean
   // A payment to the same destination that may still land; a new one waits for it.

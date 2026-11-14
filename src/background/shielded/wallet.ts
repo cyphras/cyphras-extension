@@ -5,6 +5,7 @@ import {
   type DepositInfo,
   type NetworkFeeCaps,
   type PlanView,
+  type SpendReview,
   type Submission,
   type SyncSummary,
   type TransactionSigner,
@@ -33,6 +34,7 @@ import {
 } from '../keyManager'
 import { SHIELDED_DEPLOYMENTS, type ShieldedDeployment } from './deployments'
 import { MayStillLand, ShieldedRefusal, errorView } from './errors'
+import { DEFAULT_FEE_BUDGET, budgetSigner } from './fees'
 import { pinnedPool } from './gate'
 import { offscreenProver, packagedArtifacts } from './prover'
 import { declineAllReviews, decideReview, startReviewed } from './reviews'
@@ -280,7 +282,9 @@ function depositView(d: DepositInfo): ShieldedDepositView {
   }
 }
 
-function planView(p: PlanView): ShieldedPlanView {
+// `continued`: another plan retries this one, so why this one stopped no longer says where the
+// payment stands, and no second retry of it is offered.
+function planView(p: PlanView, continued: boolean): ShieldedPlanView {
   return {
     planId: p.planId,
     kind: p.kind,
@@ -295,8 +299,8 @@ function planView(p: PlanView): ShieldedPlanView {
     exitConfirmed: orNull(p.exitConfirmed),
     strandedExits: p.exitParts.filter((part) => part.stranded).map((part) => part.id),
     relayerStatus: orNull(p.relayerStatus),
-    relayerCode: orNull(p.relayerCode),
-    lastError: p.lastError?.code ?? null,
+    relayerCode: continued ? null : orNull(p.relayerCode),
+    lastError: continued ? null : (p.lastError?.code ?? null),
     mustRetry: p.mustRetry,
     needsUserDecision: p.needsUserDecision,
     retryOf: orNull(p.retryOf),
@@ -329,7 +333,14 @@ async function statusOf(entry: OpenWallet): Promise<ShieldedStatusView> {
       maybeSpent: balance.maybeSpent.toString(),
     },
     deposits: deposits.map(depositView).reverse(),
-    plans: plans.map(planView).sort((a, b) => b.createdAt - a.createdAt),
+    plans: plans
+      .map((p) =>
+        planView(
+          p,
+          plans.some((q) => q.retryOf === p.planId)
+        )
+      )
+      .sort((a, b) => b.createdAt - a.createdAt),
     syncedAt: entry.syncedAt,
     syncError: entry.syncError,
     syncSource: entry.syncSource,
@@ -522,9 +533,11 @@ export async function shieldedShield(
   poolId: string,
   amount: bigint,
   whileSubmitting: boolean,
-  networkFeeCaps: NetworkFeeCaps | undefined
+  networkFeeCaps: NetworkFeeCaps | undefined,
+  budget = DEFAULT_FEE_BUDGET
 ): Promise<ShieldedReceiptView> {
-  const { wallet, signer } = await walletFor(net, publicKey, poolId)
+  const { wallet, signer: account } = await walletFor(net, publicKey, poolId)
+  const signer = budgetSigner(account, budget)
   const before = (await wallet.deposits()).length
   try {
     const receipt = await track(wallet.shield({ amount, signer, whileSubmitting, networkFeeCaps }))
@@ -645,8 +658,10 @@ export async function shieldedSpend(
   )
 }
 
-// A retry the popup's own sheet already showed, the saved payment with the account paying the
-// network fee up to a stated most, goes without the SDK's review; any other is reviewed.
+// A self-relayed retry the popup's own sheet offered goes with the SDK's review answered yes when
+// that review is of the saved payment itself, from the account with no relayer fee, and warns only
+// of what the sheet stated (`shown`, warning codes); any other review goes to the popup. The account
+// pays at most `budget` in network fees over the whole call.
 export async function shieldedRetry(
   net: NetworkConfig,
   publicKey: unknown,
@@ -655,26 +670,38 @@ export async function shieldedRetry(
   planId: string,
   selfRelay: boolean,
   networkFeeCaps: NetworkFeeCaps | undefined,
-  shown: boolean
+  shown?: readonly string[],
+  budget = DEFAULT_FEE_BUDGET
 ): Promise<ShieldedStep> {
   const { wallet, pool, signer } = await walletFor(net, publicKey, poolId)
   const plan = (await wallet.plans()).find((p) => p.planId === planId)
+  if (selfRelay && plan?.kind === 'send') {
+    throw new ShieldedRefusal('relayer_only', 'A private transfer always goes through a relayer.')
+  }
   // The SDK retries a relayed plan through its relayer first, then the others. A self-relayed one
   // it moves to relayers only when they are named.
   const route = selfRelay
-    ? { selfRelay: signer, networkFeeCaps }
+    ? { selfRelay: budgetSigner(signer, budget), networkFeeCaps }
     : plan?.route.kind === 'self'
       ? { relayer: pool.deployment.relayers.map((r) => r.url), maxFee: pool.maxRelayerFee }
       : { maxFee: pool.maxRelayerFee }
-  if (selfRelay && shown) {
-    return startReviewed(holder, () => watchingPlans(wallet, () => wallet.retry(planId, route)))
-  }
+  const stated = selfRelay && Array.isArray(shown) ? shown : null
+  const accepted = (review: SpendReview): boolean =>
+    stated !== null &&
+    plan !== undefined &&
+    review.kind === plan.kind &&
+    review.amount === plan.amount &&
+    review.to === plan.to &&
+    review.relayer === undefined &&
+    review.fee === 0n &&
+    review.warnings.every((w) => stated.includes(w.code))
   const usual =
     selfRelay || !plan ? undefined : await usualFee(wallet, plan.kind, pool.maxRelayerFee)
   return startReviewed(
     holder,
     (confirm) => watchingPlans(wallet, () => wallet.retry(planId, { confirm, ...route })),
-    usual
+    usual,
+    accepted
   )
 }
 
@@ -686,9 +713,11 @@ export async function shieldedAccountAction(
   poolId: string,
   action: 'cancel' | 'refund' | 'claim',
   id: number,
-  networkFeeCaps: NetworkFeeCaps | undefined
+  networkFeeCaps: NetworkFeeCaps | undefined,
+  budget = DEFAULT_FEE_BUDGET
 ): Promise<string> {
-  const { wallet, signer, scope } = await walletFor(net, publicKey, poolId)
+  const { wallet, signer: account, scope } = await walletFor(net, publicKey, poolId)
+  const signer = budgetSigner(account, budget)
   const claimed =
     action === 'claim'
       ? (await wallet.plans()).find((p) => p.exitParts.some((part) => part.id === id))
@@ -734,11 +763,12 @@ export async function shieldedRestorePool(
   net: NetworkConfig,
   publicKey: unknown,
   poolId: string,
-  networkFeeCaps: NetworkFeeCaps | undefined
+  networkFeeCaps: NetworkFeeCaps | undefined,
+  budget = DEFAULT_FEE_BUDGET
 ): Promise<ShieldedRestoreView> {
   const { pool, signer } = await walletFor(net, publicKey, poolId)
   const restore = await track(
-    PrivateWallet.restoreVault(signer, {
+    PrivateWallet.restoreVault(budgetSigner(signer, budget), {
       deployment: pool.name,
       rpcUrl: pool.rpcUrl,
       networkFeeCaps,

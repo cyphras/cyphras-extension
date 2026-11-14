@@ -11,8 +11,8 @@ function callsVault(tx: Transaction, source: string, vault: string): boolean {
 }
 
 // True for a transaction from `source` whose one operation restores archived entries of this
-// deployment alone: the vault's pinned code, the vault's own entries, and entries of its asset
-// contract, as the SDK restores before a vault call or for a restore of the pool.
+// deployment alone: the vault's pinned code, the vault's own entries, and its asset contract's
+// instance and balances, as the SDK restores before a vault call or for a restore of the pool.
 function restoresVault(tx: Transaction, source: string, deployment: Deployment): boolean {
   if (tx.source !== source || tx.operations.length !== 1) return false
   if (tx.operations[0].type !== 'restoreFootprint') return false
@@ -28,8 +28,14 @@ function restoresVault(tx: Transaction, source: string, deployment: Deployment):
       return hash.join('') === deployment.vaultWasmHash
     }
     if (kind !== 'contractData') return false
-    const contract = Address.fromScAddress(key.contractData().contract()).toString()
-    return contract === deployment.vault || contract === deployment.asset.contract
+    const data = key.contractData()
+    const contract = Address.fromScAddress(data.contract()).toString()
+    if (contract === deployment.vault) return true
+    if (contract !== deployment.asset.contract) return false
+    const k = data.key()
+    if (k.switch().name === 'scvLedgerKeyContractInstance') return true
+    const first = k.switch().name === 'scvVec' ? k.vec()?.[0] : undefined
+    return first?.switch().name === 'scvSymbol' && first.sym().toString() === 'Balance'
   })
 }
 

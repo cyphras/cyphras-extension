@@ -1,6 +1,7 @@
 import type { ConfirmSpend, SpendReview, Submission } from '@cyphras/private'
 import { SHIELDED_REVIEW_PORT } from '@constants/services'
 import type { ShieldedReviewView, ShieldedStep } from '@ext-types/index'
+import { dropGrants } from './approvals'
 import { ShieldedRefusal } from './errors'
 
 // A review holds the account's other private operations until the user answers it, so one left
@@ -60,11 +61,13 @@ export function reviewView(
 // Starts a spend whose confirmations go to the popup holding `holder`, settling with its first
 // review or with its result when it ends before asking. A relayer that raises its fee after a
 // review makes the SDK ask again, so deciding one review can yield another, about a plan it
-// already saved.
+// already saved. A review `accepted` says the user already saw, in the sheet that started the
+// spend, is answered yes without showing it again; any other goes to the popup.
 export function startReviewed(
   holder: string,
   spend: (confirm: ConfirmSpend) => Promise<Submission>,
-  usual?: bigint
+  usual?: bigint,
+  accepted?: (review: SpendReview) => boolean
 ): Promise<ShieldedStep> {
   let settle: { resolve: (step: ShieldedStep) => void; reject: (err: unknown) => void }
   const nextStep = () =>
@@ -79,6 +82,10 @@ export function startReviewed(
       // A lock since the spend started, or a popup that is gone, declines it before it is shown.
       if (generation !== started || !holders.has(holder)) {
         answer(false)
+        return
+      }
+      if (accepted?.(review)) {
+        answer(true)
         return
       }
       const reviewId = crypto.randomUUID()
@@ -139,5 +146,6 @@ export function watchReviewPort(port: chrome.runtime.Port): boolean {
 
 export function declineAllReviews(): void {
   generation++
+  dropGrants()
   for (const review of [...open.values()]) review.decline()
 }

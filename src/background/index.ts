@@ -155,9 +155,16 @@ import {
   shieldedStatus,
   shieldedSync,
 } from './shielded/wallet'
-import { isKeyDerivationMessage, type NetworkFeeCaps } from '@cyphras/private'
-import { ShieldedRefusal, errorView } from './shielded/errors'
-import { feeApprovalCaps } from './shielded/fees'
+import { isKeyDerivationMessage } from '@cyphras/private'
+import {
+  dropGrants,
+  issueGrant,
+  takeGrant,
+  type FeeCall,
+  type FeeGrant,
+} from './shielded/approvals'
+import { errorView } from './shielded/errors'
+import { DEFAULT_FEE_BUDGET, grantBudget, grantCaps } from './shielded/fees'
 import { watchReviewPort } from './shielded/reviews'
 import { acceptProverPort } from './shielded/prover'
 import {
@@ -452,18 +459,62 @@ function shieldedFailure(err: unknown): ServiceResponse {
   return { error: view.message, shieldedError: view }
 }
 
-// The caps of a fee review the user approved for this one transaction. A request without one pays
-// at most the default caps; one with an approval that is not well formed runs nothing.
-function approvedFeeCaps(approval: unknown): NetworkFeeCaps | undefined {
-  if (approval === undefined) return undefined
-  const caps = feeApprovalCaps(approval)
-  if (!caps) {
-    throw new ShieldedRefusal(
-      'invalid_fee_approval',
-      'That fee approval is not valid, so nothing was sent.'
-    )
+// What a self-paid transaction may need from the user: a fee above the default caps opens an offer
+// for that call alone, with caps from the fee and the most the call may pay; a relayer that did not
+// send a withdrawal opens an offer to submit it from the account at the default fee. Each offer is
+// bound to the call, its target, the account and the network the request named, and the sheet that
+// shows it states that paying from the account links it to the withdrawal.
+const LINKS_ACCOUNT = 'self_relay_links_account'
+
+function shieldedOffer(
+  err: unknown,
+  call: FeeCall,
+  target: string | undefined,
+  message: { publicKey?: unknown; networkId?: unknown }
+): ServiceResponse {
+  const response = shieldedFailure(err)
+  const view = response.shieldedError
+  const scope = { account: String(message.publicKey), network: String(message.networkId) }
+  const retry = call === 'retry'
+  const on = retry ? view?.planId : target
+  if (view?.fee && on !== undefined) {
+    const ceiling = BigInt(view.fee.ceiling)
+    const most = grantBudget(view.fee.reason, ceiling, call === 'restore')
+    view.fee = {
+      ...view.fee,
+      most: most.toString(),
+      approval: issueGrant({
+        call,
+        target: on,
+        ...scope,
+        caps: grantCaps(view.fee.reason, BigInt(view.fee.inclusionCap), ceiling),
+        budget: most,
+        warnings: retry ? [LINKS_ACCOUNT] : [],
+      }),
+    }
   }
-  return caps
+  if (view?.refusal && view.planId) {
+    view.selfPay = issueGrant({
+      call: 'retry',
+      target: view.planId,
+      ...scope,
+      caps: undefined,
+      budget: DEFAULT_FEE_BUDGET,
+      warnings: [LINKS_ACCOUNT],
+    })
+  }
+  return response
+}
+
+// The offer a request accepts, if it names one; refused unless it is open and for this very call.
+function grantFor(
+  approval: unknown,
+  call: FeeCall,
+  target: string,
+  message: { publicKey?: unknown; networkId?: unknown }
+): FeeGrant | undefined {
+  if (approval === undefined) return undefined
+  return takeGrant(approval, call, target, message.publicKey, message.networkId)
 }
 
 // A payment cannot create an unfunded destination, so a never-funded account is created with XLM
@@ -3164,6 +3215,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
     }
 
     case SERVICE_TYPES.SET_ACTIVE_NETWORK: {
+      dropGrants()
       if (!message.networkId) {
         sendResponse({ error: 'Network ID required' })
         return
@@ -3387,18 +3439,19 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        const caps = approvedFeeCaps(m.feeApproval)
+        const grant = grantFor(m.feeApproval, 'shield', m.amount, message)
         const receipt = await shieldedShield(
           net,
           message.publicKey,
           m.poolId,
           BigInt(m.amount),
           m.whileSubmitting === true,
-          caps
+          grant?.caps,
+          grant?.budget
         )
         sendResponse({ shieldedReceipt: receipt })
       } catch (err) {
-        sendResponse(shieldedFailure(err))
+        sendResponse(shieldedOffer(err, 'shield', m.amount, message))
       }
       break
     }
@@ -3521,7 +3574,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         })
         sendResponse({ shieldedStep: step })
       } catch (err) {
-        sendResponse(shieldedFailure(err))
+        sendResponse(shieldedOffer(err, 'retry', undefined, message))
       }
       break
     }
@@ -3533,7 +3586,6 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         planId?: string
         selfRelay?: boolean
         feeApproval?: unknown
-        shown?: boolean
       }
       if (
         !isNonEmptyString(m.poolId) ||
@@ -3545,20 +3597,21 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        const caps = approvedFeeCaps(m.feeApproval)
+        const grant = grantFor(m.feeApproval, 'retry', m.planId, message)
         const step = await shieldedRetry(
           net,
           message.publicKey,
           m.poolId,
           m.holder,
           m.planId,
-          m.selfRelay === true,
-          caps,
-          m.shown === true
+          m.selfRelay === true || grant !== undefined,
+          grant?.caps,
+          grant?.warnings,
+          grant?.budget
         )
         sendResponse({ shieldedStep: step })
       } catch (err) {
-        sendResponse(shieldedFailure(err))
+        sendResponse(shieldedOffer(err, 'retry', undefined, message))
       }
       break
     }
@@ -3584,12 +3637,20 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
             : 'claim'
       try {
         const net = await getShieldedNetwork(message.networkId)
-        const caps = approvedFeeCaps(m.feeApproval)
+        const grant = grantFor(m.feeApproval, action, String(m.id), message)
         sendResponse({
-          txHash: await shieldedAccountAction(net, message.publicKey, m.poolId, action, m.id, caps),
+          txHash: await shieldedAccountAction(
+            net,
+            message.publicKey,
+            m.poolId,
+            action,
+            m.id,
+            grant?.caps,
+            grant?.budget
+          ),
         })
       } catch (err) {
-        sendResponse(shieldedFailure(err))
+        sendResponse(shieldedOffer(err, action, String(m.id), message))
       }
       break
     }
@@ -3602,12 +3663,18 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
-        const caps = approvedFeeCaps(m.feeApproval)
+        const grant = grantFor(m.feeApproval, 'restore', m.poolId, message)
         sendResponse({
-          shieldedRestore: await shieldedRestorePool(net, message.publicKey, m.poolId, caps),
+          shieldedRestore: await shieldedRestorePool(
+            net,
+            message.publicKey,
+            m.poolId,
+            grant?.caps,
+            grant?.budget
+          ),
         })
       } catch (err) {
-        sendResponse(shieldedFailure(err))
+        sendResponse(shieldedOffer(err, 'restore', m.poolId, message))
       }
       break
     }
@@ -3624,7 +3691,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
           shieldedStep: await shieldedDecide(message.publicKey, m.reviewId, m.approve),
         })
       } catch (err) {
-        sendResponse(shieldedFailure(err))
+        sendResponse(shieldedOffer(err, 'retry', undefined, message))
       }
       break
     }
@@ -4034,6 +4101,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
     }
 
     case SERVICE_TYPES.SWITCH_ACCOUNT: {
+      dropGrants()
       const switchPubkey = message.publicKey as string | undefined
       const store = await getAccountsStore()
       const target = switchPubkey

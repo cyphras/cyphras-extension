@@ -72,6 +72,7 @@ function feeView(d: Details): ShieldedFeeView | undefined {
     total,
     inclusionCap: caps.inclusionCap.toString(),
     ceiling: caps.ceiling.toString(),
+    most: caps.ceiling.toString(),
     entries,
   }
 }
@@ -108,7 +109,7 @@ function feeAboveCapMessage(d: Details): string {
     return 'The network fee is above what this wallet pays without asking.'
   }
   if (d.queued === true) {
-    return `The pool has a queue today, so the relayer asks ${xlm(d.fee)}, more than the ${xlm(d.cap)} this wallet allows. Nothing was sent.`
+    return `The pool has a queue today, so the relayer asks ${xlm(d.fee)}, more than the ${xlm(d.cap)} this wallet allows.${typeof d.planId === 'string' ? '' : ' Nothing was sent.'}`
   }
   if (d.fee !== undefined) {
     return `The relayer asks ${xlm(d.fee)}, above the ${xlm(d.cap)} this wallet allows.`
@@ -150,7 +151,7 @@ function transactionFailedMessage(d: Details, fallback: string): string {
     return 'Other deposits kept landing first, so this one did not go through. Try again.'
   }
   if (d.archived === true) {
-    return "The pool's data moved into storage while this was sent, so it did not go through. Try again."
+    return "The pool's data moved into storage while this was sent, so the network refused it."
   }
   if (d.secondProvider === 'no_diagnostics') {
     return 'The second RPC gave no diagnostics, so the outcome is unknown. Try another provider.'
@@ -209,7 +210,7 @@ function sdkMessage(err: CyphrasError): string {
     case 'needs_consolidation':
       return 'No two of your private notes cover this amount. Try a smaller amount.'
     case 'notes_refused':
-      return 'The pool refused the notes this payment needs before, as already spent elsewhere, so nothing was sent. The next sync may clear them; until then try a smaller amount, or send it through a relayer.'
+      return 'Earlier payments with the notes this one needs were refused as already spent elsewhere, so nothing was sent. The next sync may clear this; until then try a smaller amount, or send it through a relayer.'
     case 'fee_above_cap':
       return feeAboveCapMessage(d)
     case 'fee_above_limit':
@@ -232,7 +233,9 @@ function sdkMessage(err: CyphrasError): string {
     case 'destination_is_issuer':
       return "That address is the asset's issuer, which would burn the payout."
     case 'signer_mismatch':
-      return 'The transaction could not be signed.'
+      return d.feeBudget === true
+        ? 'The network fees of this would go past the most you were shown, so nothing more was sent. Try again to see the fee.'
+        : 'The transaction could not be signed.'
     case 'signer_rejected':
       return 'Signing was declined, so nothing was sent.'
     case 'transaction_failed':
@@ -257,6 +260,8 @@ function waitsForUser(err: CyphrasError): boolean {
     case 'fee_above_limit':
     case 'restore_failed':
       return true
+    case 'signer_mismatch':
+      return err.details.feeBudget === true
     case 'fee_above_cap':
       return err.details.reason !== undefined
     case 'service_rejected':
@@ -297,7 +302,12 @@ function cyphrasView(err: CyphrasError): ShieldedErrorView {
 
 export function errorView(err: unknown): ShieldedErrorView {
   if (err instanceof MayStillLand) {
-    if (err.cause instanceof CyphrasError && waitsForUser(err.cause)) {
+    // A saved payment that waits on the user cannot land; a deposit that was sent still may.
+    if (
+      err.cause instanceof CyphrasError &&
+      typeof err.cause.details.planId === 'string' &&
+      waitsForUser(err.cause)
+    ) {
       return cyphrasView(err.cause)
     }
     const view = errorView(err.cause)
