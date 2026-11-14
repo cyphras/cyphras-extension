@@ -25,7 +25,22 @@ let generation = 0
 // with the plan a repriced spend already saved, rather than a fresh start.
 const closed = new Map<string, Promise<ShieldedStep>>()
 
-function reviewView(reviewId: string, review: SpendReview, repriced: boolean): ShieldedReviewView {
+// SDK warnings whose text names the vault, in the words the wallet uses for it.
+const WARNING_TEXT: Readonly<Record<string, string>> = {
+  exit_will_queue:
+    "The pool's daily payout limit is used up or its queue is not empty, so this payout waits in the queue.",
+}
+
+// `usual` is the relayer's fee for a payment the pool does not queue, beside which a queued fee is
+// shown; unknown when its quote could not be read.
+export function reviewView(
+  reviewId: string,
+  review: SpendReview,
+  repriced: boolean,
+  usual: bigint | undefined
+): ShieldedReviewView {
+  const queued =
+    review.queued && review.relayer !== undefined && usual !== undefined && review.fee > usual
   return {
     reviewId,
     kind: review.kind,
@@ -34,7 +49,11 @@ function reviewView(reviewId: string, review: SpendReview, repriced: boolean): S
     to: review.to,
     selfRelay: review.relayer === undefined,
     repriced,
-    warnings: review.warnings.map((w) => ({ code: w.code, message: w.message })),
+    queued: queued ? { usual: usual.toString() } : null,
+    warnings: review.warnings.map((w) => ({
+      code: w.code,
+      message: WARNING_TEXT[w.code] ?? w.message,
+    })),
   }
 }
 
@@ -44,7 +63,8 @@ function reviewView(reviewId: string, review: SpendReview, repriced: boolean): S
 // already saved.
 export function startReviewed(
   holder: string,
-  spend: (confirm: ConfirmSpend) => Promise<Submission>
+  spend: (confirm: ConfirmSpend) => Promise<Submission>,
+  usual?: bigint
 ): Promise<ShieldedStep> {
   let settle: { resolve: (step: ShieldedStep) => void; reject: (err: unknown) => void }
   const nextStep = () =>
@@ -77,7 +97,10 @@ export function startReviewed(
       }
       const timer = setTimeout(decline, REVIEW_TIMEOUT_MS)
       open.set(reviewId, { holder, decide, decline })
-      settle.resolve({ kind: 'review', review: reviewView(reviewId, review, reviews++ > 0) })
+      settle.resolve({
+        kind: 'review',
+        review: reviewView(reviewId, review, reviews++ > 0, usual),
+      })
     })
   spend(confirm).then(
     (s) =>

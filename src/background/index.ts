@@ -147,6 +147,7 @@ import {
   shieldedLimits,
   shieldedQuote,
   shieldedReceiveAddress,
+  shieldedRestorePool,
   shieldedRetry,
   shieldedShield,
   shieldedSpend,
@@ -154,8 +155,9 @@ import {
   shieldedStatus,
   shieldedSync,
 } from './shielded/wallet'
-import { isKeyDerivationMessage } from '@cyphras/private'
-import { errorView } from './shielded/errors'
+import { isKeyDerivationMessage, type NetworkFeeCaps } from '@cyphras/private'
+import { ShieldedRefusal, errorView } from './shielded/errors'
+import { feeApprovalCaps } from './shielded/fees'
 import { watchReviewPort } from './shielded/reviews'
 import { acceptProverPort } from './shielded/prover'
 import {
@@ -448,6 +450,20 @@ async function requireUnlockedAndAllowed(
 function shieldedFailure(err: unknown): ServiceResponse {
   const view = errorView(err)
   return { error: view.message, shieldedError: view }
+}
+
+// The caps of a fee review the user approved for this one transaction. A request without one pays
+// at most the default caps; one with an approval that is not well formed runs nothing.
+function approvedFeeCaps(approval: unknown): NetworkFeeCaps | undefined {
+  if (approval === undefined) return undefined
+  const caps = feeApprovalCaps(approval)
+  if (!caps) {
+    throw new ShieldedRefusal(
+      'invalid_fee_approval',
+      'That fee approval is not valid, so nothing was sent.'
+    )
+  }
+  return caps
 }
 
 // A payment cannot create an unfunded destination, so a never-funded account is created with XLM
@@ -3359,6 +3375,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         poolId?: string
         amount?: string
         whileSubmitting?: boolean
+        feeApproval?: unknown
       }
       if (!isNonEmptyString(m.poolId)) {
         sendResponse({ error: 'poolId is required' })
@@ -3370,12 +3387,14 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
+        const caps = approvedFeeCaps(m.feeApproval)
         const receipt = await shieldedShield(
           net,
           message.publicKey,
           m.poolId,
           BigInt(m.amount),
-          m.whileSubmitting === true
+          m.whileSubmitting === true,
+          caps
         )
         sendResponse({ shieldedReceipt: receipt })
       } catch (err) {
@@ -3513,6 +3532,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         holder?: string
         planId?: string
         selfRelay?: boolean
+        feeApproval?: unknown
+        shown?: boolean
       }
       if (
         !isNonEmptyString(m.poolId) ||
@@ -3524,13 +3545,16 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
+        const caps = approvedFeeCaps(m.feeApproval)
         const step = await shieldedRetry(
           net,
           message.publicKey,
           m.poolId,
           m.holder,
           m.planId,
-          m.selfRelay === true
+          m.selfRelay === true,
+          caps,
+          m.shown === true
         )
         sendResponse({ shieldedStep: step })
       } catch (err) {
@@ -3542,7 +3566,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
     case SERVICE_TYPES.SHIELDED_CANCEL:
     case SERVICE_TYPES.SHIELDED_REFUND:
     case SERVICE_TYPES.SHIELDED_CLAIM: {
-      const m = message as unknown as { poolId?: string; id?: number }
+      const m = message as unknown as { poolId?: string; id?: number; feeApproval?: unknown }
       if (
         !isNonEmptyString(m.poolId) ||
         typeof m.id !== 'number' ||
@@ -3560,8 +3584,27 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
             : 'claim'
       try {
         const net = await getShieldedNetwork(message.networkId)
+        const caps = approvedFeeCaps(m.feeApproval)
         sendResponse({
-          txHash: await shieldedAccountAction(net, message.publicKey, m.poolId, action, m.id),
+          txHash: await shieldedAccountAction(net, message.publicKey, m.poolId, action, m.id, caps),
+        })
+      } catch (err) {
+        sendResponse(shieldedFailure(err))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_RESTORE: {
+      const m = message as unknown as { poolId?: string; feeApproval?: unknown }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      try {
+        const net = await getShieldedNetwork(message.networkId)
+        const caps = approvedFeeCaps(m.feeApproval)
+        sendResponse({
+          shieldedRestore: await shieldedRestorePool(net, message.publicKey, m.poolId, caps),
         })
       } catch (err) {
         sendResponse(shieldedFailure(err))

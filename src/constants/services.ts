@@ -55,6 +55,8 @@ export const SERVICE_TYPES = {
   EVM_TX_STATUS: 'EVM_TX_STATUS',
   // Private mode: each request carries its page's ShieldedScope and a poolId (optional for
   // RECEIVE_ADDRESS); sends, unshields and retries return a review that SHIELDED_DECIDE answers.
+  // A transaction the account submits itself may carry a feeApproval, the fee review the user
+  // approved for that one transaction.
   SHIELDED_RECEIVE_ADDRESS: 'SHIELDED_RECEIVE_ADDRESS',
   SHIELDED_STATUS: 'SHIELDED_STATUS',
   SHIELDED_SYNC: 'SHIELDED_SYNC',
@@ -77,6 +79,8 @@ export const SERVICE_TYPES = {
   SHIELDED_CANCEL: 'SHIELDED_CANCEL',
   SHIELDED_REFUND: 'SHIELDED_REFUND',
   SHIELDED_CLAIM: 'SHIELDED_CLAIM',
+  // The account pays to bring the pool's archived entries back, for every user of the pool.
+  SHIELDED_RESTORE: 'SHIELDED_RESTORE',
   // CCTP cross-chain USDC bridge (Stellar <-> Ethereum)
   CCTP_QUOTE: 'CCTP_QUOTE',
   CCTP_START: 'CCTP_START',
