@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import { EyeOff, Lock, ShieldCheck } from 'lucide-react'
+import { ListChecks, ReceiptText, RotateCcw } from 'lucide-react'
 import { BottomSheet } from '@/components/BottomSheet'
 import { Button } from '@/components/ui/button'
 
@@ -9,19 +9,19 @@ const ITEMS: {
   body: string
 }[] = [
   {
-    icon: EyeOff,
-    title: 'Private payments on mainnet',
-    body: 'Shield XLM and pay cy1 addresses. Experimental, with deposit limits.',
+    icon: ReceiptText,
+    title: 'Fee review',
+    body: 'When the network fee is high, you see it and the most you will pay first.',
   },
   {
-    icon: ShieldCheck,
-    title: 'Public trusted setup',
-    body: 'Mainnet proofs use a key from an open ceremony with three contributors.',
+    icon: RotateCcw,
+    title: 'Restore the pool',
+    body: 'Bring the pool data back yourself if it drops out of storage, under Advanced.',
   },
   {
-    icon: Lock,
-    title: 'Network and account checks',
-    body: 'A private payment only runs on the network and account on your screen.',
+    icon: ListChecks,
+    title: 'Clearer private activity',
+    body: 'One row per payment, and plain words when a relayer does not send it.',
   },
 ]
 
