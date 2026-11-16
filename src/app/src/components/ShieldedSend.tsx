@@ -9,6 +9,12 @@ import { AddressAvatar } from '@/components/AddressAvatar'
 import { RecipientRow } from '@/components/RecipientRow'
 import { RecipientStepPage, SuggestionRow, SuggestionSection } from '@/components/SendRecipientStep'
 import {
+  FeeReviewBody,
+  OpenPaymentBody,
+  PoolRestore,
+  RefusalBody,
+} from '@/components/ShieldedFeeSheets'
+import {
   AddressValue,
   CopyValue,
   DetailRow,
@@ -33,11 +39,40 @@ import {
 } from '@/lib/amount'
 import { shortAddress } from '@/lib/address'
 import { trimZeros, stroopsToXlm } from '@/lib/historyUtils'
-import { depositStatus, planStatus, routeText, type ItemStatus } from '@/lib/privateActivity'
+import {
+  depositStatus,
+  planStatus,
+  routeText,
+  unfinishedSendTo,
+  type ItemStatus,
+} from '@/lib/privateActivity'
+import {
+  FEE_REVIEW_TIMEOUT_MS,
+  OFFER_EXPIRED,
+  refusalExpired,
+  feeTitle,
+  FEE_TOO_LARGE_NOTE,
+  NETWORK_FEE_CAP_STROOPS,
+  NETWORK_FEE_CAP_XLM,
+  OPEN_PAYMENT,
+  RELAY_KEEPS_FAILING,
+  blockedLook,
+  RESTORE_NOT_SENT,
+  REVIEW_TIMED_OUT,
+  dropOffer,
+  STAYS_PENDING,
+  EARLIER_MAY_LAND,
+  waitingNote,
+  queuedCapHint,
+  queuedNote,
+  refusalCopy,
+} from '@/lib/privateFees'
 import { SERVICE_TYPES, SHIELDED_REVIEW_PORT } from '@constants/services'
 import type {
   ServiceResponse,
   ShieldedDepositView,
+  ShieldedErrorView,
+  ShieldedFeeView,
   ShieldedLimitsView,
   ShieldedPlanView,
   ShieldedQuoteView,
@@ -52,8 +87,10 @@ export type ShieldedAction = 'send' | 'shield' | 'unshield'
 
 interface ShieldedSendProps {
   action: ShieldedAction | null
-  // A stalled payment to pay again with its own notes, never with new ones.
+  // A stalled payment to pay again with its own notes, never with new ones, and whether its retry
+  // starts self-relayed.
   retryPlan: ShieldedPlanView | null
+  retrySelfRelay?: boolean
   status: ShieldedStatusView | null
   poolId: string
   assetLabel: string
@@ -66,6 +103,8 @@ interface ShieldedSendProps {
   publicBalance?: string | null
   subentryCount?: number
   onChangeAsset?: () => void
+  // Opens the retry of a payment that is still pending, in place of a new one.
+  onOpenPlan: (plan: ShieldedPlanView) => void
   onHistory: () => void
   onClose: () => void
   onDone: () => void
@@ -84,13 +123,67 @@ type Step =
   | { kind: 'submitted'; planId: string; txHash: string | null; fee: string }
   // A deposit or payment failed in a way that may still let it land; a saved payment says which.
   | { kind: 'stopped'; message: string; planId?: string }
+  // A network fee above what the wallet pays without asking, for the shield or the self-relayed
+  // retry of a saved payment; approved names the most approved before the fee changed.
+  | FeeStep
+  // The relayer did not send a saved payment; its relayer fee in stroops, when known.
+  | RefusedStep
+  // A payment to the same destination may still land; for a private send the user may still send
+  // another one.
+  | { kind: 'open'; planId: string; send: boolean }
+  // A fee review of a saved payment was declined: nothing was sent and it waits.
+  | { kind: 'waiting'; planId: string; timedOut: boolean; earlier: boolean }
+  // Nothing was sent and nothing can be approved now: the fee is above what one transaction
+  // carries, or the restore before it failed on chain.
+  | {
+      kind: 'blocked'
+      code: string
+      message: string
+      planId?: string
+      hash?: string
+      // The relayer's refusal the user answered by paying from the account, when one did.
+      refusal?: 'network_fee_high' | 'restore_needed'
+      // An older attempt of the payment may still land.
+      earlier?: boolean
+    }
 
-type ResultStep = Extract<Step, { kind: 'shielded' | 'submitted' | 'stopped' }>
+interface FeeStep {
+  kind: 'fee'
+  fee: ShieldedFeeView
+  target: { kind: 'shield' } | { kind: 'retry'; planId: string }
+  approved: string | null
+  working: boolean
+  // An older attempt of the payment may still land.
+  earlier: boolean
+}
 
-// The confirm sheet: a shield to approve, a payment's review, or its outcome.
+interface RefusedStep {
+  kind: 'refused'
+  // The background's offer to submit the withdrawal from the account; absent for a send. It is
+  // shown as expired once the popup's review time for it ends.
+  selfPay: string | undefined
+  expired: boolean
+  refusal: 'network_fee_high' | 'restore_needed'
+  planId: string
+  fee: string | null
+  working: boolean
+  // An older attempt of the payment may still land.
+  earlier: boolean
+}
+
+type ResultStep = Extract<
+  Step,
+  { kind: 'shielded' | 'submitted' | 'stopped' | 'waiting' | 'blocked' }
+>
+
+// The confirm sheet: a shield to approve, a payment's review, a fee to review, a relayer's refusal,
+// a payment already pending, or its outcome.
 type SheetView =
   | { kind: 'shield' }
   | { kind: 'spend'; review: ShieldedReviewView }
+  | { kind: 'fee'; step: FeeStep }
+  | { kind: 'refused'; step: RefusedStep }
+  | { kind: 'open'; planId: string; send: boolean }
   | { kind: 'result'; step: ResultStep }
 
 const TITLES: Record<ShieldedAction, string> = {
@@ -105,12 +198,10 @@ const AMOUNT_LABELS: Record<ShieldedAction, string> = {
   unshield: 'You unshield',
 }
 
-// The most a transaction the account submits itself may pay the network: the SDK's caps of
-// 0.01 XLM to get included and 1 XLM of resources. Shield Max keeps it back, with the account's
-// minimum balance.
-const NETWORK_FEE_CAP_STROOPS = 10_100_000n
+// Shield Max keeps back the most a transaction the account submits itself pays the network
+// without asking, with the account's minimum balance.
 const BASE_RESERVE_STROOPS = 5_000_000n
-const NETWORK_FEE_CAP = `Up to ${formatUnits(NETWORK_FEE_CAP_STROOPS, 7)} XLM, from your account`
+const NETWORK_FEE_CAP = `Up to ${NETWORK_FEE_CAP_XLM} XLM, from your account`
 
 // Destinations an unshield can pay: an account, a muxed account or a contract.
 const STELLAR_DESTINATION = /^([GC][A-Z2-7]{55}|M[A-Z2-7]{68})$/
@@ -123,7 +214,14 @@ const CLOCK_SKEW_MS = 60_000
 // before it failed, or the extension restarted while it ran. planId names a saved payment.
 type Reply<T> =
   | { ok: true; value: T }
-  | { ok: false; error: string; code?: string; mayLand: boolean; planId?: string }
+  | {
+      ok: false
+      error: string
+      code?: string
+      mayLand: boolean
+      planId?: string
+      view?: ShieldedErrorView
+    }
 
 function ask<T>(
   scope: ShieldedScope,
@@ -151,9 +249,29 @@ function ask<T>(
         code: r?.shieldedError?.code,
         mayLand: r?.shieldedError?.mayLand === true,
         planId: r?.shieldedError?.planId,
+        view: r?.shieldedError,
       })
     })
   })
+}
+
+// What a "Not sent" result adds under its message, each pointing only at what Private activity
+// then offers for the payment.
+function blockedNote(
+  code: string,
+  saved: boolean,
+  refusal: 'network_fee_high' | 'restore_needed' | undefined
+): string {
+  switch (code) {
+    case 'invalid_fee_approval':
+      return refusal ? refusalExpired(refusal) : OFFER_EXPIRED
+    case 'fee_above_limit':
+      return `${FEE_TOO_LARGE_NOTE}${saved ? ` ${STAYS_PENDING}` : ''}`
+    case 'restore_failed':
+      return saved ? RESTORE_NOT_SENT : ''
+    default:
+      return ''
+  }
 }
 
 // The pool's admission delays are minutes on testnet and can be hours elsewhere.
@@ -179,6 +297,7 @@ function depositHero(d: ShieldedDepositView): 'pending' | 'success' | 'failed' {
 export default function ShieldedSend({
   action,
   retryPlan,
+  retrySelfRelay = false,
   status,
   poolId,
   assetLabel,
@@ -191,6 +310,7 @@ export default function ShieldedSend({
   publicBalance = null,
   subentryCount = 0,
   onChangeAsset,
+  onOpenPlan,
   onHistory,
   onClose,
   onDone,
@@ -226,6 +346,20 @@ export default function ShieldedSend({
   stepKindRef.current = step.kind
   // When the current deposit or payment began, to tell its saved payment from older ones.
   const flowStartRef = useRef(0)
+  // The most the user approved in the fee review just answered, so a fee that rose past it is
+  // shown as changed; any other start of a request forgets it.
+  const approvedRef = useRef<string | null>(null)
+  // The saved payment a fee approval or a self-paid retry continues: whatever becomes of the
+  // request, the user lands on a result or a review of it, never back on an empty form.
+  const heldRef = useRef<string | null>(null)
+  const heldRefusalRef = useRef<'network_fee_high' | 'restore_needed' | null>(null)
+  // Whether an older attempt of that payment may still land, as the sheet that started it said.
+  const heldEarlierRef = useRef(false)
+  // The most the user approved for the self-relayed retry in progress, which a review the SDK then
+  // asks shows in place of the default.
+  const flowMostRef = useRef<string | null>(null)
+  // The user chose to send another private payment beside an unfinished one to the same address.
+  const sendAnotherRef = useRef(false)
   const stellarChain = useStellarChain()
   const { accounts } = useWallet()
   const { activeNetwork } = useNetwork()
@@ -255,7 +389,11 @@ export default function ShieldedSend({
 
   // Proving and submitting go on in the background whatever the page does, so the page stays
   // until they report back rather than lose their result.
-  const busy = step.kind === 'preparing' || step.kind === 'working' || step.kind === 'cancelling'
+  const busy =
+    step.kind === 'preparing' ||
+    step.kind === 'working' ||
+    step.kind === 'cancelling' ||
+    ((step.kind === 'fee' || step.kind === 'refused') && step.working)
 
   const close = useCallback(() => {
     if (busy) return
@@ -280,23 +418,91 @@ export default function ShieldedSend({
   }, [step.kind, poolId])
 
   // A review comes back from the background either as the first step of a spend or after a
-  // relayer raised its fee; anything else ends the spend. The end of a spend whose answered review
-  // was repriced is never a fresh start, since that payment is saved and may still land.
+  // relayer raised its fee; anything else ends the spend. A saved payment that waits on the user,
+  // for a fee to approve or a relayer's refusal, goes on only through a retry of its plan. The end
+  // of a spend whose answered review was repriced is never a fresh start, since that payment is
+  // saved and may still land.
   const followStep = useCallback(
     (reply: Reply<ShieldedStep>) => {
       const answered = lastReviewRef.current
+      const approved = approvedRef.current
+      approvedRef.current = null
+      const held = heldRef.current
+      const heldRefusal = heldRefusalRef.current
+      const heldEarlier = heldEarlierRef.current
       if (!reply.ok || reply.value.kind !== 'review') {
         lastReviewRef.current = null
+        heldRef.current = null
+        heldRefusalRef.current = null
+        heldEarlierRef.current = false
         releaseFlow()
       }
       if (!reply.ok) {
-        if (reply.mayLand || answered?.repriced) {
-          setStep({ kind: 'stopped', message: reply.error, planId: reply.planId })
-          onDone()
-          return
+        const view = reply.view
+        const planId = view?.planId
+        if (view?.fee && planId) {
+          setStep({
+            kind: 'fee',
+            fee: view.fee,
+            target: { kind: 'retry', planId },
+            approved,
+            working: false,
+            earlier: view.earlierMayLand === true,
+          })
+        } else if (view?.refusal && planId) {
+          setStep({
+            kind: 'refused',
+            refusal: view.refusal,
+            selfPay: view.selfPay,
+            expired: false,
+            planId,
+            fee: answered && !answered.selfRelay ? answered.fee : null,
+            working: false,
+            earlier: view.earlierMayLand === true,
+          })
+        } else if (view?.openPlanId) {
+          setStep({ kind: 'open', planId: view.openPlanId, send: false })
+        } else if (planId && !reply.mayLand && view) {
+          setStep({
+            kind: 'blocked',
+            code: view.code,
+            message: reply.error,
+            planId,
+            hash: view.hash,
+            earlier: view.earlierMayLand === true,
+          })
+        } else if (reply.mayLand || answered?.repriced) {
+          // A relayed withdrawal retried after a stall that the relayer refuses again may go
+          // through when the account submits it.
+          const refusedAgain =
+            reply.code === 'service_rejected' &&
+            retryPlan?.kind === 'unshield' &&
+            answered?.selfRelay === false
+          setStep({
+            kind: 'stopped',
+            message: refusedAgain ? `${reply.error} ${RELAY_KEEPS_FAILING}` : reply.error,
+            planId: reply.planId,
+          })
+        } else if (held) {
+          setStep({
+            kind: 'blocked',
+            code: reply.code ?? 'unexpected',
+            message:
+              reply.code === 'not_confirmed'
+                ? `${heldEarlier ? `${EARLIER_MAY_LAND} This attempt was not sent.` : 'Nothing was sent.'} The payment waits in Private activity, where its retry spends the same notes.`
+                : reply.error,
+            planId: held,
+            refusal: heldRefusal ?? undefined,
+            earlier: heldEarlier,
+          })
+        } else {
+          if (reply.code !== 'not_confirmed') {
+            const kind = retryPlan?.kind ?? (a === 'send' || a === 'unshield' ? a : null)
+            const hint = view?.queued && kind ? queuedCapHint(kind) : ''
+            setError(reply.error + hint)
+          }
+          setStep({ kind: retryPlan ? 'retry' : 'form' })
         }
-        if (reply.code !== 'not_confirmed') setError(reply.error)
-        setStep({ kind: retryPlan ? 'retry' : 'form' })
         onDone()
         return
       }
@@ -309,7 +515,7 @@ export default function ShieldedSend({
       setStep({ kind: 'submitted', planId, txHash, fee })
       onDone()
     },
-    [onDone, retryPlan, releaseFlow]
+    [onDone, retryPlan, releaseFlow, a]
   )
 
   // Opens the port for a new payment and returns the token its request carries. The port drops
@@ -348,12 +554,17 @@ export default function ShieldedSend({
     setRecipient(retryPlan?.to ?? '')
     setStage(retryPlan || action === 'shield' ? 'form' : 'recipient')
     setAmount(retryPlan ? formatUnits(retryPlan.amount, decimals) : '')
-    setSelfRelay(retryPlan?.route.kind === 'self')
+    setSelfRelay(retryPlan?.route.kind === 'self' || (retryPlan !== null && retrySelfRelay))
     setShieldAnyway(false)
     setRefusedWhileSubmitting(false)
     setError(null)
+    approvedRef.current = null
+    heldRef.current = null
+    heldRefusalRef.current = null
+    heldEarlierRef.current = false
+    flowMostRef.current = null
     setStep({ kind: retryPlan ? 'retry' : 'form' })
-  }, [open, action, retryPlan, decimals, releaseFlow])
+  }, [open, action, retryPlan, retrySelfRelay, decimals, releaseFlow])
 
   // Asked again when the route changes, or when a sync changes what the notes can pay.
   const spendable = status?.balance.spendable
@@ -491,12 +702,18 @@ export default function ShieldedSend({
   function reviewRetry() {
     if (!retryPlan) return
     setError(null)
+    approvedRef.current = null
+    heldRef.current = null
+    heldRefusalRef.current = null
+    heldEarlierRef.current = false
+    flowMostRef.current = null
     setStep({ kind: 'preparing' })
     requestStep({
       type: SERVICE_TYPES.SHIELDED_RETRY,
       poolId,
       holder: beginFlow(),
       planId: retryPlan.planId,
+      kind: retryPlan.kind,
       selfRelay: retryPlan.kind === 'unshield' && selfRelay,
     }).then((reply) => reply && followStep(reply))
   }
@@ -509,6 +726,22 @@ export default function ShieldedSend({
       setStep({ kind: 'shield-review' })
       return
     }
+    // A private send to an address an unfinished payment of this account is paying: continuing that
+    // one spends its notes, so only one can arrive; another payment is the user's choice.
+    const unfinished =
+      a === 'send' && !sendAnotherRef.current && status
+        ? unfinishedSendTo(status.plans, to)
+        : undefined
+    sendAnotherRef.current = false
+    if (unfinished) {
+      setStep({ kind: 'open', planId: unfinished.planId, send: true })
+      return
+    }
+    approvedRef.current = null
+    heldRef.current = null
+    heldRefusalRef.current = null
+    heldEarlierRef.current = false
+    flowMostRef.current = null
     setStep({ kind: 'preparing' })
     requestStep({
       type: SERVICE_TYPES.SHIELDED_SPEND,
@@ -525,16 +758,23 @@ export default function ShieldedSend({
   // saved payment, which may land.
   function answerReview(r: ShieldedReviewView, approve: boolean) {
     setStep(approve ? { kind: 'working', review: r } : { kind: 'cancelling', review: r })
-    requestStep({ type: SERVICE_TYPES.SHIELDED_DECIDE, reviewId: r.reviewId, approve }).then(
-      (reply) => reply && followStep(reply)
-    )
+    requestStep({
+      type: SERVICE_TYPES.SHIELDED_DECIDE,
+      reviewId: r.reviewId,
+      approve,
+      poolId,
+      kind: r.kind,
+    }).then((reply) => reply && followStep(reply))
   }
 
-  function approveShield() {
+  // A shield goes with the default caps, or, after a fee review, with the background's offer the
+  // user approved, which holds the shield to the most it showed. A fee above that stops it before
+  // anything is signed, and the failed deposit is void: the approval proves and sends a new one.
+  function approveShield(approval?: string, approved?: string) {
     if (units === null) return
     const session = sessionRef.current
     flowStartRef.current = Date.now()
-    setStep({ kind: 'working' })
+    if (!approval) setStep({ kind: 'working' })
     ask(
       sessionScopeRef.current,
       {
@@ -542,6 +782,7 @@ export default function ShieldedSend({
         poolId,
         amount: units.toString(),
         whileSubmitting: submittingDeposit && shieldAnyway,
+        feeApproval: approval,
       },
       (r) => r.shieldedReceipt
     ).then((reply) => {
@@ -551,6 +792,17 @@ export default function ShieldedSend({
       if (!reply.ok) {
         if (reply.mayLand) {
           setStep({ kind: 'stopped', message: reply.error })
+          return
+        }
+        if (reply.view?.fee) {
+          setStep({
+            kind: 'fee',
+            fee: reply.view.fee,
+            target: { kind: 'shield' },
+            approved: approved ?? null,
+            working: false,
+            earlier: false,
+          })
           return
         }
         // A deposit of this account is submitting, maybe one the network dropped, which stays so
@@ -569,13 +821,99 @@ export default function ShieldedSend({
     })
   }
 
+  // Approving a fee review returns the background's offer for that call alone: the shield, or the
+  // saved payment's retry with the same notes, self-relayed, held to the most the review showed.
+  function approveFee(s: FeeStep) {
+    setStep({ ...s, working: true })
+    if (s.target.kind === 'shield') {
+      approveShield(s.fee.approval, s.fee.most)
+      return
+    }
+    approvedRef.current = s.fee.most
+    heldRef.current = s.target.planId
+    heldEarlierRef.current = s.earlier
+    flowMostRef.current = s.fee.most
+    requestStep({
+      type: SERVICE_TYPES.SHIELDED_RETRY,
+      poolId,
+      holder: beginFlow(),
+      planId: s.target.planId,
+      kind: 'unshield',
+      selfRelay: true,
+      feeApproval: s.fee.approval,
+    }).then((reply) => reply && followStep(reply))
+  }
+
+  // Declining sends nothing more: a shield goes back to its confirm, and a saved payment waits,
+  // its notes kept, for a review from Private activity.
+  function declineFee(s: FeeStep, timedOut: boolean) {
+    dropOffer(s.fee.approval, sessionScopeRef.current)
+    if (s.target.kind === 'shield') {
+      setStep({ kind: 'shield-review' })
+      if (timedOut) setError(REVIEW_TIMED_OUT)
+      return
+    }
+    setStep({ kind: 'waiting', planId: s.target.planId, timedOut, earlier: s.earlier })
+    onDone()
+  }
+
+  // The relayer did not send a saved withdrawal; the account submits it with the same notes, at
+  // most the default caps, and a fee above them comes back as a fee review.
+  function payRefused(s: RefusedStep) {
+    approvedRef.current = null
+    heldRef.current = s.planId
+    heldRefusalRef.current = s.refusal
+    heldEarlierRef.current = s.earlier
+    flowMostRef.current = null
+    setStep({ ...s, working: true })
+    requestStep({
+      type: SERVICE_TYPES.SHIELDED_RETRY,
+      poolId,
+      holder: beginFlow(),
+      planId: s.planId,
+      kind: 'unshield',
+      selfRelay: true,
+      feeApproval: s.selfPay,
+    }).then((reply) => reply && followStep(reply))
+  }
+
+  // An offer to pay a refused withdrawal from the account ends before the background's does.
+  useEffect(() => {
+    if (step.kind !== 'refused' || step.working || step.expired || !step.selfPay) return
+    const shown = step
+    const timer = setTimeout(() => {
+      dropOffer(shown.selfPay, sessionScopeRef.current)
+      setStep({ ...shown, expired: true })
+    }, FEE_REVIEW_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [step])
+
+  // A fee review left unanswered is declined, as a payment review is.
+  const feeTimeoutRef = useRef<FeeStep | null>(null)
+  feeTimeoutRef.current = step.kind === 'fee' && !step.working ? step : null
+  useEffect(() => {
+    if (step.kind !== 'fee' || step.working) return
+    const timer = setTimeout(() => {
+      const s = feeTimeoutRef.current
+      if (s) declineFee(s, true)
+    }, FEE_REVIEW_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+    // A new fee or a new answer to it starts the clock again; renders in between do not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step])
+
   // The payment or deposit a result is about, as the latest sync shows it. A stopped payment the
   // reply does not name is found by what it was made of: one of this flow's amount, saved since
   // the flow began and still able to land; with no single match the result says what it knows
   // without it.
   function resultPlan(s: ResultStep): ShieldedPlanView | null {
     if (!status) return null
-    if (s.kind === 'submitted') return status.plans.find((p) => p.planId === s.planId) ?? null
+    if (s.kind === 'submitted' || s.kind === 'waiting') {
+      return status.plans.find((p) => p.planId === s.planId) ?? null
+    }
+    if (s.kind === 'blocked') {
+      return s.planId ? (status.plans.find((p) => p.planId === s.planId) ?? null) : null
+    }
     if (s.kind !== 'stopped' || a === 'shield') return null
     if (s.planId) return status.plans.find((p) => p.planId === s.planId) ?? null
     if (units === null) return null
@@ -608,9 +946,19 @@ export default function ShieldedSend({
         ? step.review
           ? { kind: 'spend', review: step.review }
           : null
-        : step.kind === 'shielded' || step.kind === 'submitted' || step.kind === 'stopped'
-          ? { kind: 'result', step }
-          : null
+        : step.kind === 'fee'
+          ? { kind: 'fee', step }
+          : step.kind === 'refused'
+            ? { kind: 'refused', step }
+            : step.kind === 'open'
+              ? { kind: 'open', planId: step.planId, send: step.send }
+              : step.kind === 'shielded' ||
+                  step.kind === 'submitted' ||
+                  step.kind === 'stopped' ||
+                  step.kind === 'waiting' ||
+                  step.kind === 'blocked'
+                ? { kind: 'result', step }
+                : null
   // Keep the last view so the sheet's content stays during its close slide.
   const lastViewRef = useRef<SheetView | null>(null)
   if (open && view) lastViewRef.current = view
@@ -836,6 +1184,14 @@ export default function ShieldedSend({
     )
   }
 
+  // The most a self-submitted payment may pay: the approved amount after a fee review in this flow,
+  // else what the wallet pays without asking.
+  function selfFeeText(): string {
+    return flowMostRef.current === null
+      ? NETWORK_FEE_CAP
+      : `Up to ${formatUnits(flowMostRef.current, 7)} XLM, from your account`
+  }
+
   // The amount at the top of a confirm step, the token spinning while it is proved and submitted.
   function amountCard(value: string | bigint) {
     const fiat = fiatOf(value)
@@ -965,7 +1321,7 @@ export default function ShieldedSend({
           <Button
             className="flex-1"
             disabled={working || (submittingDeposit && !shieldAnyway) || depositRefusal !== null}
-            onClick={approveShield}
+            onClick={() => approveShield()}
           >
             {working ? 'Sending...' : `Shield ${formatUnits(units, decimals)} ${chipCode}`}
           </Button>
@@ -999,7 +1355,7 @@ export default function ShieldedSend({
               <NetworkValue name={stellarChain.name} icon={stellarChain.icon} />
             </DetailRow>
             {r.selfRelay ? (
-              <DetailRow label="Network fee">{NETWORK_FEE_CAP}</DetailRow>
+              <DetailRow label="Network fee">{selfFeeText()}</DetailRow>
             ) : (
               <DetailRow label="Relayer fee">
                 <span className="tabular-nums">
@@ -1014,6 +1370,16 @@ export default function ShieldedSend({
               <span className="tabular-nums">{unit(total)}</span>
             </DetailRow>
           </div>
+          {r.queued && (
+            <p className="flex gap-2 rounded-xl bg-amber-500/10 px-4 py-3 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+              <TriangleAlert size={12} className="mt-0.5 shrink-0" />
+              {queuedNote(
+                r.kind,
+                formatUnits(r.fee, decimals),
+                formatUnits(r.queued.usual, decimals)
+              )}
+            </p>
+          )}
           {r.warnings.length > 0 && (
             <div className="flex flex-col gap-2 rounded-xl bg-amber-500/10 px-4 py-3">
               {r.warnings.map((w) => (
@@ -1060,28 +1426,44 @@ export default function ShieldedSend({
       : deposit
         ? depositStatus(deposit)
         : null
-    const hash = s.kind === 'shielded' ? s.receipt.txHash : s.kind === 'submitted' ? s.txHash : null
+    const hash =
+      s.kind === 'shielded'
+        ? s.receipt.txHash
+        : s.kind === 'submitted'
+          ? s.txHash
+          : s.kind === 'blocked'
+            ? (s.hash ?? null)
+            : null
     const shielding = a === 'shield'
     const value = s.kind === 'submitted' && plan ? plan.amount : (units ?? 0n)
     const dest = plan?.to ?? to
     const relayed = plan ? plan.route.kind === 'relayer' : !shielding && !selfRelay
-    const hero = plan
-      ? planHero(plan)
-      : deposit
-        ? depositHero(deposit)
-        : s.kind === 'shielded' && s.receipt.depositId !== null
-          ? 'success'
-          : 'pending'
+    const hero =
+      s.kind === 'blocked'
+        ? blockedLook(s.code).hero
+        : s.kind === 'waiting'
+          ? 'pending'
+          : plan
+            ? planHero(plan)
+            : deposit
+              ? depositHero(deposit)
+              : s.kind === 'shielded' && s.receipt.depositId !== null
+                ? 'success'
+                : 'pending'
     const fallbackNote =
-      s.kind === 'shielded'
-        ? s.receipt.depositId === null
-          ? 'Its deposit ID appears once the network confirms it. It can be spent after screening.'
-          : 'It can be spent once screening admits it. Follow it under Private activity.'
-        : s.kind === 'submitted'
-          ? 'It counts once the pool shows it landed. Follow it under Private activity.'
-          : shielding
-            ? 'Private activity follows the deposit until it lands or its deadline passes.'
-            : 'Private activity follows it until it lands or its deadline passes.'
+      s.kind === 'waiting'
+        ? `${s.timedOut ? `${REVIEW_TIMED_OUT} ` : ''}${waitingNote(s.earlier)}`
+        : s.kind === 'blocked'
+          ? s.message
+          : s.kind === 'shielded'
+            ? s.receipt.depositId === null
+              ? 'Its deposit ID appears once the network confirms it. It can be spent after screening.'
+              : 'It can be spent once screening admits it. Follow it under Private activity.'
+            : s.kind === 'submitted'
+              ? 'It counts once the pool shows it landed. Follow it under Private activity.'
+              : shielding
+                ? 'Private activity follows the deposit until it lands or its deadline passes.'
+                : 'Private activity follows it until it lands or its deadline passes.'
     return (
       <>
         <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-5 py-5 [&>*]:shrink-0">
@@ -1098,8 +1480,18 @@ export default function ShieldedSend({
                 ? 'to your private balance'
                 : `to ${dest === accountPk ? 'your account' : shortAddress(dest)}`
             }
-            note={live?.detail ?? fallbackNote}
+            note={
+              s.kind === 'waiting' || s.kind === 'blocked'
+                ? fallbackNote
+                : (live?.detail ?? fallbackNote)
+            }
           />
+          {s.kind === 'blocked' && (
+            <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+              {s.earlier && !s.message.startsWith(EARLIER_MAY_LAND) ? `${EARLIER_MAY_LAND} ` : ''}
+              {blockedNote(s.code, s.planId !== undefined, s.refusal)}
+            </p>
+          )}
           {s.kind === 'stopped' && (
             <>
               <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2.5">
@@ -1138,7 +1530,7 @@ export default function ShieldedSend({
                 <span className="tabular-nums">{unit(s.fee)}</span>
               </DetailRow>
             ) : (
-              !relayed && <DetailRow label="Network fee">{NETWORK_FEE_CAP}</DetailRow>
+              !relayed && <DetailRow label="Network fee">{selfFeeText()}</DetailRow>
             )}
             {plan && <DetailRow label="Route">{routeText(plan)}</DetailRow>}
             {s.kind === 'shielded' && s.receipt.depositId !== null && (
@@ -1185,19 +1577,138 @@ export default function ShieldedSend({
         ? sheetView.review.kind === 'send'
           ? 'Confirm private send'
           : 'Confirm unshield'
-        : sheetView.step.kind === 'shielded'
-          ? 'Deposit submitted'
-          : sheetView.step.kind === 'submitted'
-            ? a === 'unshield'
-              ? 'Unshield submitted'
-              : 'Payment submitted'
-            : 'May still land'
+        : sheetView.kind === 'fee'
+          ? feeTitle(sheetView.step.fee.reason, sheetView.step.fee.paid)
+          : sheetView.kind === 'refused'
+            ? refusalCopy(sheetView.step.refusal, 'send', null, '').title
+            : sheetView.kind === 'open'
+              ? OPEN_PAYMENT.title
+              : resultTitle(sheetView.step)
+
+  function resultTitle(s: ResultStep): string {
+    switch (s.kind) {
+      case 'shielded':
+        return 'Deposit submitted'
+      case 'submitted':
+        return a === 'unshield' ? 'Unshield submitted' : 'Payment submitted'
+      case 'waiting':
+        return 'Waiting for your approval'
+      case 'blocked':
+        return blockedLook(s.code).title
+      case 'stopped':
+        return 'May still land'
+    }
+  }
+
+  // XLM the account can spend on a fee, after its minimum balance and, for a shield, the deposit;
+  // null when its balance is not known.
+  function feeRoom(target: FeeStep['target']): bigint | null {
+    if (!native || publicBalance === null) return null
+    const reserve = (2n + BigInt(subentryCount)) * BASE_RESERVE_STROOPS
+    const free = spendableUnits(publicBalance, decimals, undefined, reserve)
+    return target.kind === 'shield' ? free - (units ?? 0n) : free
+  }
+
+  function feePayment(target: FeeStep['target']): bigint | null {
+    if (target.kind === 'shield') return units
+    const plan = status?.plans.find((p) => p.planId === target.planId) ?? retryPlan
+    return plan ? BigInt(plan.amount) : units
+  }
+
+  function feeSheet(f: FeeStep) {
+    const payment = feePayment(f.target)
+    return (
+      <FeeReviewBody
+        fee={f.fee}
+        earlier={f.earlier}
+        subject={f.target.kind === 'shield' ? 'shield' : 'unshield'}
+        account={accountPk}
+        available={feeRoom(f.target)}
+        payment={payment}
+        approved={f.approved}
+        working={f.working}
+        progress={
+          f.target.kind === 'shield'
+            ? `Signing and submitting to ${stellarChain.name}...`
+            : 'Proving on this device and submitting. This can take a minute.'
+        }
+        amountCard={payment === null ? null : amountCard(payment)}
+        fiatOf={(v) => fiatOf(v)}
+        onDecline={() => declineFee(f, false)}
+        onApprove={() => approveFee(f)}
+      />
+    )
+  }
+
+  function refusedSheet(r: RefusedStep) {
+    const kind = a === 'send' ? 'send' : 'unshield'
+    const offered = refusalCopy(
+      r.refusal,
+      kind,
+      r.fee === null ? null : formatUnits(r.fee, decimals),
+      shortAddress(accountPk),
+      r.earlier
+    )
+    // Paying from the account goes only with the background's offer for this withdrawal.
+    const copy = r.selfPay ? offered : { ...offered, payLabel: null, payNote: null }
+    return (
+      <RefusalBody
+        copy={copy}
+        working={r.working}
+        expired={r.expired && copy.payLabel !== null ? refusalExpired(r.refusal) : null}
+        progress="Proving on this device and submitting. This can take a minute."
+        advanced={
+          r.refusal === 'restore_needed' && (
+            <PoolRestore
+              poolId={poolId}
+              scope={sessionScopeRef.current}
+              account={accountPk}
+              heldPayment
+              available={feeRoom({ kind: 'retry', planId: r.planId })}
+              fiatOf={(v) => fiatOf(v)}
+              onChanged={onDone}
+            />
+          )
+        }
+        onLater={close}
+        onPay={() => payRefused(r)}
+      />
+    )
+  }
+
+  function openSheet(planId: string, send: boolean) {
+    const plan = status?.plans.find((p) => p.planId === planId) ?? null
+    return (
+      <OpenPaymentBody
+        found={plan !== null}
+        send={send}
+        onBack={() => {
+          if (!send) {
+            setStep({ kind: 'form' })
+            return
+          }
+          sendAnotherRef.current = true
+          review()
+        }}
+        onOpen={() => {
+          releaseFlow()
+          if (plan) onOpenPlan(plan)
+          else onHistory()
+        }}
+      />
+    )
+  }
+
+  // The sheets that ask the user before anything more is sent are dialogs over the whole popup.
+  const dialog = open && (view?.kind === 'fee' || view?.kind === 'refused' || view?.kind === 'open')
 
   // Leaving a confirm step goes back to the form, declining a review on the way; a result closes.
   function leaveSheet() {
     if (busy || !view) return
     if (view.kind === 'shield') setStep({ kind: 'form' })
     else if (view.kind === 'spend') answerReview(view.review, false)
+    else if (view.kind === 'fee') declineFee(view.step, false)
+    else if (view.kind === 'open') setStep({ kind: 'form' })
     else close()
   }
 
@@ -1273,6 +1784,8 @@ export default function ShieldedSend({
 
       <ConfirmSheet
         open={open && view !== null}
+        modal={dialog}
+        escapeCloses={dialog}
         title={sheetTitle}
         closeDisabled={busy}
         stepKey={
@@ -1282,7 +1795,9 @@ export default function ShieldedSend({
               ? `spend:${sheetView.review.reviewId}`
               : sheetView.kind === 'result'
                 ? `result:${sheetView.step.kind}`
-                : sheetView.kind
+                : sheetView.kind === 'fee'
+                  ? `fee:${sheetView.step.fee.ceiling}`
+                  : sheetView.kind
         }
         onClose={leaveSheet}
         onBackdrop={() => {
@@ -1293,9 +1808,15 @@ export default function ShieldedSend({
           ? shieldConfirm()
           : sheetView?.kind === 'spend'
             ? spendConfirm(sheetView.review)
-            : sheetView?.kind === 'result'
-              ? result(sheetView.step)
-              : null}
+            : sheetView?.kind === 'fee'
+              ? feeSheet(sheetView.step)
+              : sheetView?.kind === 'refused'
+                ? refusedSheet(sheetView.step)
+                : sheetView?.kind === 'open'
+                  ? openSheet(sheetView.planId, sheetView.send)
+                  : sheetView?.kind === 'result'
+                    ? result(sheetView.step)
+                    : null}
       </ConfirmSheet>
     </>
   )

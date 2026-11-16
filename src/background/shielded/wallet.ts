@@ -3,8 +3,11 @@ import {
   PrivateWallet,
   keySource,
   type DepositInfo,
+  type NetworkFeeCaps,
   type PlanView,
+  type SpendReview,
   type Submission,
+  type SyncSummary,
   type TransactionSigner,
 } from '@cyphras/private'
 import { Keypair } from '@stellar/stellar-sdk'
@@ -17,6 +20,7 @@ import type {
   ShieldedPlanView,
   ShieldedQuoteView,
   ShieldedReceiptView,
+  ShieldedRestoreView,
   ShieldedStatusView,
   ShieldedStep,
 } from '@ext-types/index'
@@ -30,6 +34,9 @@ import {
 } from '../keyManager'
 import { SHIELDED_DEPLOYMENTS, type ShieldedDeployment } from './deployments'
 import { MayStillLand, ShieldedRefusal, errorView } from './errors'
+import { dropGrant } from './approvals'
+import { earlierMayLand, paymentRows, reachedChain } from './history'
+import { BUDGET_STOP_MESSAGE, DEFAULT_FEE_BUDGET, budgetSigner, type FeeSpent } from './fees'
 import { pinnedPool } from './gate'
 import { offscreenProver, packagedArtifacts } from './prover'
 import { declineAllReviews, decideReview, startReviewed } from './reviews'
@@ -39,12 +46,16 @@ import { chromeStore } from './store'
 interface OpenWallet {
   readonly wallet: PrivateWallet
   readonly pool: ShieldedDeployment
-  readonly signer: TransactionSigner
+  // The account's key for one call it pays the network fees of, held to `budget` in all; there is
+  // no signer without a budget.
+  readonly payer: (budget: bigint, spent?: FeeSpent) => TransactionSigner
+  readonly publicKey: string
   // Names the account's records beside the SDK's: the notice of a fresh start, and its own actions.
   readonly scope: string
   sync: Promise<void> | undefined
   syncedAt: number | null
   syncError: ShieldedErrorView | null
+  syncSource: SyncSummary['source'] | null
 }
 
 // One SDK wallet per account and vault, holding the account's spending keys while the extension
@@ -175,6 +186,7 @@ async function openWallet(
     storage: chromeStore(pool.deployment),
     rpcUrl: pool.rpcUrl,
     secondRpcUrl: pool.secondRpcUrl,
+    archives: pool.archives,
     // Stored state that does not decrypt cannot be recovered, so the wallet starts fresh: the
     // chain rebuilds the notes and stateReset() says what was lost.
     resetUnreadableState: true,
@@ -190,11 +202,13 @@ async function openWallet(
   return {
     wallet,
     pool,
-    signer: vaultSigner(keypair, pool.deployment),
+    payer: (budget, spent) => budgetSigner(vaultSigner(keypair, pool.deployment), budget, spent),
+    publicKey: keypair.publicKey(),
     scope,
     sync: undefined,
     syncedAt: null,
     syncError: null,
+    syncSource: null,
   }
 }
 
@@ -242,9 +256,10 @@ export function forgetShieldedAccounts(
 function syncOnce(entry: OpenWallet): Promise<void> {
   entry.sync ??= track(entry.wallet.sync())
     .then(
-      () => {
+      (summary) => {
         entry.syncedAt = Date.now()
         entry.syncError = null
+        entry.syncSource = summary.source
       },
       (err: unknown) => {
         entry.syncError = errorView(err)
@@ -273,7 +288,21 @@ function depositView(d: DepositInfo): ShieldedDepositView {
   }
 }
 
-function planView(p: PlanView): ShieldedPlanView {
+// Why the plan's submission last stopped. A signing refusal is a budget stop only when the SDK kept
+// the budget's own message; any other refusal of the key reads signer_refused, so it is never shown
+// as a fee to review.
+function lastErrorCode(p: PlanView): string | null {
+  if (p.lastError === undefined) return null
+  if (p.lastError.code === 'signer_mismatch' && p.lastError.message !== BUDGET_STOP_MESSAGE) {
+    return 'signer_refused'
+  }
+  return p.lastError.code
+}
+
+// `continued`: another plan retries this one, so why this one stopped no longer says where the
+// payment stands, and no second retry of it is offered.
+// `earlier`: an older attempt of the same payment may still land.
+function planView(p: PlanView, continued: boolean, earlier: boolean): ShieldedPlanView {
   return {
     planId: p.planId,
     kind: p.kind,
@@ -288,6 +317,9 @@ function planView(p: PlanView): ShieldedPlanView {
     exitConfirmed: orNull(p.exitConfirmed),
     strandedExits: p.exitParts.filter((part) => part.stranded).map((part) => part.id),
     relayerStatus: orNull(p.relayerStatus),
+    earlierMayLand: earlier,
+    relayerCode: continued ? null : orNull(p.relayerCode),
+    lastError: continued ? null : lastErrorCode(p),
     mustRetry: p.mustRetry,
     needsUserDecision: p.needsUserDecision,
     retryOf: orNull(p.retryOf),
@@ -317,11 +349,21 @@ async function statusOf(entry: OpenWallet): Promise<ShieldedStatusView> {
       pendingDeposits: balance.pendingDeposits.toString(),
       locked: balance.locked.toString(),
       awaitingPayout: balance.awaitingPayout.toString(),
+      maybeSpent: balance.maybeSpent.toString(),
     },
     deposits: deposits.map(depositView).reverse(),
-    plans: plans.map(planView).sort((a, b) => b.createdAt - a.createdAt),
+    plans: plans
+      .map((p) =>
+        planView(
+          p,
+          plans.some((q) => q.retryOf === p.planId),
+          earlierMayLand(p, plans)
+        )
+      )
+      .sort((a, b) => b.createdAt - a.createdAt),
     syncedAt: entry.syncedAt,
     syncError: entry.syncError,
+    syncSource: entry.syncSource,
     services: wallet.verification().state,
     stateReset: notice ?? null,
   }
@@ -411,8 +453,7 @@ export async function shieldedHistory(
     ...fields,
   })
   const items: ShieldedHistoryItem[] = []
-  for (const p of plans) {
-    if (p.state === 'superseded') continue
+  for (const p of paymentRows(plans)) {
     items.push(
       item({
         id: `plan:${p.planId}`,
@@ -431,7 +472,7 @@ export async function shieldedHistory(
       .filter((h) => h.kind === 'shield' && h.txHash !== undefined)
       .map((h) => [h.txHash, h.time ?? h.closedAt])
   )
-  for (const d of deposits) {
+  for (const d of deposits.filter(reachedChain)) {
     const time = d.txHash === undefined ? null : (shieldedAt.get(d.txHash) ?? null)
     const of = {
       amount: d.amount.toString(),
@@ -510,12 +551,16 @@ export async function shieldedShield(
   publicKey: unknown,
   poolId: string,
   amount: bigint,
-  whileSubmitting: boolean
+  whileSubmitting: boolean,
+  networkFeeCaps: NetworkFeeCaps | undefined,
+  budget = DEFAULT_FEE_BUDGET,
+  spent?: FeeSpent
 ): Promise<ShieldedReceiptView> {
-  const { wallet, signer } = await walletFor(net, publicKey, poolId)
+  const { wallet, payer } = await walletFor(net, publicKey, poolId)
+  const signer = payer(budget, spent)
   const before = (await wallet.deposits()).length
   try {
-    const receipt = await track(wallet.shield({ amount, signer, whileSubmitting }))
+    const receipt = await track(wallet.shield({ amount, signer, whileSubmitting, networkFeeCaps }))
     return { depositId: orNull(receipt.depositId), txHash: receipt.txHash }
   } catch (err) {
     // A deposit this shield saved and did not mark failed may still land.
@@ -532,8 +577,8 @@ export async function shieldedLimits(
   publicKey: unknown,
   poolId: string
 ): Promise<ShieldedLimitsView> {
-  const { wallet, signer } = await walletFor(net, publicKey, poolId)
-  const limits = await wallet.vaultLimits(signer.publicKey)
+  const { wallet, publicKey: depositor } = await walletFor(net, publicKey, poolId)
+  const limits = await wallet.vaultLimits(depositor)
   return {
     minDeposit: limits.minDeposit.toString(),
     maxDeposit: limits.maxDeposit.toString(),
@@ -589,6 +634,20 @@ async function watchingPlans(
   }
 }
 
+// The relayer's fee for a payment the pool does not queue, from the quote the wallet holds, which a
+// review shows beside a queued fee; undefined when no relayer quotes now.
+async function usualFee(
+  wallet: PrivateWallet,
+  kind: 'send' | 'unshield',
+  maxFee: bigint
+): Promise<bigint | undefined> {
+  try {
+    return (await wallet.quote({ kind, maxFee })).fee
+  } catch {
+    return undefined
+  }
+}
+
 export async function shieldedSpend(
   net: NetworkConfig,
   publicKey: unknown,
@@ -596,41 +655,86 @@ export async function shieldedSpend(
   holder: string,
   req: SpendRequest
 ): Promise<ShieldedStep> {
-  const { wallet, pool, signer } = await walletFor(net, publicKey, poolId)
+  const { wallet, pool, payer } = await walletFor(net, publicKey, poolId)
+  const usual = req.selfRelay ? undefined : await usualFee(wallet, req.kind, pool.maxRelayerFee)
   if (req.kind === 'send') {
-    return startReviewed(holder, (confirm) =>
-      watchingPlans(wallet, () =>
-        wallet.send({ to: req.to, amount: req.amount, maxFee: pool.maxRelayerFee, confirm })
-      )
+    return startReviewed(
+      holder,
+      (confirm) =>
+        watchingPlans(wallet, () =>
+          wallet.send({ to: req.to, amount: req.amount, maxFee: pool.maxRelayerFee, confirm })
+        ),
+      usual
     )
   }
-  const route = req.selfRelay ? { selfRelay: signer } : { maxFee: pool.maxRelayerFee }
-  return startReviewed(holder, (confirm) =>
-    watchingPlans(wallet, () =>
-      wallet.unshield({ to: req.to, amount: req.amount, confirm, ...route })
-    )
+  const route = req.selfRelay
+    ? { selfRelay: payer(DEFAULT_FEE_BUDGET) }
+    : { maxFee: pool.maxRelayerFee }
+  return startReviewed(
+    holder,
+    (confirm) =>
+      watchingPlans(wallet, () =>
+        wallet.unshield({ to: req.to, amount: req.amount, confirm, ...route })
+      ),
+    usual
   )
 }
 
+// A self-relayed retry the popup's own sheet offered goes with the SDK's review answered yes when
+// that review is of the saved payment itself, from the account with no relayer fee, and warns only
+// of what the sheet stated (`shown`, warning codes); any other review goes to the popup. The account
+// pays at most `budget` in network fees over the whole call.
 export async function shieldedRetry(
   net: NetworkConfig,
   publicKey: unknown,
   poolId: string,
   holder: string,
   planId: string,
-  selfRelay: boolean
+  selfRelay: boolean,
+  networkFeeCaps: NetworkFeeCaps | undefined,
+  shown?: readonly string[],
+  budget = DEFAULT_FEE_BUDGET,
+  spent?: FeeSpent
 ): Promise<ShieldedStep> {
-  const { wallet, pool, signer } = await walletFor(net, publicKey, poolId)
-  const plan = (await wallet.plans()).find((p) => p.planId === planId)
+  const { wallet, pool, payer } = await walletFor(net, publicKey, poolId)
+  const plans = await wallet.plans()
+  const plan = plans.find((p) => p.planId === planId)
+  if (selfRelay && plan?.kind === 'send') {
+    throw new ShieldedRefusal('relayer_only', 'A private transfer always goes through a relayer.')
+  }
+  // A newer attempt already spends these notes; proving them again could only cost another fee.
+  if (
+    plans.some((p) => p.retryOf === planId && (p.state === 'prepared' || p.state === 'submitted'))
+  ) {
+    throw new ShieldedRefusal(
+      'already_continued',
+      'A newer attempt of this payment is already on its way. Follow it in Private activity.'
+    )
+  }
   // The SDK retries a relayed plan through its relayer first, then the others. A self-relayed one
   // it moves to relayers only when they are named.
   const route = selfRelay
-    ? { selfRelay: signer }
+    ? { selfRelay: payer(budget, spent), networkFeeCaps }
     : plan?.route.kind === 'self'
       ? { relayer: pool.deployment.relayers.map((r) => r.url), maxFee: pool.maxRelayerFee }
       : { maxFee: pool.maxRelayerFee }
-  return startReviewed(holder, (confirm) =>
-    watchingPlans(wallet, () => wallet.retry(planId, { confirm, ...route }))
+  const stated = selfRelay && Array.isArray(shown) ? shown : null
+  const accepted = (review: SpendReview): boolean =>
+    stated !== null &&
+    plan !== undefined &&
+    review.kind === plan.kind &&
+    review.amount === plan.amount &&
+    review.to === plan.to &&
+    review.relayer === undefined &&
+    review.fee === 0n &&
+    review.warnings.every((w) => stated.includes(w.code))
+  const usual =
+    selfRelay || !plan ? undefined : await usualFee(wallet, plan.kind, pool.maxRelayerFee)
+  return startReviewed(
+    holder,
+    (confirm) => watchingPlans(wallet, () => wallet.retry(planId, { confirm, ...route })),
+    usual,
+    accepted
   )
 }
 
@@ -641,19 +745,23 @@ export async function shieldedAccountAction(
   publicKey: unknown,
   poolId: string,
   action: 'cancel' | 'refund' | 'claim',
-  id: number
+  id: number,
+  networkFeeCaps: NetworkFeeCaps | undefined,
+  budget = DEFAULT_FEE_BUDGET,
+  spent?: FeeSpent
 ): Promise<string> {
-  const { wallet, signer, scope } = await walletFor(net, publicKey, poolId)
+  const { wallet, payer, scope } = await walletFor(net, publicKey, poolId)
+  const signer = payer(budget, spent)
   const claimed =
     action === 'claim'
       ? (await wallet.plans()).find((p) => p.exitParts.some((part) => part.id === id))
       : undefined
   const run =
     action === 'cancel'
-      ? wallet.cancelDeposit(id, signer)
+      ? wallet.cancelDeposit(id, signer, networkFeeCaps)
       : action === 'refund'
-        ? wallet.refundDeposit(id, signer)
-        : wallet.claimExit(id, signer)
+        ? wallet.refundDeposit(id, signer, networkFeeCaps)
+        : wallet.claimExit(id, signer, networkFeeCaps)
   try {
     const { txHash } = await track(run)
     const record: ActionRecord = {
@@ -681,6 +789,47 @@ export async function shieldedAccountAction(
     }
     throw err
   }
+}
+
+// Brings the pool's archived entries back, paid by the account for every user of the pool; no note
+// or proof is involved. The fee is at most the default caps, or the caps of an approval.
+export async function shieldedRestorePool(
+  net: NetworkConfig,
+  publicKey: unknown,
+  poolId: string,
+  networkFeeCaps: NetworkFeeCaps | undefined,
+  budget = DEFAULT_FEE_BUDGET,
+  spent?: FeeSpent
+): Promise<ShieldedRestoreView> {
+  const { pool, payer } = await walletFor(net, publicKey, poolId)
+  const restore = await track(
+    PrivateWallet.restoreVault(payer(budget, spent), {
+      deployment: pool.name,
+      rpcUrl: pool.rpcUrl,
+      networkFeeCaps,
+    })
+  )
+  return { txHash: orNull(restore.txHash), restored: restore.restored.length }
+}
+
+// Whether an older attempt of the payment `planId` belongs to may still land, by the same rule as
+// the plan views of the status, so what a failed request says agrees with the payment's row.
+export async function shieldedEarlierMayLand(
+  net: NetworkConfig,
+  publicKey: unknown,
+  poolId: string,
+  planId: string
+): Promise<boolean> {
+  const { wallet } = await walletFor(net, publicKey, poolId)
+  const plans = await wallet.plans()
+  const plan = plans.find((p) => p.planId === planId)
+  return plan !== undefined && earlierMayLand(plan, plans)
+}
+
+// The user said no to an offer to pay a fee; it ends at once rather than at its expiry.
+export async function shieldedDropOffer(publicKey: unknown, offer: unknown): Promise<void> {
+  await activeAccount(publicKey)
+  dropGrant(offer, publicKey)
 }
 
 export async function shieldedDecide(

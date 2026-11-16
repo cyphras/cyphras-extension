@@ -1,3 +1,4 @@
+import { EARLIER_MAY_LAND, NOT_AGAIN } from './privateFees'
 import { SERVICE_TYPES } from '@constants/services'
 import type { ShieldedDepositView, ShieldedPlanView, ShieldedScreening } from '@ext-types/index'
 
@@ -137,17 +138,183 @@ export function depositStatus(d: ShieldedDepositView): ItemStatus {
   }
 }
 
+// Why a payment saved but not landed waits on the user: the account's own fee check stopped it, its
+// fees would have gone past the most the user was shown (the account's key then refused to sign; a
+// plan's view says signer_mismatch only for that, signer_refused for any other refusal), the
+// restore before it failed, or the relayer did not send it for a reason the user can act on.
+export type Hold =
+  | 'fee_above_cap'
+  | 'fee_above_limit'
+  | 'fee_budget'
+  | 'restore_failed'
+  | 'network_fee_high'
+  | 'restore_needed'
+
+export function holdOf(p: ShieldedPlanView): Hold | null {
+  if (p.needsUserDecision) return null
+  if (p.route.kind === 'relayer') {
+    if (p.state !== 'prepared') return null
+    return p.relayerCode === 'network_fee_high' || p.relayerCode === 'restore_needed'
+      ? p.relayerCode
+      : null
+  }
+  // A self-submitted plan can stop after an attempt that was sent and failed, which leaves it
+  // submitted: the SDK checks the next fee, restores and signs again only once the earlier
+  // attempt's end is known, so its retry is safe in either state.
+  if (p.state !== 'prepared' && p.state !== 'submitted') return null
+  switch (p.lastError) {
+    case 'fee_above_cap':
+    case 'fee_above_limit':
+    case 'restore_failed':
+      return p.lastError
+    case 'signer_mismatch':
+      return 'fee_budget'
+    default:
+      return null
+  }
+}
+
+// An unfinished private send to `to`, the latest attempt of its payment: continuing it spends the
+// same notes, so only one of the two can arrive. Addresses compare without case or spaces, as the
+// address format does not depend on either.
+export function unfinishedSendTo(
+  plans: readonly ShieldedPlanView[],
+  to: string
+): ShieldedPlanView | undefined {
+  const address = to.trim().toLowerCase()
+  return plans.find(
+    (p) =>
+      p.kind === 'send' &&
+      p.to.trim().toLowerCase() === address &&
+      (p.state === 'prepared' || p.state === 'submitted') &&
+      !plans.some((q) => q.retryOf === p.planId)
+  )
+}
+
+function holdStatus(
+  hold: Hold,
+  kind: ShieldedPlanView['kind'],
+  state: ShieldedPlanView['state']
+): ItemStatus {
+  if (hold === 'network_fee_high') {
+    return {
+      label: 'Not sent yet',
+      tone: 'warn',
+      detail: `The relayer did not send it because the network fee is high. ${kind === 'unshield' ? 'Try again later, or pay the fee from your account.' : 'Try again later.'} ${NOT_AGAIN}`,
+      stage: 'attention',
+    }
+  }
+  if (hold === 'restore_needed') {
+    return {
+      label: 'Not sent yet',
+      tone: 'warn',
+      detail: `The pool needs a restore that relayers do not pay for. Nothing has left your private balance yet. ${NOT_AGAIN}`,
+      stage: 'attention',
+    }
+  }
+  if (hold === 'fee_budget' && state === 'submitted') {
+    return {
+      ...HOLD_STATUS.fee_budget,
+      detail:
+        'Its earlier attempt did not go through, and the next one would have taken its network fees past the most you were shown, so nothing more was sent. Review the fee to go on.',
+    }
+  }
+  // A sent attempt that failed came first, so the row says so rather than that nothing was sent.
+  if (
+    state === 'submitted' &&
+    (hold === 'fee_above_cap' || hold === 'fee_above_limit' || hold === 'restore_failed')
+  ) {
+    const detail = HOLD_STATUS[hold].detail ?? ''
+    return {
+      ...HOLD_STATUS[hold],
+      detail: `Its earlier attempt did not go through. ${detail.replace('Nothing was sent.', 'Nothing more was sent.')}`,
+    }
+  }
+  return HOLD_STATUS[hold]
+}
+
+const HOLD_STATUS: Record<
+  'fee_above_cap' | 'fee_above_limit' | 'fee_budget' | 'restore_failed',
+  ItemStatus
+> = {
+  fee_budget: {
+    label: 'Needs your approval',
+    tone: 'warn',
+    detail:
+      'Its network fees would have gone past the most you were shown, so it stopped before anything more was sent. Review the fee to go on.',
+    stage: 'attention',
+  },
+  restore_failed: {
+    label: 'Not sent yet',
+    tone: 'warn',
+    detail:
+      "The restore of the pool's data before it did not go through, so it was not sent. Try again.",
+    stage: 'attention',
+  },
+  fee_above_cap: {
+    label: 'Needs your approval',
+    tone: 'warn',
+    detail:
+      'The network fee is above what this wallet pays without asking. Nothing was sent. Review the fee to go on.',
+    stage: 'attention',
+  },
+  fee_above_limit: {
+    label: 'Not sent yet',
+    tone: 'warn',
+    detail:
+      'The network fee is more than one transaction can carry right now. Nothing was sent. Try again later.',
+    stage: 'attention',
+  },
+}
+
+// A relayed withdrawal the relayer refused for another reason than the network fee or a restore, as
+// when a note it spends was spent elsewhere: the account may still submit it itself.
+function refusedByRelayer(p: ShieldedPlanView): boolean {
+  return (
+    p.kind === 'unshield' &&
+    p.route.kind === 'relayer' &&
+    p.relayerCode !== null &&
+    !['network_fee_high', 'restore_needed', 'fee_too_low', 'unavailable', 'rate_limited'].includes(
+      p.relayerCode
+    )
+  )
+}
+
 // A payment that may still land, or failed only by the wallet's last reading of the chain, is paid
-// again through a retry with the same notes, so at most one of the two can land.
+// again through a retry with the same notes, so at most one of the two can land. One that waits on
+// the user was never sent, so its retry is offered at once.
 export function needsRetry(p: ShieldedPlanView): boolean {
-  return p.mustRetry && (p.state === 'dead' || p.needsUserDecision)
+  return p.mustRetry && (p.state === 'dead' || p.needsUserDecision || holdOf(p) !== null)
+}
+
+// The status of the newest attempt of a payment whose earlier attempt may still land: it says so
+// first, and none of its words say the funds are back or that nothing went out.
+function withEarlier(status: ItemStatus, p: ShieldedPlanView): ItemStatus {
+  if (p.state === 'dead') {
+    return {
+      ...status,
+      detail: `This attempt's deadline passed without it landing. ${EARLIER_MAY_LAND} A retry with the same notes cannot pay twice.`,
+    }
+  }
+  const detail = (status.detail ?? '')
+    .replace('Nothing has left your private balance yet. ', '')
+    .replace('Nothing more was sent.', 'This attempt sent nothing more.')
+    .replace('Nothing was sent.', 'This attempt was not sent.')
+  return { ...status, detail: `${EARLIER_MAY_LAND} ${detail}`.trim() }
 }
 
 export function planStatus(
   p: ShieldedPlanView,
   unit: (units: bigint | string) => string
 ): ItemStatus {
+  const status = attemptStatus(p, unit)
+  return p.earlierMayLand ? withEarlier(status, p) : status
+}
+
+function attemptStatus(p: ShieldedPlanView, unit: (units: bigint | string) => string): ItemStatus {
   const indexerOnly = p.exitConfirmed === false ? ` ${INDEXER_ONLY}` : ''
+  const hold = holdOf(p)
+  if (hold) return holdStatus(hold, p.kind, p.state)
   if (p.needsUserDecision) {
     return {
       label: 'Outcome unknown',
@@ -211,8 +378,7 @@ export function planStatus(
       return {
         label: 'Not sent',
         tone: 'bad',
-        detail:
-          'Its deadline passed without it landing, so your funds are back in Available. A retry with the same notes cannot pay twice.',
+        detail: `Its deadline passed without it landing, so your funds are back in Available. A retry with the same notes cannot pay twice.${refusedByRelayer(p) ? ' The relayer refused it; a retry without a relayer may go through, paid from your account.' : ''}`,
         stage: 'attention',
       }
   }

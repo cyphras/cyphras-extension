@@ -1,6 +1,7 @@
 import type { ConfirmSpend, SpendReview, Submission } from '@cyphras/private'
 import { SHIELDED_REVIEW_PORT } from '@constants/services'
 import type { ShieldedReviewView, ShieldedStep } from '@ext-types/index'
+import { dropGrants } from './approvals'
 import { ShieldedRefusal } from './errors'
 
 // A review holds the account's other private operations until the user answers it, so one left
@@ -16,6 +17,25 @@ interface OpenReview {
 }
 
 const open = new Map<string, OpenReview>()
+// Warning codes the user confirmed in a payment's flow, by the holder of its popup, and the holder
+// of each review answered. An offer made after them carries the codes, so the retry it approves
+// asks again only for a review that warns of something new.
+const confirmedCodes = new Map<string, Set<string>>()
+const reviewHolders = new Map<string, string>()
+
+function noteConfirmed(holder: string, review: SpendReview): void {
+  const codes = confirmedCodes.get(holder) ?? new Set<string>()
+  for (const w of review.warnings) codes.add(w.code)
+  confirmedCodes.set(holder, codes)
+}
+
+export function confirmedWarnings(holder: unknown): string[] {
+  return typeof holder === 'string' ? [...(confirmedCodes.get(holder) ?? [])] : []
+}
+
+export function holderOfReview(reviewId: unknown): string | undefined {
+  return typeof reviewId === 'string' ? reviewHolders.get(reviewId) : undefined
+}
 // Tokens of the ports popups hold for the payments they started.
 const holders = new Set<string>()
 // Moves on whenever the wallets close, as at a lock, so a spend that started before cannot be
@@ -25,7 +45,22 @@ let generation = 0
 // with the plan a repriced spend already saved, rather than a fresh start.
 const closed = new Map<string, Promise<ShieldedStep>>()
 
-function reviewView(reviewId: string, review: SpendReview, repriced: boolean): ShieldedReviewView {
+// SDK warnings whose text names the vault, in the words the wallet uses for it.
+const WARNING_TEXT: Readonly<Record<string, string>> = {
+  exit_will_queue:
+    "The pool's daily payout limit is used up or its queue is not empty, so this payout waits in the queue.",
+}
+
+// `usual` is the relayer's fee for a payment the pool does not queue, beside which a queued fee is
+// shown; unknown when its quote could not be read.
+export function reviewView(
+  reviewId: string,
+  review: SpendReview,
+  repriced: boolean,
+  usual: bigint | undefined
+): ShieldedReviewView {
+  const queued =
+    review.queued && review.relayer !== undefined && usual !== undefined && review.fee > usual
   return {
     reviewId,
     kind: review.kind,
@@ -34,17 +69,24 @@ function reviewView(reviewId: string, review: SpendReview, repriced: boolean): S
     to: review.to,
     selfRelay: review.relayer === undefined,
     repriced,
-    warnings: review.warnings.map((w) => ({ code: w.code, message: w.message })),
+    queued: queued ? { usual: usual.toString() } : null,
+    warnings: review.warnings.map((w) => ({
+      code: w.code,
+      message: WARNING_TEXT[w.code] ?? w.message,
+    })),
   }
 }
 
 // Starts a spend whose confirmations go to the popup holding `holder`, settling with its first
 // review or with its result when it ends before asking. A relayer that raises its fee after a
 // review makes the SDK ask again, so deciding one review can yield another, about a plan it
-// already saved.
+// already saved. A review `accepted` says the user already saw, in the sheet that started the
+// spend, is answered yes without showing it again; any other goes to the popup.
 export function startReviewed(
   holder: string,
-  spend: (confirm: ConfirmSpend) => Promise<Submission>
+  spend: (confirm: ConfirmSpend) => Promise<Submission>,
+  usual?: bigint,
+  accepted?: (review: SpendReview) => boolean
 ): Promise<ShieldedStep> {
   let settle: { resolve: (step: ShieldedStep) => void; reject: (err: unknown) => void }
   const nextStep = () =>
@@ -61,12 +103,20 @@ export function startReviewed(
         answer(false)
         return
       }
+      if (accepted?.(review)) {
+        noteConfirmed(holder, review)
+        answer(true)
+        return
+      }
       const reviewId = crypto.randomUUID()
       const decide = (approve: boolean): Promise<ShieldedStep> => {
         clearTimeout(timer)
         open.delete(reviewId)
+        reviewHolders.set(reviewId, holder)
+        const yes = approve && generation === started
+        if (yes) noteConfirmed(holder, review)
         const after = nextStep()
-        answer(approve && generation === started)
+        answer(yes)
         return after
       }
       const decline = () => {
@@ -77,7 +127,10 @@ export function startReviewed(
       }
       const timer = setTimeout(decline, REVIEW_TIMEOUT_MS)
       open.set(reviewId, { holder, decide, decline })
-      settle.resolve({ kind: 'review', review: reviewView(reviewId, review, reviews++ > 0) })
+      settle.resolve({
+        kind: 'review',
+        review: reviewView(reviewId, review, reviews++ > 0, usual),
+      })
     })
   spend(confirm).then(
     (s) =>
@@ -109,6 +162,8 @@ export function watchReviewPort(port: chrome.runtime.Port): boolean {
   holders.add(holder)
   port.onDisconnect.addListener(() => {
     holders.delete(holder)
+    confirmedCodes.delete(holder)
+    for (const [reviewId, of] of reviewHolders) if (of === holder) reviewHolders.delete(reviewId)
     for (const review of [...open.values()]) if (review.holder === holder) review.decline()
   })
   return true
@@ -116,5 +171,8 @@ export function watchReviewPort(port: chrome.runtime.Port): boolean {
 
 export function declineAllReviews(): void {
   generation++
+  dropGrants()
+  confirmedCodes.clear()
+  reviewHolders.clear()
   for (const review of [...open.values()]) review.decline()
 }

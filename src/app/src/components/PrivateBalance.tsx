@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ArrowUpFromLine, Send } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, Send, TriangleAlert } from 'lucide-react'
 import { BottomSheet } from '@/components/BottomSheet'
 import { PixelMask } from '@/components/Pixel'
 import { shortAddress } from '@/lib/address'
@@ -86,6 +86,11 @@ export function PrivatePartRows({
               {value && (
                 <span className="block text-xs tabular-nums text-muted-foreground">{value}</span>
               )}
+              {part.key === 'available' && balance.maybeSpent > 0n && (
+                <span className="block text-[11px] tabular-nums text-amber-700 dark:text-amber-400">
+                  {format(balance.maybeSpent)} may already be spent elsewhere
+                </span>
+              )}
             </span>
           </button>
         )
@@ -117,6 +122,8 @@ export function PrivatePartSheet({
   onItem: (item: BalanceItem) => void
 }) {
   const shown = part && balance ? balance.parts.find((p) => p.key === part) : undefined
+  // An earlier attempt of a payment, counted by its newest one, is not a row of its own.
+  const rows = (shown?.items ?? []).filter((item) => item.kind === 'deposit' || item.amount > 0n)
   return (
     <BottomSheet
       open={!!shown}
@@ -138,9 +145,17 @@ export function PrivatePartSheet({
               {PART_EXPLANATIONS[shown.key]}
             </p>
           </div>
-          {shown.items.length > 0 && (
+          {shown.key === 'available' && balance && balance.maybeSpent > 0n && (
+            <p className="flex gap-2 rounded-xl bg-amber-500/10 px-4 py-3 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+              <TriangleAlert size={12} className="mt-0.5 shrink-0" />
+              {unit(balance.maybeSpent)} of it may already be spent elsewhere: the pool refused a
+              payment of yours as spending those notes. Payments use your other notes first, and the
+              next sync tells whether they were spent.
+            </p>
+          )}
+          {rows.length > 0 && (
             <div className="flex flex-col gap-2">
-              {shown.items.map((item) => {
+              {rows.map((item) => {
                 const s =
                   item.kind === 'deposit'
                     ? depositStatus(item.deposit)

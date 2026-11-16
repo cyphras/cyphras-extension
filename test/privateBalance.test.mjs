@@ -21,6 +21,7 @@ function statusOf({
       locked: String(locked),
       pendingDeposits: String(pendingDeposits),
       awaitingPayout: String(awaitingPayout),
+      maybeSpent: '0',
     },
     plans,
     deposits,

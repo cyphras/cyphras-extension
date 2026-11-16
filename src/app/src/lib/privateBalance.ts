@@ -19,6 +19,9 @@ export interface PrivateBalance {
   readonly total: bigint
   // In the order the glossary names them, zero parts left out.
   readonly parts: readonly BalancePart[]
+  // What of Available a payment was refused for as spending notes already spent elsewhere. It is
+  // part of Available, never added to it; the next sync tells whether it was.
+  readonly maybeSpent: bigint
 }
 
 export const PART_LABELS: Record<BalancePartKey, string> = {
@@ -89,5 +92,6 @@ export function privateBalance(status: ShieldedStatusView): PrivateBalance {
   return {
     total: parts.reduce((s, p) => s + p.amount, 0n),
     parts: parts.filter((p) => p.amount > 0n),
+    maybeSpent: BigInt(status.balance.maybeSpent),
   }
 }

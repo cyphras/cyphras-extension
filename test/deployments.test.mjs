@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { PINNED_DEPLOYMENTS } from '@cyphras/private'
+import { PINNED_ARCHIVES, PINNED_DEPLOYMENTS } from '@cyphras/private'
 import { SHIELDED_DEPLOYMENTS } from '../src/background/shielded/deployments.ts'
 import { pinnedPool } from '../src/background/shielded/gate.ts'
 import { DEFAULT_NETWORKS } from '../src/constants/networks.ts'
@@ -38,5 +38,12 @@ test('every pinned deployment that recommends a second RPC has one', () => {
     if (deployment.recommendSecondRpc) {
       assert.ok(secondRpcUrl, `${name} recommends a second RPC provider and none is set`)
     }
+  }
+})
+
+test('every pinned deployment syncs from the archive copies the SDK release pins', () => {
+  for (const { name, archives } of Object.values(SHIELDED_DEPLOYMENTS)) {
+    assert.deepEqual(archives, PINNED_ARCHIVES[name], name)
+    assert.ok(archives.length >= 2, `${name} needs two copies to confirm one another`)
   }
 })

@@ -112,6 +112,43 @@ export interface ShieldedScope {
   publicKey: string
 }
 
+// Why a transaction the account submits itself asks more than the wallet pays without asking: the
+// network's own fees, a renewal of the pool's entries close to expiring, or a restore of archived
+// ones.
+export type ShieldedFeeReason = 'network' | 'rent' | 'restore'
+
+// What a fee renews or restores, by the SDK's kinds of pool entries.
+export type ShieldedFeeEntry =
+  | 'code'
+  | 'instance'
+  | 'tree'
+  | 'balance'
+  | 'asset'
+  | 'record'
+  | 'other'
+
+// A network fee above what the wallet pays without asking, as the wallet's own simulation reported
+// it. ceiling is the most its transaction may pay once approved: 10% above the fee, the resource
+// part rounded up to 0.01 XLM. most is what the whole call may pay, the ceiling plus the default
+// room of a transaction after a restore; the background holds the call to it. approval names the
+// background's offer, which the popup returns with the user's yes, once.
+export interface ShieldedFeeView {
+  reason: ShieldedFeeReason
+  total: string
+  inclusionCap: string
+  ceiling: string
+  most: string
+  // What the payment, deposit or action has signed for in network fees so far, over every call
+  // its fees stopped; an upper bound of what the network charged. restored: one of those was a
+  // restore of the pool's entries; attempted: one was the call itself, which did not go through.
+  // The review is for the next step only.
+  paid?: string
+  restored?: boolean
+  attempted?: boolean
+  entries: ShieldedFeeEntry[]
+  approval?: string
+}
+
 export interface ShieldedErrorView {
   code: string
   message: string
@@ -119,6 +156,21 @@ export interface ShieldedErrorView {
   // payment is paid again only through a retry of planId, never through a new one.
   mayLand?: boolean
   planId?: string
+  // The fee to review before the transaction goes again with a higher cap.
+  fee?: ShieldedFeeView
+  // The relayer did not send the payment, and why; planId names it. The relayer still holds its
+  // proof, so it is paid again only through a retry with the same notes.
+  refusal?: 'network_fee_high' | 'restore_needed'
+  // The background's offer to submit that retry from the account, at most the default fee.
+  selfPay?: string
+  // An older attempt of the payment planId names may still land, as its row in the status says.
+  earlierMayLand?: boolean
+  // The relayer's fee for a payment the pool queues is above what this wallet allows.
+  queued?: boolean
+  // A payment to the same destination that may still land; a new one waits for it.
+  openPlanId?: string
+  // The transaction of a restore that failed on chain.
+  hash?: string
 }
 
 export interface ShieldedBalanceView {
@@ -126,6 +178,9 @@ export interface ShieldedBalanceView {
   pendingDeposits: string
   locked: string // inputs of payments not yet confirmed or dead
   awaitingPayout: string // unshields waiting in the vault's exit queue
+  // Part of spendable whose notes a payment of this account was refused for as already spent;
+  // never added to spendable.
+  maybeSpent: string
 }
 
 // 'unresolved': it was still submitting when no RPC provider held the ledgers it could have landed
@@ -193,6 +248,13 @@ export interface ShieldedPlanView {
   // Exits of this payout that the destination could not receive, each claimable on its own.
   strandedExits: number[]
   relayerStatus: string | null
+  // An older attempt of the same payment may still land, while none has; what this attempt says
+  // must not suggest the payment cannot arrive.
+  earlierMayLand?: boolean
+  // Why its submission last stopped before anything was sent: the relayer's refusal code, or the
+  // wallet's own error code for a self-relayed one; null once it landed.
+  relayerCode: string | null
+  lastError: string | null
   // Paying again must go through a retry with the same notes, never through a new send.
   mustRetry: boolean
   needsUserDecision: boolean
@@ -244,6 +306,9 @@ export interface ShieldedStatusView {
   plans: ShieldedPlanView[]
   syncedAt: number | null
   syncError: ShieldedErrorView | null
+  // Where the last sync read the pool's history: 'archive' when neither an indexer nor the RPC still
+  // held it and the pool's published archive copies, checked against the chain, did.
+  syncSource: 'indexer' | 'rpc' | 'archive' | null
   // 'mismatch': a service or the vault points elsewhere, so shields and spends are refused.
   services: 'verified' | 'unverified' | 'mismatch'
   // The SDK's warning from when this pool last started this account from a fresh state, and when
@@ -294,12 +359,20 @@ export interface ShieldedReviewView {
   // Asked again after the relayer raised its fee: the payment is already saved with these notes
   // and may still land, so declining it never makes way for a new payment.
   repriced: boolean
+  // The pool will queue this payment, and the relayer asks its queued fee, above its usual one.
+  queued: { usual: string } | null
   warnings: { code: string; message: string }[]
 }
 
 export type ShieldedStep =
   | { kind: 'review'; review: ShieldedReviewView }
   | { kind: 'submitted'; planId: string; txHash: string | null; fee: string }
+
+// A restore of the pool's archived entries: its transaction, null when nothing needed restoring.
+export interface ShieldedRestoreView {
+  txHash: string | null
+  restored: number
+}
 
 export interface ServicePayload {
   type: ServiceType
@@ -373,6 +446,7 @@ export interface ServiceResponse {
   shieldedQuote?: ShieldedQuoteView
   shieldedLimits?: ShieldedLimitsView
   shieldedHistory?: ShieldedHistoryItem[]
+  shieldedRestore?: ShieldedRestoreView
   jobId?: string
   jobs?: CctpJobInfo[]
   maxFee?: string

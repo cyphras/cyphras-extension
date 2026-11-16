@@ -1,4 +1,5 @@
 import {
+  PINNED_ARCHIVES,
   PINNED_DEPLOYMENTS,
   type ArtifactName,
   type Deployment,
@@ -14,6 +15,9 @@ export interface ShieldedDeployment {
   readonly secondRpcUrl?: string
   readonly artifactPaths: Readonly<Record<ArtifactName, string>>
   readonly maxRelayerFee: bigint
+  // The copies of the vault's published archive a sync reads, checked against the chain, once
+  // neither an indexer nor the RPC holds the history it needs; the SDK release pins them.
+  readonly archives: readonly string[]
 }
 
 // The testnet proving key comes from a solo setup that anyone holding it can forge proofs with.
@@ -43,7 +47,20 @@ function pinned(
 ): [string, ShieldedDeployment][] {
   const deployment = PINNED_DEPLOYMENTS[name]
   return deployment
-    ? [[name, { name, deployment, rpcUrl, secondRpcUrl, artifactPaths, maxRelayerFee }]]
+    ? [
+        [
+          name,
+          {
+            name,
+            deployment,
+            rpcUrl,
+            secondRpcUrl,
+            artifactPaths,
+            maxRelayerFee,
+            archives: PINNED_ARCHIVES[name],
+          },
+        ],
+      ]
     : []
 }
 

@@ -143,10 +143,13 @@ import {
   settleShieldedWallets,
   shieldedDecide,
   shieldedDismissReset,
+  shieldedDropOffer,
+  shieldedEarlierMayLand,
   shieldedHistory,
   shieldedLimits,
   shieldedQuote,
   shieldedReceiveAddress,
+  shieldedRestorePool,
   shieldedRetry,
   shieldedShield,
   shieldedSpend,
@@ -155,8 +158,12 @@ import {
   shieldedSync,
 } from './shielded/wallet'
 import { isKeyDerivationMessage } from '@cyphras/private'
+import { dropGrants, takeGrant, type FeeCall, type FeeGrant } from './shielded/approvals'
 import { errorView } from './shielded/errors'
-import { watchReviewPort } from './shielded/reviews'
+import { isOffscreenDocument } from './shielded/senders'
+import { PROVER_PORT } from './shielded/wire'
+import { shieldedOffer } from './shielded/offers'
+import { confirmedWarnings, holderOfReview, watchReviewPort } from './shielded/reviews'
 import { acceptProverPort } from './shielded/prover'
 import {
   trackInstall,
@@ -450,6 +457,45 @@ function shieldedFailure(err: unknown): ServiceResponse {
   return { error: view.message, shieldedError: view }
 }
 
+// Marks a failure that names a payment whose older attempt may still land, so the sheet that
+// shows it says what the payment's row says.
+async function withEarlierAttempt(
+  response: ServiceResponse,
+  message: { publicKey?: unknown; networkId?: unknown },
+  poolId: unknown
+): Promise<ServiceResponse> {
+  const view = response.shieldedError
+  if (!view?.planId || typeof poolId !== 'string') return response
+  try {
+    const net = await getShieldedNetwork(message.networkId)
+    view.earlierMayLand = await shieldedEarlierMayLand(net, message.publicKey, poolId, view.planId)
+  } catch {
+    // The payment's attempts could not be read, as after a lock; the failure goes without the mark.
+  }
+  return response
+}
+
+// The offer a request accepts, if it names one; refused unless it is open and for this very call.
+function grantFor(
+  approval: unknown,
+  call: FeeCall,
+  target: string,
+  message: { publicKey?: unknown; networkId?: unknown },
+  pool: string,
+  whileSubmitting?: boolean
+): FeeGrant | undefined {
+  if (approval === undefined) return undefined
+  return takeGrant(
+    approval,
+    call,
+    target,
+    message.publicKey,
+    message.networkId,
+    pool,
+    whileSubmitting
+  )
+}
+
 // A payment cannot create an unfunded destination, so a never-funded account is created with XLM
 // instead. A non-native asset can never reach a missing account, and a new account needs >= 1 XLM.
 async function buildTransferOperation(
@@ -684,6 +730,14 @@ chrome.idle.onStateChanged.addListener((state) => {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (!port.sender || !isExtensionPage(port.sender)) return
+  // The offscreen document holds only the prover port; any other port from it is closed.
+  if (
+    port.name !== PROVER_PORT &&
+    isOffscreenDocument(port.sender, chrome.runtime.getURL('offscreen.html'))
+  ) {
+    port.disconnect()
+    return
+  }
   if (watchReviewPort(port) || acceptProverPort(port)) return
 
   if (port.name === 'wallet-popup') {
@@ -775,6 +829,8 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   // Everything else drives the wallet itself (approvals, keys, signing), so only
   // the wallet's own pages and approval windows may send it.
   if (!isExtensionPage(sender)) return false
+  // The offscreen document only proves, over its own port; it never drives the wallet.
+  if (isOffscreenDocument(sender, chrome.runtime.getURL('offscreen.html'))) return false
 
   if (message.type === 'APPROVAL_RESPONSE') {
     const { id, approved } = message as ApprovalResponseMessage
@@ -3148,6 +3204,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
     }
 
     case SERVICE_TYPES.SET_ACTIVE_NETWORK: {
+      dropGrants()
       if (!message.networkId) {
         sendResponse({ error: 'Network ID required' })
         return
@@ -3359,6 +3416,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         poolId?: string
         amount?: string
         whileSubmitting?: boolean
+        feeApproval?: unknown
       }
       if (!isNonEmptyString(m.poolId)) {
         sendResponse({ error: 'poolId is required' })
@@ -3370,16 +3428,32 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
+        const grant = grantFor(
+          m.feeApproval,
+          'shield',
+          m.amount,
+          message,
+          m.poolId,
+          m.whileSubmitting === true
+        )
         const receipt = await shieldedShield(
           net,
           message.publicKey,
           m.poolId,
           BigInt(m.amount),
-          m.whileSubmitting === true
+          m.whileSubmitting === true,
+          grant?.caps,
+          grant?.budget,
+          grant?.spent
         )
         sendResponse({ shieldedReceipt: receipt })
       } catch (err) {
-        sendResponse(shieldedFailure(err))
+        sendResponse(
+          shieldedOffer(err, 'shield', m.amount, message, {
+            pool: m.poolId,
+            whileSubmitting: m.whileSubmitting === true,
+          })
+        )
       }
       break
     }
@@ -3502,7 +3576,17 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         })
         sendResponse({ shieldedStep: step })
       } catch (err) {
-        sendResponse(shieldedFailure(err))
+        sendResponse(
+          await withEarlierAttempt(
+            shieldedOffer(err, 'retry', undefined, message, {
+              pool: m.poolId,
+              kind: m.kind,
+              confirmed: confirmedWarnings(m.holder),
+            }),
+            message,
+            m.poolId
+          )
+        )
       }
       break
     }
@@ -3513,6 +3597,8 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         holder?: string
         planId?: string
         selfRelay?: boolean
+        feeApproval?: unknown
+        kind?: string
       }
       if (
         !isNonEmptyString(m.poolId) ||
@@ -3524,17 +3610,32 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
       }
       try {
         const net = await getShieldedNetwork(message.networkId)
+        const grant = grantFor(m.feeApproval, 'retry', m.planId, message, m.poolId)
         const step = await shieldedRetry(
           net,
           message.publicKey,
           m.poolId,
           m.holder,
           m.planId,
-          m.selfRelay === true
+          m.selfRelay === true || grant !== undefined,
+          grant?.caps,
+          grant?.warnings,
+          grant?.budget,
+          grant?.spent
         )
         sendResponse({ shieldedStep: step })
       } catch (err) {
-        sendResponse(shieldedFailure(err))
+        sendResponse(
+          await withEarlierAttempt(
+            shieldedOffer(err, 'retry', undefined, message, {
+              pool: m.poolId,
+              kind: m.kind,
+              confirmed: confirmedWarnings(m.holder),
+            }),
+            message,
+            m.poolId
+          )
+        )
       }
       break
     }
@@ -3542,7 +3643,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
     case SERVICE_TYPES.SHIELDED_CANCEL:
     case SERVICE_TYPES.SHIELDED_REFUND:
     case SERVICE_TYPES.SHIELDED_CLAIM: {
-      const m = message as unknown as { poolId?: string; id?: number }
+      const m = message as unknown as { poolId?: string; id?: number; feeApproval?: unknown }
       if (
         !isNonEmptyString(m.poolId) ||
         typeof m.id !== 'number' ||
@@ -3560,17 +3661,57 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
             : 'claim'
       try {
         const net = await getShieldedNetwork(message.networkId)
+        const grant = grantFor(m.feeApproval, action, String(m.id), message, m.poolId)
         sendResponse({
-          txHash: await shieldedAccountAction(net, message.publicKey, m.poolId, action, m.id),
+          txHash: await shieldedAccountAction(
+            net,
+            message.publicKey,
+            m.poolId,
+            action,
+            m.id,
+            grant?.caps,
+            grant?.budget,
+            grant?.spent
+          ),
         })
       } catch (err) {
-        sendResponse(shieldedFailure(err))
+        sendResponse(shieldedOffer(err, action, String(m.id), message, { pool: m.poolId }))
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_RESTORE: {
+      const m = message as unknown as { poolId?: string; feeApproval?: unknown }
+      if (!isNonEmptyString(m.poolId)) {
+        sendResponse({ error: 'poolId is required' })
+        return
+      }
+      try {
+        const net = await getShieldedNetwork(message.networkId)
+        const grant = grantFor(m.feeApproval, 'restore', m.poolId, message, m.poolId)
+        sendResponse({
+          shieldedRestore: await shieldedRestorePool(
+            net,
+            message.publicKey,
+            m.poolId,
+            grant?.caps,
+            grant?.budget,
+            grant?.spent
+          ),
+        })
+      } catch (err) {
+        sendResponse(shieldedOffer(err, 'restore', m.poolId, message, { pool: m.poolId }))
       }
       break
     }
 
     case SERVICE_TYPES.SHIELDED_DECIDE: {
-      const m = message as unknown as { reviewId?: string; approve?: boolean }
+      const m = message as unknown as {
+        reviewId?: string
+        approve?: boolean
+        poolId?: string
+        kind?: string
+      }
       if (!isNonEmptyString(m.reviewId) || typeof m.approve !== 'boolean') {
         sendResponse({ error: 'reviewId and approve are required' })
         return
@@ -3580,6 +3721,28 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
         sendResponse({
           shieldedStep: await shieldedDecide(message.publicKey, m.reviewId, m.approve),
         })
+      } catch (err) {
+        sendResponse(
+          await withEarlierAttempt(
+            shieldedOffer(err, 'retry', undefined, message, {
+              pool: m.poolId,
+              kind: m.kind,
+              confirmed: confirmedWarnings(holderOfReview(m.reviewId)),
+            }),
+            message,
+            m.poolId
+          )
+        )
+      }
+      break
+    }
+
+    case SERVICE_TYPES.SHIELDED_DROP_OFFER: {
+      const m = message as unknown as { offer?: unknown }
+      try {
+        await getShieldedNetwork(message.networkId)
+        await shieldedDropOffer(message.publicKey, m.offer)
+        sendResponse({ ok: true })
       } catch (err) {
         sendResponse(shieldedFailure(err))
       }
@@ -3991,6 +4154,7 @@ async function handleService(message: ServicePayload, sendResponse: (r: ServiceR
     }
 
     case SERVICE_TYPES.SWITCH_ACCOUNT: {
+      dropGrants()
       const switchPubkey = message.publicKey as string | undefined
       const store = await getAccountsStore()
       const target = switchPubkey

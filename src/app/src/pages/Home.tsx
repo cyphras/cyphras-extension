@@ -55,7 +55,7 @@ import { Reveal } from '@/components/Collapse'
 import { PrivateBreakdown, PrivatePartSheet } from '@/components/PrivateBalance'
 import type { AssetBalance } from '@/hooks/useBalances'
 import type { ShieldedPlanView } from '@ext-types/index'
-import { formatUnits } from '@/lib/amount'
+import { formatUnits, spendableUnits } from '@/lib/amount'
 import { formatFiat } from '@/lib/activity'
 import { privateEntries, type PrivateEntry } from '@/lib/privateHistory'
 import { PART_LABELS, privateBalance, type BalancePartKey } from '@/lib/privateBalance'
@@ -77,7 +77,7 @@ import {
 } from 'lucide-react'
 
 const WHATS_NEW_KEY = 'cyphras_whats_new_seen'
-const WHATS_NEW_VERSION = '0.5.0'
+const WHATS_NEW_VERSION = '0.6.0'
 
 function BalanceSkeleton() {
   return (
@@ -266,6 +266,12 @@ export default function Home() {
   const [shieldedReceiveOpen, setShieldedReceiveOpen] = useState(false)
   const [shieldedAction, setShieldedAction] = useState<ShieldedAction | null>(null)
   const [retryPlan, setRetryPlan] = useState<ShieldedPlanView | null>(null)
+  // Whether the retry opened starts self-relayed, as when the user chose to pay the fee.
+  const [retrySelfRelay, setRetrySelfRelay] = useState(false)
+  const openRetry = (plan: ShieldedPlanView, selfRelay = false) => {
+    setRetrySelfRelay(selfRelay)
+    setRetryPlan(plan)
+  }
   // The picker switches the pool of the open send, shield or unshield; tappedPoolId opens the
   // token page.
   const [pickerAction, setPickerAction] = useState<ShieldedAction | null>(null)
@@ -480,6 +486,17 @@ export default function Home() {
     return price !== null && Number.isFinite(n) ? formatFiat(n * price) : null
   }
   const shieldedIcon = selectedPool ? poolIcon(selectedPool) : undefined
+  // A network fee the account pays itself, in XLM: what it can spend after its minimum balance,
+  // and fiat for an amount, both for fee reviews of its own actions.
+  const xlmBalance = balances.find((b) => b.isNative && b.chain === stellarChainId)?.balance
+  const feeAvailable =
+    xlmBalance === undefined
+      ? null
+      : spendableUnits(xlmBalance, 7, undefined, (2n + BigInt(subentryCount)) * 5_000_000n)
+  const feeFiat = (units: bigint): string | null => {
+    const price = shieldedByPool[poolId]?.usdPrice ?? null
+    return price === null ? null : formatFiat(Number(formatUnits(units, 7)) * price)
+  }
 
   // Native pools use the inline XLM glyph; others reuse the public list's issuer icon.
   function poolIcon(pool: (typeof shieldedPools)[number]): string | undefined {
@@ -871,6 +888,13 @@ export default function Home() {
                     )
                   )}
 
+                  {!shieldedNotice && shieldedStatus?.syncSource === 'archive' && (
+                    <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+                      The network no longer keeps all of the pool's history, so the last sync read
+                      the pool's published archive copies, checked against the chain.
+                    </p>
+                  )}
+
                   {entries && (
                     <ShieldedActivity
                       entries={entries}
@@ -880,9 +904,11 @@ export default function Home() {
                       chainIcon={chainIcons.get(stellarChainId)}
                       fiatOf={entryFiat}
                       onSelect={(entry) => setEntryId(entry.item.id)}
-                      onRetry={(plan) => setRetryPlan(plan)}
+                      onRetry={openRetry}
                       onChanged={refreshShielded}
                       onSeeAll={() => setHistoryOpen(true)}
+                      feeAvailable={feeAvailable}
+                      feeFiat={feeFiat}
                     />
                   )}
                 </>
@@ -1273,13 +1299,15 @@ export default function Home() {
         fiat={selectedEntry ? entryFiat(selectedEntry) : null}
         poolId={poolId}
         scope={statusScope}
-        onRetry={(plan) => {
+        onRetry={(plan, selfRelay) => {
           setHistoryOpen(false)
           setTappedPoolId(null)
-          setRetryPlan(plan)
+          openRetry(plan, selfRelay)
         }}
         onChanged={refreshShielded}
         onClose={() => setEntryId(null)}
+        feeAvailable={feeAvailable}
+        feeFiat={feeFiat}
       />
 
       {pickerAction && (
@@ -1293,6 +1321,7 @@ export default function Home() {
       <ShieldedSend
         action={!privateReady ? null : retryPlan ? retryPlan.kind : shieldedAction}
         retryPlan={retryPlan}
+        retrySelfRelay={retrySelfRelay}
         status={shieldedStatus}
         poolId={poolId}
         assetLabel={shieldedLabel}
@@ -1318,6 +1347,10 @@ export default function Home() {
         subentryCount={subentryCount}
         // The picker opens over the form, as on public Send, so what is typed stays.
         onChangeAsset={() => setPickerAction(shieldedAction)}
+        onOpenPlan={(plan) => {
+          setShieldedAction(null)
+          openRetry(plan)
+        }}
         onHistory={() => {
           setShieldedAction(null)
           setRetryPlan(null)
